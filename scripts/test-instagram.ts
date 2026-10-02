@@ -23,6 +23,7 @@ import {
   controlRelationship,
   relationshipFromCandidates,
   relationshipFromLabels,
+  selectPrimaryRelationship,
   usernameFromHref,
 } from "../worker/instagram/parse";
 import { READ_DOM_SOURCE } from "../worker/instagram/read-dom";
@@ -84,6 +85,15 @@ check("message with following", relationshipFromLabels(["Message", "Following"])
 check("message alone is unknown", relationshipFromLabels(["Message"]) === "unknown");
 check("conflicting follow controls are unknown", relationshipFromLabels(["Follow", "Following"]) === "unknown");
 check("display name drops handle", displayNameFromTitle("Dominic Hayles (@dominicl_hayles) • Instagram", "dominicl_hayles") === "Dominic Hayles");
+check("notification title is not a name", displayNameFromTitle("(3) Instagram", "heytony.agency") === null);
+check(
+  "notification count strips from a profile title",
+  displayNameFromTitle("(3) Matt Diamante (@heytony.agency) • Instagram photos and videos", "heytony.agency") === "Matt Diamante",
+);
+check(
+  "profile title keeps the display name",
+  displayNameFromTitle("(3) FPV Team (@fpv_teams) • Instagram photos and videos", "fpv_teams") === "FPV Team",
+);
 check("follower title attribute", countFromLabeledText(["12400 followers"], "followers") === 12400);
 check("bio drops counts", cleanProfileBio(["Dominic Hayles", "12.4K followers", "Dallas drone photos"], "dominicl_hayles", "Dominic Hayles") === "Dallas drone photos");
 
@@ -316,6 +326,85 @@ const statsOnly = profileFromDom(
 check("stats only stays unknown", statsOnly.relationship === "unknown");
 check("stats only keeps followers", statsOnly.followerCount === 398000);
 check("stats only keeps display name", statsOnly.displayName === "Matt Diamante");
+
+const nameBox = { x: 420, y: 150, width: 180, height: 32 };
+function placed(
+  label: string,
+  y: number,
+  extras: Partial<import("../worker/instagram/types").ExactRelationshipHit> = {},
+) {
+  return {
+    label,
+    tag: extras.tag ?? "span",
+    role: extras.role ?? "",
+    text: extras.text ?? label,
+    ariaLabel: extras.ariaLabel ?? "",
+    title: extras.title ?? "",
+    href: extras.href ?? "",
+    tabIndex: extras.tabIndex ?? "",
+    box: extras.box ?? { x: 680, y, width: 80, height: 32 },
+    inSuggestion: extras.inSuggestion ?? false,
+    inDialog: extras.inDialog ?? false,
+    otherUsername: extras.otherUsername ?? null,
+    ancestor: extras.ancestor === undefined
+      ? { tag: "div", role: "button", text: label, ariaLabel: "", href: "", box: { x: 670, y: y - 2, width: 100, height: 36 } }
+      : extras.ancestor,
+  };
+}
+check(
+  "follow span inside a header button",
+  selectPrimaryRelationship([placed("Follow", 150)], nameBox).relationship === "not_following",
+);
+check(
+  "following span inside a header button",
+  selectPrimaryRelationship([placed("Following", 154)], nameBox).relationship === "following",
+);
+check(
+  "requested span inside a header button",
+  selectPrimaryRelationship([placed("Requested", 150, { ancestor: { tag: "button", role: "", text: "Requested", ariaLabel: "", href: "", box: { x: 670, y: 148, width: 100, height: 36 } } })], nameBox).relationship === "requested",
+);
+check(
+  "suggested follow below the header is ignored",
+  selectPrimaryRelationship([placed("Follow", 980, { inSuggestion: true })], nameBox).relationship === "unknown",
+);
+check(
+  "header following wins over a suggested follow",
+  selectPrimaryRelationship([placed("Following", 150), placed("Follow", 980, { inSuggestion: true })], nameBox).relationship === "following",
+);
+check(
+  "header follow wins over a suggested following",
+  selectPrimaryRelationship([placed("Follow", 150), placed("Following", 1020, { inSuggestion: true })], nameBox).relationship === "not_following",
+);
+check(
+  "only suggested follows stay unknown",
+  selectPrimaryRelationship([
+    placed("Follow", 900, { inSuggestion: true }),
+    placed("Follow", 1100, { inSuggestion: true, otherUsername: "other.account" }),
+  ], nameBox).relationship === "unknown",
+);
+check(
+  "stats following near the name is ignored",
+  selectPrimaryRelationship([
+    placed("Following", 190, {
+      text: "following",
+      ancestor: { tag: "a", role: "", text: "801 following", ariaLabel: "", href: "/studio.new/following/", box: { x: 500, y: 180, width: 140, height: 36 } },
+    }),
+  ], nameBox).relationship === "unknown",
+);
+const headerAction = profileFromDom(
+  snapshot({
+    url: "https://www.instagram.com/studio.new/",
+    title: "(3) Matt Diamante (@studio.new) • Instagram photos and videos",
+    usernameBox: nameBox,
+    exactRelationshipHits: [placed("Follow", 152)],
+    links: [{ href: "/studio.new/followers/", text: "398K followers", title: "398000" }],
+  }),
+  "studio.new",
+);
+check("header action is not following", headerAction.relationship === "not_following");
+check("header action keeps followers", headerAction.followerCount === 398000);
+check("header action display name ignores the notification count", headerAction.displayName === "Matt Diamante");
+check("header action strategy", headerAction.strategies.relationship === "global-exact-action-near-profile-header");
 
 const composer = snapshot({
   textboxes: [{ name: "Message", value: "Hi there" }],

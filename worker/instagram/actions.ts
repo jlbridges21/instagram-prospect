@@ -13,7 +13,7 @@ import {
   pageSignal,
   profileFromDom,
 } from "./interpret";
-import { isExcludedRelationship, isRelationshipAction, profileUrlFor, type FollowRelationship } from "./parse";
+import { isExcludedRelationship, profileUrlFor, selectPrimaryRelationship, type FollowRelationship } from "./parse";
 import { openUrl, readDom } from "./read-dom";
 import type { DomSnapshot } from "./types";
 
@@ -32,12 +32,12 @@ export async function ensureHome(page: Page) {
   return feedCandidates(dom);
 }
 
-export async function readProfile(page: Page, username: string, options?: { debug?: boolean }) {
+export async function readProfile(page: Page, username: string, options?: { debug?: boolean; screenshot?: boolean }) {
   await openUrl(page, profileUrlFor(username));
   return inspectCurrent(page, username, options);
 }
 
-async function inspectCurrent(page: Page, username: string, options?: { debug?: boolean }) {
+async function inspectCurrent(page: Page, username: string, options?: { debug?: boolean; screenshot?: boolean }) {
   await page.waitForSelector("header, main", { timeout: ACTION_TIMEOUT_MS }).catch(() => undefined);
   let dom = await readDom(page);
   let profile = profileFromDom(dom, username);
@@ -55,29 +55,42 @@ async function inspectCurrent(page: Page, username: string, options?: { debug?: 
     return { profileExists: false as const, relationship: "unknown" as FollowRelationship, profile };
   }
   if (options?.debug || process.argv.includes("--debug")) {
-    const primary = (dom.relationshipCandidates ?? []).filter((candidate) => candidate.scope !== "outside");
-    const accepted = primary.filter((candidate) => isRelationshipAction(candidate));
+    const choice = selectPrimaryRelationship(dom.exactRelationshipHits ?? [], dom.usernameBox, dom.optionsBox);
     console.log(`@${username}`);
-    console.log("relationship candidates:");
-    if (primary.length === 0) console.log("  none");
-    primary.forEach((candidate, index) => {
-      const text = candidate.ariaLabel || candidate.text || candidate.title;
-      const interactive = candidate.isInteractive === true || candidate.tag === "button" || candidate.role === "button";
-      console.log(`  [${index}] tag=${candidate.tag} role=${candidate.role || "null"} text="${text}" interactive=${interactive ? "true" : "false"}`);
+    console.log("global exact relationship candidates:");
+    if (choice.decisions.length === 0) console.log("  none");
+    choice.decisions.forEach((decision, index) => {
+      const box = decision.box ? `${decision.box.x}/${decision.box.y}/${decision.box.width}/${decision.box.height}` : "none";
+      const ancestorBox = decision.ancestorBox ? `${decision.ancestorBox.x}/${decision.ancestorBox.y}/${decision.ancestorBox.width}/${decision.ancestorBox.height}` : "none";
+      console.log(`Candidate ${index}:`);
+      console.log(`label: "${decision.label}"`);
+      console.log(`element: ${decision.tag || "unknown"}`);
+      console.log(`interactive ancestor: ${decision.ancestorTag || "none"}${decision.ancestorRole ? ` role=${decision.ancestorRole}` : ""}`);
+      console.log(`element box: ${box}`);
+      console.log(`ancestor box: ${ancestorBox}`);
+      console.log(`distance from username: ${decision.distance ?? "unknown"}`);
+      console.log(`accepted as primary: ${decision.accepted ? "true" : "false"}`);
+      console.log(`reason: ${decision.reason}`);
     });
-    console.log("accepted action candidates:");
-    if (accepted.length === 0) console.log("  none");
-    accepted.forEach((candidate, index) => {
-      const text = candidate.ariaLabel || candidate.text || candidate.title;
-      console.log(`  [${index}] tag=${candidate.tag} role=${candidate.role || "null"} text="${text}"`);
-    });
-    console.log(`relationship: ${profile.relationship}`);
+    console.log("accepted primary action:");
+    console.log(choice.acceptedLabel || "none");
+    console.log("relationship:");
+    console.log(profile.relationship);
     console.log(`strategy: ${profile.strategies.relationship}`);
     console.log(`followers: ${profile.followerCount ?? "unknown"} (${profile.strategies.followers ?? "none"})`);
     console.log(`display_name: ${profile.displayName ?? "unknown"} (${profile.strategies.displayName ?? "none"})`);
     console.log(`bio_length: ${profile.bio?.length ?? 0} (${profile.strategies.bio ?? "none"})`);
     if (profile.relationship === "unknown" || profile.followerCount === null) {
       saveDebugSnapshot(username, dom);
+    }
+  }
+  if (options?.screenshot) {
+    const url = page.url();
+    if (!url.includes("/accounts/login") && !url.includes("/challenge/")) {
+      fs.mkdirSync(debugDir(), { recursive: true });
+      const file = path.join(debugDir(), `inspect-${username}.png`);
+      await page.screenshot({ path: file, fullPage: false }).catch(() => undefined);
+      console.log(`Screenshot: ${file}`);
     }
   }
   return { profileExists: true as const, relationship: profile.relationship, profile };
@@ -101,6 +114,21 @@ function saveDebugSnapshot(username: string, dom: DomSnapshot) {
       tabIndex: candidate.tabIndex,
       scope: candidate.scope,
       isInteractive: candidate.isInteractive === true,
+    })),
+    exactRelationshipHits: (dom.exactRelationshipHits ?? []).map((hit) => ({
+      label: hit.label,
+      tag: hit.tag,
+      role: hit.role,
+      text: hit.text,
+      ariaLabel: hit.ariaLabel,
+      title: hit.title,
+      href: hit.href,
+      tabIndex: hit.tabIndex,
+      box: hit.box,
+      inSuggestion: hit.inSuggestion,
+      inDialog: hit.inDialog,
+      otherUsername: hit.otherUsername,
+      ancestor: hit.ancestor,
     })),
     buttons: dom.buttons.slice(0, 30),
     links: dom.links.filter((link) => /follower|following|posts/i.test(`${link.text} ${link.label ?? ""} ${link.href}`)).slice(0, 20),

@@ -115,10 +115,15 @@ export function relationshipFromLabels(labels: string[]): FollowRelationship {
 }
 
 export function displayNameFromTitle(title: string, username: string | null) {
-  let name = title.replace(/\s*[•|].*$/, "").trim();
+  const stripped = title.replace(/^\(\d+\)\s*/, "").trim();
+  if (username) {
+    const handle = username.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    if (!new RegExp(`\\(@${handle}\\)|@${handle}\\b`, "i").test(stripped)) return null;
+  }
+  let name = stripped.replace(/\s*[•|].*$/, "").trim();
   name = name.replace(/\s*\(@[^)]+\)\s*/g, " ").replace(/\s+/g, " ").trim();
-  name = name.replace(/\s+on Instagram$/i, "").replace(/['’]s profile picture$/i, "").trim();
-  if (!name || /^instagram$/i.test(name)) return null;
+  name = name.replace(/\s+on Instagram$/i, "").replace(/\s+Instagram photos and videos$/i, "").replace(/['’]s profile picture$/i, "").trim();
+  if (!name || /^instagram$/i.test(name) || /^\(\d+\)$/.test(name)) return null;
   if (username && name.toLowerCase() === username.toLowerCase()) return null;
   return name;
 }
@@ -186,6 +191,119 @@ export function relationshipFromCandidates(
     else if ((matched.tag || "").toLowerCase() === "a") strategy = "primary-action-region-link";
   }
   return { relationship, strategy };
+}
+
+export type RelationshipChoice = {
+  relationship: FollowRelationship;
+  strategy: string;
+  acceptedLabel: string | null;
+  decisions: Array<{
+    label: string;
+    tag: string;
+    ancestorTag: string;
+    ancestorRole: string;
+    box: { x: number; y: number; width: number; height: number } | null;
+    ancestorBox: { x: number; y: number; width: number; height: number } | null;
+    distance: number | null;
+    accepted: boolean;
+    reason: string;
+  }>;
+};
+
+function statsHref(href: string | null | undefined) {
+  return /\/(followers|following|posts)\/?$/i.test((href || "").split("?")[0]);
+}
+
+function hitLabel(hit: { label?: string; text?: string; ariaLabel?: string; title?: string }) {
+  return controlRelationship(hit.label || "") || controlRelationship(hit.ariaLabel || "") || controlRelationship(hit.text || "") || controlRelationship(hit.title || "");
+}
+
+export function selectPrimaryRelationship(
+  hits: Array<{
+    label?: string;
+    tag?: string;
+    role?: string;
+    text?: string;
+    ariaLabel?: string;
+    title?: string;
+    href?: string;
+    box?: { x: number; y: number; width: number; height: number } | null;
+    inSuggestion?: boolean;
+    inDialog?: boolean;
+    otherUsername?: string | null;
+    ancestor?: {
+      tag?: string;
+      role?: string;
+      text?: string;
+      ariaLabel?: string;
+      href?: string;
+      box?: { x: number; y: number; width: number; height: number } | null;
+    } | null;
+  }>,
+  usernameBox?: { x: number; y: number; width: number; height: number } | null,
+  optionsBox?: { x: number; y: number; width: number; height: number } | null,
+): RelationshipChoice {
+  const decisions = hits.map((hit) => {
+    const label = hit.label || hit.text || "";
+    const ancestor = hit.ancestor;
+    const selfClickable = (hit.tag || "").toLowerCase() === "button" || (hit.role || "").toLowerCase() === "button" || ((hit.tag || "").toLowerCase() === "a" && !statsHref(hit.href));
+    const ancestorClickable = Boolean(ancestor && ((ancestor.tag || "").toLowerCase() === "button" || (ancestor.role || "").toLowerCase() === "button" || (ancestor.tag || "").toLowerCase() === "a"));
+    const point = ancestor?.box || hit.box || null;
+    let distance: number | null = null;
+    let near = false;
+    let place = "username position unavailable";
+    if (usernameBox && point) {
+      distance = Math.round(Math.hypot(point.x - usernameBox.x, point.y - usernameBox.y));
+      const dy = point.y - usernameBox.y;
+      near = dy >= -120 && dy <= 360 && Math.abs(point.x - usernameBox.x) < 1100;
+      place = near ? "near profile header" : "below profile header";
+    } else if (optionsBox && point) {
+      distance = Math.round(Math.hypot(point.x - optionsBox.x, point.y - optionsBox.y));
+      near = distance <= 280;
+      place = near ? "near the Options control" : "far from the Options control";
+    }
+    const ancestorText = `${ancestor?.text || ""} ${ancestor?.ariaLabel || ""}`;
+    const statsAncestor = statsHref(ancestor?.href) || statsHref(hit.href) || (/\d/.test(ancestorText) && /follower|following|posts/i.test(ancestorText));
+    let reason = place;
+    if (!hitLabel(hit)) reason = "not an exact relationship label";
+    else if (hit.inDialog) reason = "inside a dialog";
+    else if (hit.inSuggestion) reason = "inside Suggested accounts";
+    else if (hit.otherUsername) reason = "belongs to another profile";
+    else if (!selfClickable && !ancestorClickable) reason = "not an interactive control";
+    else if (statsAncestor) reason = "profile statistics";
+    else if (!near) reason = place;
+    else reason = "near profile header";
+    const accepted = reason === "near profile header" || reason === "near the Options control";
+    return {
+      label,
+      tag: hit.tag || "",
+      ancestorTag: ancestor?.tag || "",
+      ancestorRole: ancestor?.role || "",
+      box: hit.box || null,
+      ancestorBox: ancestor?.box || null,
+      distance,
+      accepted,
+      reason,
+    };
+  });
+  const accepted = decisions.filter((decision) => decision.accepted);
+  const relationships = new Set(accepted.map((decision) => controlRelationship(decision.label)).filter((value): value is FollowRelationship => Boolean(value)));
+  if (relationships.size !== 1) {
+    return {
+      relationship: "unknown",
+      strategy: "none",
+      acceptedLabel: null,
+      decisions: decisions.map((decision) => decision.accepted && relationships.size > 1 ? { ...decision, accepted: false, reason: "conflicts with another header control" } : decision),
+    };
+  }
+  const relationship = [...relationships][0];
+  const winner = accepted.find((decision) => controlRelationship(decision.label) === relationship);
+  return {
+    relationship,
+    strategy: "global-exact-action-near-profile-header",
+    acceptedLabel: winner?.label || null,
+    decisions,
+  };
 }
 
 export function isExcludedRelationship(relationship: FollowRelationship) {

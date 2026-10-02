@@ -6,6 +6,7 @@ import {
   profileUrlFor,
   relationshipFromCandidates,
   relationshipFromLabels,
+  selectPrimaryRelationship,
   usernameFromHref,
 } from "./parse";
 import type { DomButton, DomLink, DomSnapshot, FeedCandidate, PageSignal, ProfileExtract } from "./types";
@@ -69,18 +70,27 @@ export function extractInstagramProfile(dom: DomSnapshot, expectedUsername: stri
   const strategies: Record<string, string> = {};
   const followers = followerCount(dom, strategies);
   const following = followingCount(dom, strategies);
-  const fromRegion = dom.relationshipCandidates
+  const fromHits = dom.exactRelationshipHits
+    ? selectPrimaryRelationship(dom.exactRelationshipHits, dom.usernameBox, dom.optionsBox)
+    : null;
+  const fromRegion = !fromHits && dom.relationshipCandidates
     ? relationshipFromCandidates(dom.relationshipCandidates)
     : null;
   const relationshipButtons = (dom.headerButtons?.length ? dom.headerButtons : dom.buttons).flatMap(buttonNames);
-  const relationship = fromRegion ? fromRegion.relationship : relationshipFromLabels(relationshipButtons);
-  strategies.relationship = fromRegion
-    ? fromRegion.strategy
-    : dom.headerButtons?.length
-      ? "header-button"
-      : relationship === "unknown"
-        ? "none"
-        : "page-button";
+  const relationship = fromHits
+    ? fromHits.relationship
+    : fromRegion
+      ? fromRegion.relationship
+      : relationshipFromLabels(relationshipButtons);
+  strategies.relationship = fromHits
+    ? fromHits.strategy
+    : fromRegion
+      ? fromRegion.strategy
+      : dom.headerButtons?.length
+        ? "header-button"
+        : relationship === "unknown"
+          ? "none"
+          : "page-button";
   const displayName = chooseDisplayName(dom, username, strategies);
   const bio = chooseBio(dom, username, displayName, strategies);
   const picture = dom.images.find((image) => /profile picture/i.test(image.alt));

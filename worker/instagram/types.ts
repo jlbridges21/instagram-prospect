@@ -12,6 +12,31 @@ export type RelationshipCandidate = {
   besideOptions?: boolean;
   isInteractive?: boolean;
 };
+
+export type ElementBox = { x: number; y: number; width: number; height: number };
+
+export type ExactRelationshipHit = {
+  label: string;
+  tag: string;
+  role: string;
+  text: string;
+  ariaLabel: string;
+  title: string;
+  href: string;
+  tabIndex: string;
+  box: ElementBox | null;
+  inSuggestion: boolean;
+  inDialog: boolean;
+  otherUsername: string | null;
+  ancestor: {
+    tag: string;
+    role: string;
+    text: string;
+    ariaLabel: string;
+    href: string;
+    box: ElementBox | null;
+  } | null;
+};
 export type DomImage = { alt: string; src: string };
 export type DomTextbox = { name: string; value: string };
 export type DomArticle = { text: string; links: DomLink[] };
@@ -31,6 +56,9 @@ export type DomSnapshot = {
   headerLines?: string[];
   headerButtons?: DomButton[];
   relationshipCandidates?: RelationshipCandidate[];
+  exactRelationshipHits?: ExactRelationshipHit[];
+  usernameBox?: ElementBox | null;
+  optionsBox?: ElementBox | null;
   metaDescription?: string | null;
   profileIsPrivate?: boolean;
 };

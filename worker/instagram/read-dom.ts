@@ -168,6 +168,95 @@ export const READ_DOM_SOURCE = `() => {
     .map((node) => textOf(node))
     .filter(Boolean);
   const bioNode = document.querySelector("[data-bio]");
+  const boxOf = (el) => {
+    if (!el || !el.getBoundingClientRect) return null;
+    const rect = el.getBoundingClientRect();
+    if (!rect || rect.width < 1 || rect.height < 1) return null;
+    return { x: Math.round(rect.x), y: Math.round(rect.y), width: Math.round(rect.width), height: Math.round(rect.height) };
+  };
+  const exactLabel = (value) => {
+    const text = undouble(value || "");
+    if (/^follow$/i.test(text)) return "Follow";
+    if (/^follow back$/i.test(text)) return "Follow Back";
+    if (/^following$/i.test(text)) return "Following";
+    if (/^requested$/i.test(text)) return "Requested";
+    return "";
+  };
+  const clickable = (node) => {
+    if (!node || !node.tagName) return false;
+    const tag = node.tagName.toLowerCase();
+    const role = (node.getAttribute("role") || "").toLowerCase();
+    const tab = node.getAttribute("tabindex");
+    if (tag === "button" || role === "button" || tag === "a") return true;
+    return tab !== null && tab !== "" && Number(tab) >= 0 && (role === "button" || role === "link");
+  };
+  const ancestorOf = (el) => {
+    let node = el;
+    for (let depth = 0; node && depth < 6; depth += 1) {
+      if (clickable(node)) {
+        return {
+          tag: node.tagName.toLowerCase(),
+          role: (node.getAttribute("role") || "").toLowerCase(),
+          text: undouble(node.innerText || node.textContent || "").slice(0, 80),
+          ariaLabel: undouble(node.getAttribute("aria-label") || "").slice(0, 80),
+          href: node.getAttribute("href") || "",
+          box: boxOf(node),
+        };
+      }
+      node = node.parentElement;
+    }
+    return null;
+  };
+  const inSuggested = (el) => {
+    let node = el.parentElement;
+    while (node) {
+      if (/suggested/i.test(node.getAttribute("aria-label") || "")) return true;
+      for (const child of node.children || []) {
+        if (/^H[1-4]$/.test(child.tagName) && /suggested/i.test(norm(child.textContent || ""))) return true;
+      }
+      node = node.parentElement;
+    }
+    return false;
+  };
+  const otherProfile = (el) => {
+    let node = el.parentElement;
+    for (let depth = 0; node && depth < 8; depth += 1) {
+      if (node.tagName === "A") {
+        const match = (node.getAttribute("href") || "").match(/^\\/([A-Za-z0-9._]{1,30})\\/?$/);
+        if (match && match[1].toLowerCase() !== pathUser) return match[1].toLowerCase();
+      }
+      node = node.parentElement;
+    }
+    return null;
+  };
+  const exactRelationshipHits = [];
+  for (const el of document.querySelectorAll("button, [role='button'], a, div, span")) {
+    const text = directText(el);
+    const aria = undouble(el.getAttribute("aria-label") || "");
+    const titleAttr = undouble(el.getAttribute("title") || "");
+    const label = exactLabel(text) || exactLabel(aria) || exactLabel(titleAttr);
+    if (!label) continue;
+    const nested = [...el.querySelectorAll("span, div, a, button")].some((child) => exactLabel(directText(child)) === label || exactLabel(child.getAttribute("aria-label") || "") === label);
+    if (nested) continue;
+    const box = boxOf(el);
+    if (!box) continue;
+    exactRelationshipHits.push({
+      label,
+      tag: el.tagName.toLowerCase(),
+      role: (el.getAttribute("role") || "").toLowerCase(),
+      text: text.slice(0, 80),
+      ariaLabel: aria.slice(0, 80),
+      title: titleAttr.slice(0, 80),
+      href: el.getAttribute("href") || "",
+      tabIndex: el.getAttribute("tabindex") || "",
+      box,
+      inSuggestion: inSuggested(el),
+      inDialog: inDialog(el),
+      otherUsername: otherProfile(el),
+      ancestor: ancestorOf(el),
+    });
+    if (exactRelationshipHits.length >= 30) break;
+  }
   return {
     url: location.href,
     title: document.title,
@@ -183,6 +272,9 @@ export const READ_DOM_SOURCE = `() => {
     headerLines,
     headerButtons,
     relationshipCandidates,
+    exactRelationshipHits,
+    usernameBox: boxOf(heading),
+    optionsBox: boxOf(options),
     metaDescription: meta ? (meta.getAttribute("content") || "").slice(0, 500) : null,
     profileIsPrivate: /this account is private/i.test(document.body && document.body.innerText || ""),
   };

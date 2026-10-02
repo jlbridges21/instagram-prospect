@@ -525,7 +525,7 @@ export async function inspectUsername(rawUsername: string) {
   }
   const { context, page } = await launchBrowser();
   try {
-    const result = await readProfile(page, username, { debug: true });
+    const result = await readProfile(page, username, { debug: true, screenshot: true });
     console.log("Inspect finished. Nothing was saved, followed, or messaged.");
     return result;
   } finally {
