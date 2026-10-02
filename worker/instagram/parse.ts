@@ -62,30 +62,37 @@ export function profileUrlFor(username: string) {
 
 export type FollowRelationship = "following" | "not_following" | "requested" | "unknown";
 
+export function normalizeControlText(value: string) {
+  const compact = value.replace(/\s+/g, " ").trim();
+  const half = Math.floor(compact.length / 2);
+  if (half > 2 && compact.slice(0, half).toLowerCase() === compact.slice(half).toLowerCase()) {
+    return compact.slice(0, half).trim();
+  }
+  return compact;
+}
+
 export function controlRelationship(value: string): FollowRelationship | null {
-  const text = value.replace(/\s+/g, " ").trim();
-  if (!text || text.length > 80) return null;
-  if (/\d/.test(text) && /follower|following|posts/i.test(text)) return null;
-  if (/^requested\b/i.test(text)) return "requested";
-  if (/^unfollow\b/i.test(text)) return "following";
-  if (/^following\b/i.test(text)) return "following";
-  if (/^follow back\b/i.test(text)) return "not_following";
-  if (/^follow\b/i.test(text)) return "not_following";
+  const text = normalizeControlText(value);
+  if (!text || text.length > 40) return null;
+  if (/\d/.test(text)) return null;
+  if (/^followed by\b/i.test(text)) return null;
+  if (/^(message|messages|options|more|share)$/i.test(text)) return null;
+  const handle = "(?:\\s+@?[a-z0-9._]{1,30})?";
+  if (new RegExp(`^requested${handle}$`, "i").test(text)) return "requested";
+  if (new RegExp(`^(?:following|unfollow)${handle}$`, "i").test(text)) return "following";
+  if (new RegExp(`^follow back${handle}$`, "i").test(text)) return "not_following";
+  if (new RegExp(`^follow${handle}$`, "i").test(text)) return "not_following";
   return null;
 }
 
 export function relationshipFromLabels(labels: string[]): FollowRelationship {
-  const matches: FollowRelationship[] = [];
+  const matches = new Set<FollowRelationship>();
   for (const label of labels) {
     const relationship = controlRelationship(label);
-    if (relationship) matches.push(relationship);
+    if (relationship) matches.add(relationship);
   }
-  if (matches.length === 0) return "unknown";
-  const first = matches[0];
-  if (first === "following" || first === "requested") return first;
-  if (matches.some((item) => item === "following" || item === "requested")) return "unknown";
-  if (matches.every((item) => item === "not_following")) return "not_following";
-  return "unknown";
+  if (matches.size !== 1) return "unknown";
+  return [...matches][0];
 }
 
 export function displayNameFromTitle(title: string, username: string | null) {
@@ -125,6 +132,37 @@ export function countFromLabeledText(texts: Array<string | null | undefined>, la
     if (count !== null) return count;
   }
   return null;
+}
+
+export function relationshipFromCandidates(
+  candidates: Array<{
+    tag?: string;
+    role?: string;
+    text?: string;
+    ariaLabel?: string;
+    title?: string;
+    scope?: "primary" | "outside";
+    besideOptions?: boolean;
+  }>,
+) {
+  const labelsOf = (items: typeof candidates) =>
+    items.flatMap((candidate) => [candidate.ariaLabel, candidate.text, candidate.title].filter((value): value is string => Boolean(value)));
+  const primary = candidates.filter((candidate) => candidate.scope !== "outside");
+  const beside = primary.filter((candidate) => candidate.besideOptions);
+  const besideRelationship = relationshipFromLabels(labelsOf(beside));
+  const pool = besideRelationship === "unknown" ? primary : beside;
+  const relationship = pool === beside ? besideRelationship : relationshipFromLabels(labelsOf(primary));
+  const matched = pool.find((candidate) =>
+    [candidate.ariaLabel, candidate.text, candidate.title].some((value) => value && controlRelationship(value)),
+  );
+  let strategy = relationship === "unknown" ? "none" : "primary-action-region-text";
+  if (matched && relationship !== "unknown") {
+    const role = (matched.role || "").toLowerCase();
+    if (role === "button" && (matched.tag || "").toLowerCase() !== "button") strategy = "primary-action-region-role-button";
+    else if ((matched.tag || "").toLowerCase() === "button") strategy = "primary-action-region-button";
+    else if ((matched.tag || "").toLowerCase() === "a") strategy = "primary-action-region-link";
+  }
+  return { relationship, strategy };
 }
 
 export function isExcludedRelationship(relationship: FollowRelationship) {

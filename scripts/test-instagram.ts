@@ -20,11 +20,14 @@ import {
   parseFollowerCount,
   postUrlFromHref,
   profileUrlFor,
+  controlRelationship,
+  relationshipFromCandidates,
   relationshipFromLabels,
   usernameFromHref,
 } from "../worker/instagram/parse";
+import { READ_DOM_SOURCE } from "../worker/instagram/read-dom";
 import { startupBlock } from "../worker/version";
-import type { DomSnapshot } from "../worker/instagram/types";
+import type { DomSnapshot, RelationshipCandidate } from "../worker/instagram/types";
 
 const failures: string[] = [];
 
@@ -161,6 +164,89 @@ check("header following wins over page follow", liveProfile.relationship === "fo
 check("live follower count", liveProfile.followerCount === 1482);
 check("live display name", liveProfile.displayName === "Dominic Hayles");
 check("live bio skips counts", liveProfile.bio === "Real estate media in Dallas");
+
+function action(text: string, extras: Partial<RelationshipCandidate> = {}): RelationshipCandidate {
+  return {
+    tag: extras.tag ?? "div",
+    role: extras.role ?? "button",
+    text,
+    ariaLabel: extras.ariaLabel ?? text,
+    title: extras.title ?? "",
+    href: extras.href ?? "",
+    tabIndex: extras.tabIndex ?? "0",
+    scope: extras.scope ?? "primary",
+    besideOptions: extras.besideOptions ?? true,
+  };
+}
+
+check("doubled following label", controlRelationship("FollowingFollowing") === "following");
+check("count is not a relationship", controlRelationship("3,970 following") === null);
+check("followed by is not a relationship", controlRelationship("Followed by user1 and user2") === null);
+check("messages is not a relationship", controlRelationship("MessagesMessages") === null);
+
+const followed = profileFromDom(
+  snapshot({
+    url: "https://www.instagram.com/studio.followed/",
+    title: "FPV Team (@studio.followed) • Instagram",
+    headerButtons: [{ name: "Options" }, { name: "more" }],
+    buttons: [{ name: "Options" }, { name: "Messages" }],
+    relationshipCandidates: [action("Following"), action("Messages", { ariaLabel: "Messages" })],
+    links: [{ href: "/studio.followed/followers/", text: "3,860 followers", title: "3860" }],
+  }),
+  "studio.followed",
+);
+check("role button following", followed.relationship === "following");
+check("role button strategy", followed.strategies.relationship === "primary-action-region-role-button");
+check("followers survive relationship fix", followed.followerCount === 3860);
+check("display name survives relationship fix", followed.displayName === "FPV Team");
+
+const fresh = profileFromDom(
+  snapshot({
+    url: "https://www.instagram.com/studio.new/",
+    title: "Matt Diamante (@studio.new) • Instagram",
+    relationshipCandidates: [action("Follow"), action("Message", { ariaLabel: "Message" })],
+    links: [{ href: "/studio.new/followers/", text: "398K followers", title: "398000" }],
+  }),
+  "studio.new",
+);
+check("role button follow", fresh.relationship === "not_following");
+check("large follower count survives", fresh.followerCount === 398000);
+check("display name survives", fresh.displayName === "Matt Diamante");
+
+check(
+  "native button follow",
+  relationshipFromCandidates([action("Follow", { tag: "button", role: "button" })]).relationship === "not_following",
+);
+check(
+  "native button following",
+  relationshipFromCandidates([action("Following", { tag: "button", role: "button" })]).strategy === "primary-action-region-button",
+);
+check("role button requested", relationshipFromCandidates([action("Requested")]).relationship === "requested");
+check("role button follow back", relationshipFromCandidates([action("Follow Back")]).relationship === "not_following");
+check(
+  "suggested follow is ignored",
+  relationshipFromCandidates([
+    action("Following"),
+    action("Follow", { scope: "outside", besideOptions: false }),
+  ]).relationship === "following",
+);
+check(
+  "following count is ignored",
+  relationshipFromCandidates([
+    action("3,970 following", { tag: "a", role: "", href: "/studio.new/following/", ariaLabel: "3,970 following" }),
+  ]).relationship === "unknown",
+);
+check(
+  "followed-by text is ignored",
+  relationshipFromCandidates([action("Followed by user1 and user2", { role: "", tag: "span" })]).relationship === "unknown",
+);
+check("message only is unknown", relationshipFromCandidates([action("Message")]).relationship === "unknown");
+check("no relationship control is unknown", relationshipFromCandidates([]).relationship === "unknown");
+check(
+  "conflicting primary controls are unknown",
+  relationshipFromCandidates([action("Follow"), action("Following")]).relationship === "unknown",
+);
+check("dom reader source parses", typeof new Function(`return (${READ_DOM_SOURCE})`) === "function");
 
 const composer = snapshot({
   textboxes: [{ name: "Message", value: "Hi there" }],

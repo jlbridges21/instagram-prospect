@@ -62,6 +62,13 @@ export class CloudClient {
     } satisfies CloudConfig;
   }
 
+  async recheckRelationship(username: string, relationship: "following" | "not_following" | "requested" | "unknown") {
+    return this.request<{ applied: boolean; relationship: string; reason?: string; prospectId?: string }>(
+      "/api/worker/prospects/recheck",
+      { instagram_username: username, follow_relationship: relationship },
+    );
+  }
+
   async checkProspect(username: string) {
     const url = new URL("/api/worker/prospects/check", this.baseUrl);
     url.searchParams.set("username", username);

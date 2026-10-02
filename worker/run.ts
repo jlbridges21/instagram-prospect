@@ -495,6 +495,44 @@ async function runSingleOutreach(
   void stats;
 }
 
+export async function inspectUsername(rawUsername: string) {
+  const username = rawUsername.replace(/^@/, "").trim().toLowerCase();
+  if (!/^[a-z0-9._]{1,30}$/.test(username)) {
+    console.error("Provide one Instagram username, for example fpv_teams.");
+    process.exitCode = 1;
+    return null;
+  }
+  const baseUrl = process.env.OUTREACH_APP_URL?.trim().replace(/\/$/, "");
+  const secret = process.env.WORKER_API_SECRET?.trim();
+  if (!baseUrl || !secret) {
+    console.error("Set OUTREACH_APP_URL and WORKER_API_SECRET in .env.local.");
+    process.exitCode = 1;
+    return null;
+  }
+  const cloud = new CloudClient(baseUrl, secret);
+  try {
+    const startup = await cloud.config();
+    if (startup.minSupportedWorkerVersion && startup.minSupportedWorkerVersion !== WORKER_VERSION) {
+      console.error(VERSION_MISMATCH_MESSAGE);
+      process.exitCode = 1;
+      return null;
+    }
+  } catch (error) {
+    if (isAuthFailure(error)) return null;
+    console.error(error instanceof Error ? error.message : "Cloud connection unavailable.");
+    process.exitCode = 1;
+    return null;
+  }
+  const { context, page } = await launchBrowser();
+  try {
+    const result = await readProfile(page, username, { debug: true });
+    console.log("Inspect finished. Nothing was saved, followed, or messaged.");
+    return result;
+  } finally {
+    await context.close().catch(() => undefined);
+  }
+}
+
 function pruneHour(hour: number[]) {
   const cutoff = Date.now() - 60 * 60 * 1000;
   while (hour.length > 0 && hour[0] < cutoff) hour.shift();

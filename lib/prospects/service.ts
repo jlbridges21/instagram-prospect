@@ -362,3 +362,63 @@ export async function ingestWorkerProspect(supabase: Client, input: WorkerProspe
     status,
   };
 }
+
+export async function recheckWorkerRelationship(
+  supabase: Client,
+  input: { instagram_username: string; follow_relationship: "following" | "not_following" | "requested" | "unknown" },
+) {
+  const username = normalizeUsername(input.instagram_username);
+  const { data: prospect, error } = await supabase
+    .from("prospects")
+    .select("id, status, qualification_reason, already_following")
+    .eq("instagram_username", username)
+    .maybeSingle();
+  if (error) return { ok: false as const, status: 500, error: "Could not read the prospect." };
+  if (!prospect) return { ok: false as const, status: 404, error: `@${username} is not in the prospect list.` };
+
+  const relationship = input.follow_relationship;
+  if (relationship !== "following" && relationship !== "requested") {
+    return {
+      ok: true as const,
+      applied: false,
+      relationship,
+      reason: "Only a following or requested result can be saved. A not-following result is not written automatically.",
+    };
+  }
+
+  const locked = ["review", "qualified", "approved", "contacted", "replied", "follow_up", "demo_booked", "converted"].includes(
+    prospect.status,
+  );
+  if (locked) {
+    return {
+      ok: true as const,
+      applied: false,
+      relationship,
+      reason: `Left @${username} unchanged because its status is ${prospect.status}.`,
+    };
+  }
+
+  const now = new Date().toISOString();
+  const { error: updateError } = await supabase
+    .from("prospects")
+    .update({
+      already_following: true,
+      status: "disqualified",
+      qualified: false,
+      qualification_reason: "Already following this account.",
+      last_status_changed_at: now,
+    })
+    .eq("id", prospect.id);
+  if (updateError) return { ok: false as const, status: 500, error: "Could not update the prospect." };
+
+  await logActivities(supabase, [
+    {
+      prospectId: prospect.id,
+      eventType: "prospect_disqualified",
+      description: `Skipped @${username} because you already follow this account.`,
+      metadata: { actor: "worker", reason: "recheck", relationship },
+    },
+  ]);
+
+  return { ok: true as const, applied: true, relationship, prospectId: prospect.id };
+}

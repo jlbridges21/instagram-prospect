@@ -32,21 +32,17 @@ export async function ensureHome(page: Page) {
   return feedCandidates(dom);
 }
 
-export async function readProfile(page: Page, username: string) {
+export async function readProfile(page: Page, username: string, options?: { debug?: boolean }) {
   await openUrl(page, profileUrlFor(username));
-  return inspectCurrent(page, username);
+  return inspectCurrent(page, username, options);
 }
 
-async function inspectCurrent(page: Page, username: string) {
+async function inspectCurrent(page: Page, username: string, options?: { debug?: boolean }) {
   await page.waitForSelector("header, main", { timeout: ACTION_TIMEOUT_MS }).catch(() => undefined);
   let dom = await readDom(page);
   let profile = profileFromDom(dom, username);
   const started = Date.now();
-  while (
-    Date.now() - started < ACTION_TIMEOUT_MS &&
-    profile.relationship === "unknown" &&
-    profile.followerCount === null
-  ) {
+  while (Date.now() - started < ACTION_TIMEOUT_MS && profile.relationship === "unknown") {
     await new Promise((resolve) => setTimeout(resolve, 500));
     dom = await readDom(page);
     profile = profileFromDom(dom, username);
@@ -58,12 +54,20 @@ async function inspectCurrent(page: Page, username: string) {
   if (signal === "profile_not_found") {
     return { profileExists: false as const, relationship: "unknown" as FollowRelationship, profile };
   }
-  if (process.argv.includes("--debug")) {
+  if (options?.debug || process.argv.includes("--debug")) {
+    const primary = (dom.relationshipCandidates ?? []).filter((candidate) => candidate.scope !== "outside");
     console.log(`@${username}`);
-    console.log(`relationship: ${profile.relationship} (${profile.strategies.relationship})`);
-    console.log(`followers: ${profile.followerCount ?? "unknown"} (${profile.strategies.followers})`);
-    console.log(`display_name: ${profile.displayName ?? "unknown"} (${profile.strategies.displayName})`);
-    console.log(`bio_length: ${profile.bio?.length ?? 0} (${profile.strategies.bio})`);
+    console.log("relationship candidates:");
+    if (primary.length === 0) console.log("  none");
+    primary.forEach((candidate, index) => {
+      const text = candidate.ariaLabel || candidate.text || candidate.title;
+      console.log(`  [${index}] role=${candidate.role || candidate.tag} text="${text}"`);
+    });
+    console.log(`relationship: ${profile.relationship}`);
+    console.log(`strategy: ${profile.strategies.relationship}`);
+    console.log(`followers: ${profile.followerCount ?? "unknown"} (${profile.strategies.followers ?? "none"})`);
+    console.log(`display_name: ${profile.displayName ?? "unknown"} (${profile.strategies.displayName ?? "none"})`);
+    console.log(`bio_length: ${profile.bio?.length ?? 0} (${profile.strategies.bio ?? "none"})`);
     if (profile.relationship === "unknown" || profile.followerCount === null) {
       saveDebugSnapshot(username, dom);
     }
@@ -79,6 +83,16 @@ function saveDebugSnapshot(username: string, dom: DomSnapshot) {
     title: dom.title,
     headerLines: dom.headerLines ?? [],
     headerButtons: dom.headerButtons ?? [],
+    relationshipCandidates: (dom.relationshipCandidates ?? []).map((candidate) => ({
+      tag: candidate.tag,
+      role: candidate.role,
+      text: candidate.text,
+      ariaLabel: candidate.ariaLabel,
+      title: candidate.title,
+      href: candidate.href,
+      tabIndex: candidate.tabIndex,
+      scope: candidate.scope,
+    })),
     buttons: dom.buttons.slice(0, 30),
     links: dom.links.filter((link) => /follower|following|posts/i.test(`${link.text} ${link.label ?? ""} ${link.href}`)).slice(0, 20),
     metaDescription: dom.metaDescription ?? null,
