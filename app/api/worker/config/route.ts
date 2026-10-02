@@ -45,5 +45,10 @@ export async function GET(request: Request) {
     excludeUnrelatedDrone:
       targeting?.exclude_unrelated_drone ?? fallbackRules.excludeUnrelatedDrone,
     automationEnabled: settings?.automation_enabled ?? false,
+    discoveryEnabled: settings?.discovery_enabled ?? true,
+    maxProfilesPerSession: settings?.max_profiles_per_session ?? 50,
+    maxProfilesPerHour: settings?.max_profiles_per_hour ?? 30,
+    discoveryScrollDelaySeconds: settings?.discovery_scroll_delay_seconds ?? 5,
+    discoveryDuplicateCooldownDays: settings?.discovery_duplicate_cooldown_days ?? 30,
   });
 }

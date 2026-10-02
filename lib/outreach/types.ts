@@ -30,6 +30,8 @@ export const WORKER_ERROR_CODES = [
   "browser_error",
   "timeout",
   "unknown",
+  "existing_conversation",
+  "action_blocked",
 ] as const;
 
 export type WorkerErrorCode = (typeof WORKER_ERROR_CODES)[number];

@@ -122,6 +122,19 @@ export async function saveWorkerSettings(input: {
   return { ok: true };
 }
 
+export async function setDiscoveryEnabled(enabled: boolean): Promise<ActionResult> {
+  const { supabase } = await requireUser();
+  const { error } = await supabase.from("settings").update({ discovery_enabled: enabled }).eq("id", 1);
+  if (error) {
+    if (/discovery_enabled/i.test(error.message)) {
+      return { ok: false, error: "Run the Prompt 5 database migration, then try again." };
+    }
+    return { ok: false, error: error.message };
+  }
+  revalidateSettings();
+  return { ok: true, message: enabled ? "Discovery is on." : "Discovery is off." };
+}
+
 export async function saveAppSettings(input: {
   appName: string;
   timezone: string;

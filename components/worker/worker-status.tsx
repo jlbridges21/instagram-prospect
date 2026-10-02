@@ -4,17 +4,17 @@ import { cn } from "@/lib/utils/cn";
 
 const steps = [
   "Install Node.js on the Mac or Windows computer that will run the worker.",
-  "Clone or download this project onto that computer.",
-  "Add the environment variables from .env.example to .env.local.",
-  "Run npm install in the project folder.",
-  "Run npm run agent. Today this only reports that the worker is not built yet.",
-  "When the worker exists, log into Instagram in its dedicated browser profile. Do not put the Instagram password in this app.",
+  "Clone this project and run npm install.",
+  "Put OUTREACH_APP_URL and WORKER_API_SECRET in .env.local. The worker does not need the OpenAI key.",
+  "Run npm run agent:setup, then sign in to Instagram in the browser window.",
+  "Run npm run agent. Outreach stays paused until you resume it here.",
 ];
 
 const dot: Record<WorkerHealthState, string> = {
   online: "bg-green-600",
   stale: "bg-amber-500",
   offline: "bg-slate-300",
+  attention: "bg-amber-500",
 };
 
 export function WorkerStatusPanel({
@@ -54,7 +54,7 @@ export function WorkerStatusPanel({
       <section className="rounded-xl border border-slate-200 bg-white p-5">
         <h2 className="text-sm font-semibold text-slate-900">Agent setup</h2>
         <p className="mt-1 text-sm leading-6 text-slate-600">
-          Run the worker locally with <code className="text-slate-800">npm run agent</code>. The dashboard stays on Vercel, data stays in Supabase, and the browser worker stays on a local Mac or Windows machine.
+          Run the worker locally with <code className="text-slate-800">npm run agent</code>. The dashboard stays on Vercel, data stays in Supabase, and the browser stays on a local Mac or Windows machine. Discovery and outreach are separate switches.
         </p>
         <ol className="mt-4 space-y-3">
           {steps.map((step, index) => (

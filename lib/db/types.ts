@@ -84,6 +84,11 @@ export type SettingsRow = {
   minimum_action_delay_seconds?: number;
   scheduling_spread_seconds?: number;
   job_claim_lease_seconds?: number;
+  discovery_enabled?: boolean;
+  max_profiles_per_session?: number;
+  max_profiles_per_hour?: number;
+  discovery_scroll_delay_seconds?: number;
+  discovery_duplicate_cooldown_days?: number;
   updated_at: string;
 };
 
@@ -136,12 +141,33 @@ export type WorkerInstanceRow = {
   machine_name: string | null;
   platform: "darwin" | "win32" | "linux" | null;
   hostname: string | null;
-  status: "online" | "offline" | "error";
+  status: "online" | "offline" | "error" | "attention_required";
   last_heartbeat_at: string | null;
   current_task: string | null;
   browser_connected: boolean;
   instagram_authenticated: boolean;
+  attention_reason?: string | null;
+  profiles_seen?: number;
+  profiles_ingested?: number;
+  profiles_excluded_following?: number;
+  profiles_qualified?: number;
   started_at: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type WorkerSessionRow = {
+  id: string;
+  worker_id: string;
+  started_at: string;
+  ended_at: string | null;
+  profiles_seen: number;
+  profiles_ingested: number;
+  profiles_excluded_following: number;
+  profiles_qualified: number;
+  errors: number;
+  status: "running" | "stopped" | "attention_required" | "error";
+  last_error: string | null;
   created_at: string;
   updated_at: string;
 };
@@ -221,6 +247,12 @@ export type Database = {
         Row: WorkerInstanceRow;
         Insert: Insert<WorkerInstanceRow> & { worker_id: string };
         Update: Insert<WorkerInstanceRow>;
+        Relationships: [];
+      };
+      worker_sessions: {
+        Row: WorkerSessionRow;
+        Insert: Insert<WorkerSessionRow> & { worker_id: string };
+        Update: Insert<WorkerSessionRow>;
         Relationships: [];
       };
       follow_ups: {

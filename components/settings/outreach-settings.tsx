@@ -53,7 +53,12 @@ export function OutreachSettingsForm({ outreach }: { outreach: OutreachSettings 
       <p className="text-sm leading-6 text-slate-600">
         Automation starts paused. These limits decide when queued messages may run. The app does not send Instagram messages from this page.
       </p>
-      <Toggle checked={enabled} onChange={setEnabled} label="Automation enabled" />
+      <Toggle
+        checked={enabled}
+        onChange={setEnabled}
+        label="Outreach running"
+        description="This starts and stops follow and message jobs. Discovery stays on its own switch on the Worker page."
+      />
       <fieldset>
         <legend className="text-sm font-medium text-slate-800">Active days</legend>
         <div className="mt-2 flex flex-wrap gap-2">

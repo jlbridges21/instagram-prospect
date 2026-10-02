@@ -7,14 +7,23 @@ export const verifyResultSchema = z.object({
   profileExists: z.boolean(),
   alreadyFollowing: z.boolean(),
   username: z.string().trim().max(30).optional(),
+  observedUsername: z.string().trim().max(80).optional(),
+  relationshipStatus: z.enum(["following", "not_following", "requested", "unknown"]).optional(),
+  profileIsPrivate: z.boolean().optional(),
 });
 
 export const followResultSchema = z.object({
   followed: z.boolean(),
+  skippedBecauseAlreadyFollowing: z.boolean().optional(),
+  relationshipStatus: z.enum(["following", "not_following", "requested", "unknown"]).optional(),
+  profileExists: z.boolean().optional(),
 });
 
 export const sendResultSchema = z.object({
   sent: z.boolean(),
+  existingConversation: z.boolean().optional(),
+  dmUnavailable: z.boolean().optional(),
+  profileExists: z.boolean().optional(),
 });
 
 export const failJobSchema = z.object({

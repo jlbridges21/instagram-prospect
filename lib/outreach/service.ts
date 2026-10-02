@@ -371,6 +371,40 @@ async function completeVerify(admin: Client, job: OutreachJobRow, result: unknow
 async function completeFollow(admin: Client, job: OutreachJobRow, result: unknown, now: Date) {
   const parsed = followResultSchema.safeParse(result);
   if (!parsed.success) return { ok: false as const, error: "Follow result was invalid.", status: 400 };
+  if (parsed.data.skippedBecauseAlreadyFollowing) {
+    const saved = await markCompleted(admin, job, parsed.data as Json, now);
+    if (!saved.ok) return saved;
+    await cancelJobTypes(
+      admin,
+      job.prospect_id,
+      jobsCancelledAfter("follow_profile"),
+      now,
+      "Already following this account.",
+    );
+    await admin
+      .from("prospects")
+      .update({
+        already_following: true,
+        outreach_cancelled_at: now.toISOString(),
+      })
+      .eq("id", job.prospect_id);
+    await logActivity(admin, {
+      prospectId: job.prospect_id,
+      eventType: "prospect_excluded_existing_follow",
+      description: "Follow was not clicked because this account was already followed before outreach.",
+      metadata: { jobId: job.id, relationshipStatus: parsed.data.relationshipStatus ?? null },
+    });
+    return { ok: true as const };
+  }
+  if (parsed.data.profileExists === false) {
+    return failOwnedJob(admin, job, {
+      workerId: job.claimed_by_worker_id ?? "",
+      errorCode: "profile_not_found",
+      errorMessage: "The profile was not available.",
+      retryable: false,
+      now,
+    });
+  }
   if (!parsed.data.followed) {
     return failOwnedJob(admin, job, {
       workerId: job.claimed_by_worker_id ?? "",
@@ -394,6 +428,49 @@ async function completeFollow(admin: Client, job: OutreachJobRow, result: unknow
 async function completeSend(admin: Client, job: OutreachJobRow, result: unknown, now: Date) {
   const parsed = sendResultSchema.safeParse(result);
   if (!parsed.success) return { ok: false as const, error: "Send result was invalid.", status: 400 };
+  if (parsed.data.existingConversation) {
+    const failed = await failOwnedJob(admin, job, {
+      workerId: job.claimed_by_worker_id ?? "",
+      errorCode: "existing_conversation",
+      errorMessage: "An existing conversation was already open, so the cold message was not sent.",
+      retryable: false,
+      now,
+    });
+    if (!failed.ok) return failed;
+    const prospect = await admin
+      .from("prospects")
+      .select("instagram_username")
+      .eq("id", job.prospect_id)
+      .maybeSingle();
+    const username = prospect.data?.instagram_username ?? "account";
+    await admin
+      .from("prospects")
+      .update({
+        status: "review",
+        outreach_cancelled_at: now.toISOString(),
+        last_status_changed_at: now.toISOString(),
+      })
+      .eq("id", job.prospect_id);
+    await cancelJobTypes(admin, job.prospect_id, jobsCancelledAfter("send_message"), now, "Existing conversation.");
+    await logActivity(admin, {
+      prospectId: job.prospect_id,
+      eventType: "outreach_cancelled",
+      description: `Did not message @${username} because a conversation already exists. The prospect needs review.`,
+      metadata: { jobId: job.id, reason: "existing_conversation" },
+    });
+    return { ok: true as const };
+  }
+  if (parsed.data.profileExists === false || parsed.data.dmUnavailable) {
+    return failOwnedJob(admin, job, {
+      workerId: job.claimed_by_worker_id ?? "",
+      errorCode: parsed.data.profileExists === false ? "profile_not_found" : "dm_unavailable",
+      errorMessage: parsed.data.profileExists === false
+        ? "The profile was not available."
+        : "Instagram did not allow a message to this account.",
+      retryable: false,
+      now,
+    });
+  }
   if (!parsed.data.sent) {
     return failOwnedJob(admin, job, {
       workerId: job.claimed_by_worker_id ?? "",

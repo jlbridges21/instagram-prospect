@@ -59,6 +59,8 @@ export default async function OverviewPage() {
     status: workerResult.ok ? workerResult.data?.status ?? null : null,
     lastHeartbeatAt: workerResult.ok ? workerResult.data?.last_heartbeat_at ?? null : null,
     heartbeatIntervalSeconds: settings.heartbeatIntervalSeconds,
+    currentTask: workerResult.ok ? workerResult.data?.current_task : null,
+    attentionReason: workerResult.ok ? workerResult.data?.attention_reason : null,
   });
   const worker = workerResult.ok ? workerResult.data : null;
 

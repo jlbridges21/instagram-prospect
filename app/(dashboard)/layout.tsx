@@ -18,10 +18,15 @@ export default async function DashboardLayout({ children }: { children: React.Re
     status: worker?.status ?? null,
     lastHeartbeatAt: worker?.last_heartbeat_at ?? null,
     heartbeatIntervalSeconds: settings.heartbeatIntervalSeconds,
+    currentTask: worker?.current_task,
+    attentionReason: worker?.attention_reason,
   });
 
   return (
-    <AppShell email={user.email ?? "Signed in"} workerOnline={health.state === "online"}>
+    <AppShell
+      email={user.email ?? "Signed in"}
+      workerOnline={health.state === "online" || health.state === "attention"}
+    >
       {children}
     </AppShell>
   );

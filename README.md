@@ -2,7 +2,7 @@
 
 Internal dashboard for reviewing Instagram prospects for ShootPortal. It is a separate app from the main ShootPortal product, with its own Supabase database, and it is meant to be deployed on Vercel.
 
-This version stores prospects, settings, follow-ups, activity, and worker status. It does not browse Instagram, send messages, follow accounts, or store Instagram passwords. A local worker for macOS and Windows will be added later.
+The website runs on Vercel. A local Node.js and Playwright worker, for macOS or Windows, browses Instagram in a dedicated browser profile. The worker does not store an Instagram password, and it does not run on Vercel.
 
 ## Stack
 
@@ -61,9 +61,13 @@ NEXT_PUBLIC_SUPABASE_URL=https://YOUR-PROJECT.supabase.co
 NEXT_PUBLIC_SUPABASE_ANON_KEY=your-anon-key
 SUPABASE_SERVICE_ROLE_KEY=your-service-role-key
 OPENAI_API_KEY=
+WORKER_API_SECRET=
+OUTREACH_APP_URL=http://localhost:3000
+WORKER_BROWSER_CHANNEL=chrome
+WORKER_HEADLESS=false
 ```
 
-`OPENAI_API_KEY` is reserved for a later step. Leave it blank for now. The app does not call OpenAI yet.
+`OPENAI_API_KEY` stays on the server. The local worker does not need it. `OUTREACH_APP_URL` is the dashboard the worker calls. Use `http://localhost:3000` on this computer, or the deployed Vercel URL when the worker should talk to production.
 
 Restart the dev server after changing this file.
 
@@ -119,7 +123,7 @@ You can also paste `supabase/seed/clear_sample_data.sql` into the Supabase SQL e
 
 The GitHub repository must contain this application, not the original Create Next App starter. Vercel builds whatever is on `main`.
 
-The local worker does not run on Vercel. Vercel only hosts the website. The worker, when it exists, runs on your Mac or Windows PC.
+The local worker does not run on Vercel. Vercel only hosts the website. Leave `WORKER_SIMULATION_MODE` unset on Vercel.
 
 ## Prompt 2 migration
 
@@ -150,9 +154,13 @@ npm run worker:simulate -- --once
 
 Set `WORKER_SIMULATION_MODE=true` only on the machine that runs the simulator. Do not turn that on for the Vercel deployment.
 
+## Prompt 5 migration
+
+After the Prompt 4 migration, run `supabase/migrations/20261003090000_prompt5_worker.sql` once. Do not edit or rerun the earlier migrations.
+
 ## Worker API
 
-The local worker is not built yet. These routes accept a bearer token and talk to Supabase on the server:
+These routes accept a bearer token. The worker never talks to Supabase directly:
 
 ```bash
 curl -s -o /dev/null -w "%{http_code}\n" -X POST http://localhost:3000/api/worker/heartbeat
@@ -175,15 +183,83 @@ A request without the bearer token returns 401. Do not prefix `WORKER_API_SECRET
 
 ## Local worker
 
-`worker/` holds the cross-platform config for a future Playwright worker. It is not implemented.
+The worker is a local Node.js process. It uses a dedicated Chrome profile, not your personal Chrome profile.
+
+| | |
+| --- | --- |
+| Browser profile | `~/ShootPortal-Outreach/browser-profile` on macOS, `%USERPROFILE%\ShootPortal-Outreach\browser-profile` on Windows |
+| Worker id | `ShootPortal-Outreach/worker.json` |
+| Logs | `ShootPortal-Outreach/logs` |
+
+Each machine creates its own worker id and browser profile. Do not copy `browser-profile` from macOS to Windows. Clone the repo, install, copy the environment variables, run setup, and sign in to Instagram once on the new machine.
+
+### Mac setup
 
 ```bash
+git clone https://github.com/jlbridges21/instagram-prospect.git
+cd instagram-prospect
+npm install
+```
+
+Create `.env.local` with at least:
+
+```bash
+OUTREACH_APP_URL=http://localhost:3000
+WORKER_API_SECRET=the-same-secret-as-the-dashboard
+```
+
+Then:
+
+```bash
+npm run agent:setup
+npm run agent:login
 npm run agent
 ```
 
-That command currently exits and tells you the worker is not built. It does not open a browser.
+### Windows setup
 
-When the worker is added, it will use a browser profile at `.worker/browser-profile` inside the project folder. That path is built from the current directory, so it works on macOS and Windows without a hardcoded user folder.
+Windows does not need WSL.
+
+1. Install Node.js LTS.
+2. Install Git.
+3. Clone the repository.
+4. Open PowerShell or Command Prompt in the repository folder.
+5. Run `npm install`.
+6. Create `.env.local`.
+7. Set `OUTREACH_APP_URL` and `WORKER_API_SECRET`.
+8. Run `npm run agent:setup`.
+9. Run `npm run agent:login` and sign in to Instagram in the browser window.
+10. Run `npm run agent`.
+
+PowerShell example for the env file:
+
+```powershell
+Copy-Item .env.example .env.local
+```
+
+### First run and Instagram login
+
+`npm run agent:setup` checks Node, creates the local folders, writes a worker id, and checks the worker API. It does not ask for an Instagram password.
+
+`npm run agent:login` opens the dedicated browser. Sign in there. Chrome keeps the session in that profile.
+
+`npm run agent` starts discovery when discovery is on. Outreach stays paused until you resume it on the Worker page, so the first run does not send messages.
+
+Stop the worker with Ctrl+C. The browser profile stays on disk.
+
+### Other worker commands
+
+```bash
+npm run agent:status
+npm run agent:smoke
+npm run agent -- --discovery-only
+npm run agent -- --no-write
+npm run worker:test
+```
+
+`--discovery-only` can save prospects and ask the server to qualify them. It does not follow or send. `--no-write` does not save prospects, follow, or send. `agent:smoke` checks the cloud connection, Instagram login, and the home feed, then exits.
+
+If Google Chrome is missing, set `WORKER_BROWSER_CHANNEL` only after installing Chrome, or run `npx playwright install chromium` and let the worker fall back when the Chrome channel fails. Supported channel value: `chrome`.
 
 ## Useful commands
 
@@ -194,7 +270,11 @@ npm run typecheck    # TypeScript
 npm run build        # production build
 npm run db:seed      # insert fictional prospects
 npm run db:clear-seed
-npm run agent        # reserved for the future worker
+npm run agent        # local Playwright worker
+npm run agent:setup
+npm run agent:login
+npm run agent:smoke
+npm run worker:test  # Instagram fixture tests, no live follow or send
 npm run ai:test      # fictional qualification cases
 ```
 
@@ -206,9 +286,9 @@ Status values such as `review` and `approved` are stored as stable keys. The wor
 
 The outreach message is stored in the `settings` table. `{{name}}` is replaced with a first name when one is known, otherwise with the Instagram username. The app does not rewrite that message.
 
-## What is not included yet
+## What the worker will not do
 
-- Instagram discovery
-- Playwright browser automation
-- Sending messages or following accounts
-- Automatic follow-ups
+- Solve CAPTCHAs or bypass checkpoints
+- Store or ask for the Instagram password
+- Approve prospects by itself
+- Send a message or follow an account unless the cloud queue has a job and outreach is running

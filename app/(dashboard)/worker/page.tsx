@@ -2,7 +2,9 @@ import type { Metadata } from "next";
 import { DatabaseSetup } from "@/components/layout/database-setup";
 import { PageHeader } from "@/components/layout/page-header";
 import { WorkerStatusPanel } from "@/components/worker/worker-status";
+import { DiscoveryControls } from "@/components/worker/discovery-controls";
 import { AutomationControls } from "@/components/outreach/automation-controls";
+import { getDiscoveryToday } from "@/lib/db/discovery";
 import { getOutreachSnapshot } from "@/lib/db/outreach";
 import { fallbackSettings, getSettings } from "@/lib/db/settings";
 import { getLatestWorker } from "@/lib/db/workers";
@@ -13,13 +15,18 @@ export const metadata: Metadata = { title: "Worker" };
 
 export default async function WorkerPage() {
   const [workerResult, settingsResult] = await Promise.all([getLatestWorker(), getSettings()]);
-  const outreach = await getOutreachSnapshot(settingsResult.ok ? settingsResult.data.timezone : fallbackSettings().timezone);
   const settings = settingsResult.ok ? settingsResult.data : fallbackSettings();
+  const [outreach, discovery] = await Promise.all([
+    getOutreachSnapshot(settings.timezone),
+    getDiscoveryToday(settings.timezone),
+  ]);
   const worker = workerResult.ok ? workerResult.data : null;
   const health = getWorkerHealth({
     status: worker?.status ?? null,
     lastHeartbeatAt: worker?.last_heartbeat_at ?? null,
     heartbeatIntervalSeconds: settings.heartbeatIntervalSeconds,
+    currentTask: worker?.current_task,
+    attentionReason: worker?.attention_reason,
   });
 
   const yesNo = (value: boolean | undefined) => {
@@ -32,7 +39,12 @@ export default async function WorkerPage() {
       <PageHeader
         title="Worker"
         description="The browser worker runs on your Mac or Windows machine. It does not run on Vercel."
-        action={<AutomationControls enabled={settings.outreach.automationEnabled} />}
+        action={
+          <div className="flex flex-wrap items-center gap-3">
+            <DiscoveryControls enabled={settings.discovery.enabled} />
+            <AutomationControls enabled={settings.outreach.automationEnabled} />
+          </div>
+        }
       />
       {!workerResult.ok && workerResult.missingTable ? (
         <div className="mb-6">
@@ -46,7 +58,7 @@ export default async function WorkerPage() {
       ) : null}
       <WorkerStatusPanel
         health={health}
-        connected={health.state === "online"}
+        connected={health.state === "online" || health.state === "attention"}
         rows={[
           { label: "Machine name", value: worker?.machine_name || "Not reported" },
           { label: "Platform", value: platformLabel(worker?.platform) },
@@ -72,9 +84,17 @@ export default async function WorkerPage() {
             value: health.label,
           },
           {
-            label: "Automation",
+            label: "Outreach",
             value: settings.outreach.automationEnabled ? "Running" : "Paused",
           },
+          { label: "Discovery", value: settings.discovery.enabled ? "On" : "Off" },
+          { label: "Profiles seen today", value: String(discovery.seenToday ?? worker?.profiles_seen ?? 0) },
+          { label: "New prospects today", value: String(discovery.newProspects) },
+          { label: "AI qualified today", value: String(discovery.qualified) },
+          { label: "Existing following skipped", value: String(discovery.followingSkipped) },
+          { label: "Profiles seen this session", value: String(worker?.profiles_seen ?? 0) },
+          { label: "Profiles qualified this session", value: String(worker?.profiles_qualified ?? 0) },
+          { label: "Last error", value: worker?.attention_reason || "None" },
           { label: "Current claimed job", value: outreach?.currentJob ?? "None" },
           { label: "Claimed by", value: outreach?.currentWorker ?? "None" },
           { label: "Last completed task", value: outreach?.lastCompleted ?? "None" },

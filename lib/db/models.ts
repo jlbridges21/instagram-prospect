@@ -1,6 +1,14 @@
 import type { DateFormat, PreferredBrowser } from "@/lib/constants/settings";
 import type { OutreachSettings } from "@/lib/outreach/types";
 
+export type DiscoverySettings = {
+  enabled: boolean;
+  maxProfilesPerSession: number;
+  maxProfilesPerHour: number;
+  scrollDelaySeconds: number;
+  duplicateCooldownDays: number;
+};
+
 export type AppSettings = {
   messageTemplate: string;
   appName: string;
@@ -14,6 +22,7 @@ export type AppSettings = {
   strongFitMinimum: number;
   possibleFitMinimum: number;
   outreach: OutreachSettings;
+  discovery: DiscoverySettings;
   updatedAt: string | null;
 };
 

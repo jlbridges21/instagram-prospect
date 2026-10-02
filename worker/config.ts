@@ -1,5 +1,5 @@
 import os from "node:os";
-import path from "node:path";
+import { browserProfileDir } from "./paths";
 import type { WorkerPlatform } from "./types";
 
 export type WorkerConfig = {
@@ -18,7 +18,7 @@ export function getWorkerConfig(
     platform: process.platform,
     hostname: os.hostname(),
     machineName: os.hostname(),
-    browserProfileDir: path.join(process.cwd(), ".worker", "browser-profile"),
+    browserProfileDir: browserProfileDir(),
     heartbeatIntervalMs: overrides?.heartbeatIntervalMs ?? 30_000,
     maxActiveWorkers: overrides?.maxActiveWorkers ?? 1,
   };

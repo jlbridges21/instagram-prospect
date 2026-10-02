@@ -1,5 +1,5 @@
 import { DEFAULT_MAX_ATTEMPTS, RETRY_DELAY_MINUTES } from "@/lib/outreach/defaults";
-import type { OutreachJobType, WorkerErrorCode } from "@/lib/outreach/types";
+import { WORKER_ERROR_CODES, type OutreachJobType, type WorkerErrorCode } from "@/lib/outreach/types";
 
 export type VerifyResult = {
   profileExists: boolean;
@@ -76,17 +76,5 @@ export function clipError(message: string) {
 }
 
 export function isWorkerErrorCode(value: string): value is WorkerErrorCode {
-  return (
-    value === "profile_not_found" ||
-    value === "login_required" ||
-    value === "instagram_checkpoint" ||
-    value === "page_load_failed" ||
-    value === "follow_failed" ||
-    value === "dm_unavailable" ||
-    value === "message_send_failed" ||
-    value === "rate_limited" ||
-    value === "browser_error" ||
-    value === "timeout" ||
-    value === "unknown"
-  );
+  return WORKER_ERROR_CODES.some((code) => code === value);
 }

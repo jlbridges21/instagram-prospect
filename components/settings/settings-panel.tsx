@@ -304,7 +304,7 @@ export function SettingsPanel({
                 checked={workerEnabled}
                 onChange={setWorkerEnabled}
                 label="Worker enabled"
-                description="Saved for the future local worker. Turning this on does not start a browser."
+                description="The local worker checks this before it browses. Turning it off pauses the worker. It does not start a browser by itself."
               />
             </div>
             <Field label="Preferred browser">

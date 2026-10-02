@@ -1,4 +1,2 @@
-console.error("The ShootPortal local worker is not implemented yet.");
-console.error("Browser automation, Instagram login, and message sending are not part of this build.");
-console.error("See worker/README.md.");
+console.error("Use npm run agent. This placeholder is no longer the worker entry point.");
 process.exitCode = 1;

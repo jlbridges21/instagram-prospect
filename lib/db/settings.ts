@@ -18,11 +18,30 @@ import { DEFAULT_MESSAGE_TEMPLATE } from "@/lib/constants/message";
 import { DEFAULT_OUTREACH_SETTINGS, normalizeClock, normalizeDays } from "@/lib/outreach/defaults";
 import type { OutreachSettings } from "@/lib/outreach/types";
 import { databaseErrorMessage, isMissingRelation } from "@/lib/db/errors";
-import type { AppSettings, DataResult, TargetingSettings } from "@/lib/db/models";
+import type { AppSettings, DataResult, DiscoverySettings, TargetingSettings } from "@/lib/db/models";
 import type { SettingsRow, TargetingSettingsRow } from "@/lib/db/types";
 import { createClient } from "@/lib/supabase/server";
 
-export type { AppSettings, DataResult, TargetingSettings };
+export type { AppSettings, DataResult, DiscoverySettings, TargetingSettings };
+
+export const DEFAULT_DISCOVERY_SETTINGS: DiscoverySettings = {
+  enabled: true,
+  maxProfilesPerSession: 50,
+  maxProfilesPerHour: 30,
+  scrollDelaySeconds: 5,
+  duplicateCooldownDays: 30,
+};
+
+function discoveryFromRow(row: SettingsRow): DiscoverySettings {
+  return {
+    enabled: row.discovery_enabled ?? DEFAULT_DISCOVERY_SETTINGS.enabled,
+    maxProfilesPerSession: row.max_profiles_per_session ?? DEFAULT_DISCOVERY_SETTINGS.maxProfilesPerSession,
+    maxProfilesPerHour: row.max_profiles_per_hour ?? DEFAULT_DISCOVERY_SETTINGS.maxProfilesPerHour,
+    scrollDelaySeconds: row.discovery_scroll_delay_seconds ?? DEFAULT_DISCOVERY_SETTINGS.scrollDelaySeconds,
+    duplicateCooldownDays:
+      row.discovery_duplicate_cooldown_days ?? DEFAULT_DISCOVERY_SETTINGS.duplicateCooldownDays,
+  };
+}
 
 function outreachFromRow(row: SettingsRow): OutreachSettings {
   return {
@@ -57,11 +76,12 @@ export function appSettingsFromRow(row: SettingsRow): AppSettings {
     strongFitMinimum: row.strong_fit_minimum ?? DEFAULT_STRONG_FIT_MINIMUM,
     possibleFitMinimum: row.possible_fit_minimum ?? DEFAULT_POSSIBLE_FIT_MINIMUM,
     outreach: outreachFromRow(row),
+    discovery: discoveryFromRow(row),
     updatedAt: row.updated_at,
   };
 }
 
-function targetingFromRow(row: TargetingSettingsRow): TargetingSettings {
+export function targetingFromRow(row: TargetingSettingsRow): TargetingSettings {
   return {
     categories: row.categories ?? [],
     minFollowers: row.min_followers,
@@ -93,6 +113,7 @@ export function fallbackSettings(): AppSettings {
     strongFitMinimum: DEFAULT_STRONG_FIT_MINIMUM,
     possibleFitMinimum: DEFAULT_POSSIBLE_FIT_MINIMUM,
     outreach: DEFAULT_OUTREACH_SETTINGS,
+    discovery: DEFAULT_DISCOVERY_SETTINGS,
     updatedAt: null,
   };
 }

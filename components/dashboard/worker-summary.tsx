@@ -6,6 +6,7 @@ const dotClasses: Record<WorkerHealthState, string> = {
   online: "bg-green-600",
   stale: "bg-amber-500",
   offline: "bg-slate-300",
+  attention: "bg-amber-500",
 };
 
 export function WorkerSummary({
