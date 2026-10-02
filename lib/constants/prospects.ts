@@ -22,7 +22,7 @@ export const FIT_LABELS = ["strong_fit", "possible_fit", "skip"] as const;
 
 export type FitLabel = (typeof FIT_LABELS)[number];
 
-export const PROSPECT_SOURCES = ["home_feed", "manual"] as const;
+export const PROSPECT_SOURCES = ["home_feed", "suggested_accounts", "manual"] as const;
 
 export type ProspectSource = (typeof PROSPECT_SOURCES)[number];
 
@@ -83,6 +83,7 @@ export const FIT_LABELS_TEXT: Record<FitLabel, string> = {
 
 export const SOURCE_LABELS: Record<ProspectSource, string> = {
   home_feed: "Home feed",
+  suggested_accounts: "Suggested accounts",
   manual: "Manual",
 };
 
@@ -112,7 +113,13 @@ export const SORT_LABELS: Record<ProspectSort, string> = {
   followers_asc: "Fewest followers",
 };
 
-export const PAGE_SIZE = 20;
+export const PAGE_SIZE_OPTIONS = [25, 50, 100] as const;
+export const PAGE_SIZE = 25;
+
+export function pageSizeFromParam(value: string) {
+  const parsed = Number.parseInt(value, 10);
+  return PAGE_SIZE_OPTIONS.some((size) => size === parsed) ? parsed : PAGE_SIZE;
+}
 
 export function isProspectStatus(value: string): value is ProspectStatus {
   return PROSPECT_STATUSES.some((status) => status === value);

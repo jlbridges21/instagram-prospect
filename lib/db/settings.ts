@@ -30,6 +30,11 @@ export const DEFAULT_DISCOVERY_SETTINGS: DiscoverySettings = {
   maxProfilesPerHour: 30,
   scrollDelaySeconds: 5,
   duplicateCooldownDays: 30,
+  homeFeedEnabled: true,
+  suggestedAccountsEnabled: true,
+  sourcePriority: "suggested_first",
+  candidateQueueTarget: 10,
+  profileInspectionConcurrency: 2,
 };
 
 function discoveryFromRow(row: SettingsRow): DiscoverySettings {
@@ -40,6 +45,11 @@ function discoveryFromRow(row: SettingsRow): DiscoverySettings {
     scrollDelaySeconds: row.discovery_scroll_delay_seconds ?? DEFAULT_DISCOVERY_SETTINGS.scrollDelaySeconds,
     duplicateCooldownDays:
       row.discovery_duplicate_cooldown_days ?? DEFAULT_DISCOVERY_SETTINGS.duplicateCooldownDays,
+    homeFeedEnabled: row.home_feed_enabled ?? DEFAULT_DISCOVERY_SETTINGS.homeFeedEnabled,
+    suggestedAccountsEnabled: row.suggested_accounts_enabled ?? DEFAULT_DISCOVERY_SETTINGS.suggestedAccountsEnabled,
+    sourcePriority: row.discovery_source_priority === "home_first" ? "home_first" : "suggested_first",
+    candidateQueueTarget: row.candidate_queue_target ?? DEFAULT_DISCOVERY_SETTINGS.candidateQueueTarget,
+    profileInspectionConcurrency: 2,
   };
 }
 

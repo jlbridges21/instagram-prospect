@@ -78,25 +78,41 @@ export async function getPipelineCounts(
   discoveredSince: string | null = null,
 ): Promise<DataResult<PipelineCounts>> {
   const supabase = await createClient();
-  let request = supabase
-    .from("prospects")
-    .select(
-      "qualified, status, discovered_at, approved_at, contacted_at, replied_at, demo_booked_at, converted_at",
-    );
-
-  if (discoveredSince) request = request.gte("discovered_at", discoveredSince);
-
-  const { data, error } = await request;
-
-  if (error) {
-    return {
-      ok: false,
-      error: databaseErrorMessage(error),
-      missingTable: isMissingRelation(error),
-    };
+  const countStatus = (status: ProspectMetric["status"]) => {
+    let request = supabase.from("prospects").select("id", { count: "exact", head: true }).eq("status", status);
+    if (discoveredSince) request = request.gte("discovered_at", discoveredSince);
+    return request;
+  };
+  const [discovered, qualified, approved, contacted, replied, demoBooked, converted, foundToday, pendingReview] = await Promise.all([
+    countStatus("discovered"),
+    countStatus("qualified"),
+    countStatus("approved"),
+    countStatus("contacted"),
+    countStatus("replied"),
+    countStatus("demo_booked"),
+    countStatus("converted"),
+    supabase.from("prospects").select("id", { count: "exact", head: true }).gte("discovered_at", todayStartIso),
+    supabase.from("prospects").select("id", { count: "exact", head: true }).in("status", [...REVIEW_QUEUE_STATUSES]),
+  ]);
+  const failed = [discovered, qualified, approved, contacted, replied, demoBooked, converted, foundToday, pendingReview].find((result) => result.error);
+  if (failed?.error) {
+    return { ok: false, error: databaseErrorMessage(failed.error), missingTable: isMissingRelation(failed.error) };
   }
-
-  return { ok: true, data: summarizeProspects(data ?? [], todayStartIso) };
+  return {
+    ok: true,
+    data: {
+      discovered: discovered.count ?? 0,
+      qualified: qualified.count ?? 0,
+      approved: approved.count ?? 0,
+      contacted: contacted.count ?? 0,
+      replied: replied.count ?? 0,
+      demoBooked: demoBooked.count ?? 0,
+      converted: converted.count ?? 0,
+      foundToday: foundToday.count ?? 0,
+      pendingReview: pendingReview.count ?? 0,
+      approvedCurrent: approved.count ?? 0,
+    },
+  };
 }
 
 export type QualificationSnapshot = {
@@ -110,23 +126,19 @@ export async function getQualificationSnapshot(
   todayStartIso: string,
 ): Promise<QualificationSnapshot | null> {
   const supabase = await createClient();
-  const { data, error } = await supabase
-    .from("prospects")
-    .select("fit_label, status, ai_analyzed_at");
-
-  if (error) return null;
-
-  const today = new Date(todayStartIso).getTime();
-  const snapshot = { analyzedToday: 0, strongFits: 0, possibleFits: 0, disqualified: 0 };
-  for (const row of data ?? []) {
-    if (row.fit_label === "strong_fit") snapshot.strongFits += 1;
-    if (row.fit_label === "possible_fit") snapshot.possibleFits += 1;
-    if (row.status === "disqualified") snapshot.disqualified += 1;
-    if (row.ai_analyzed_at && new Date(row.ai_analyzed_at).getTime() >= today) {
-      snapshot.analyzedToday += 1;
-    }
-  }
-  return snapshot;
+  const [strongFits, possibleFits, disqualified, analyzedToday] = await Promise.all([
+    supabase.from("prospects").select("id", { count: "exact", head: true }).eq("fit_label", "strong_fit"),
+    supabase.from("prospects").select("id", { count: "exact", head: true }).eq("fit_label", "possible_fit"),
+    supabase.from("prospects").select("id", { count: "exact", head: true }).eq("status", "disqualified"),
+    supabase.from("prospects").select("id", { count: "exact", head: true }).gte("ai_analyzed_at", todayStartIso),
+  ]);
+  if (strongFits.error || possibleFits.error || disqualified.error || analyzedToday.error) return null;
+  return {
+    analyzedToday: analyzedToday.count ?? 0,
+    strongFits: strongFits.count ?? 0,
+    possibleFits: possibleFits.count ?? 0,
+    disqualified: disqualified.count ?? 0,
+  };
 }
 
 export async function getRecentActivity(
@@ -135,9 +147,9 @@ export async function getRecentActivity(
   const supabase = await createClient();
   const { data, error } = await supabase
     .from("activity_log")
-    .select("*")
+    .select("id, prospect_id, event_type, description, metadata, created_at")
     .order("created_at", { ascending: false })
-    .limit(limit);
+    .limit(Math.min(limit, 20));
 
   if (error) {
     return {
@@ -156,9 +168,10 @@ export async function getProspectActivity(
   const supabase = await createClient();
   const { data, error } = await supabase
     .from("activity_log")
-    .select("*")
+    .select("id, prospect_id, event_type, description, metadata, created_at")
     .eq("prospect_id", prospectId)
-    .order("created_at", { ascending: false });
+    .order("created_at", { ascending: false })
+    .limit(20);
 
   if (error) {
     return {

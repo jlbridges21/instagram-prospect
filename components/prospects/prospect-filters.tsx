@@ -2,6 +2,7 @@ import Link from "next/link";
 import {
   FIT_LABELS,
   FIT_LABELS_TEXT,
+  PAGE_SIZE_OPTIONS,
   PROSPECT_STATUSES,
   SORT_LABELS,
   SOURCE_LABELS,
@@ -109,6 +110,13 @@ export function ProspectFilters({
           className="mt-1.5"
         />
       </label>
+      <FilterSelect label="Rows" name="pageSize" defaultValue={String(query.pageSize)}>
+        {PAGE_SIZE_OPTIONS.map((size) => (
+          <option key={size} value={size}>
+            {size}
+          </option>
+        ))}
+      </FilterSelect>
       <FilterSelect label="Sort" name="sort" defaultValue={query.sort}>
         {Object.entries(SORT_LABELS).map(([value, label]) => (
           <option key={value} value={value}>

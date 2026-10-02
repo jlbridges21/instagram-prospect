@@ -268,6 +268,7 @@ export async function ingestWorkerProspect(supabase: Client, input: WorkerProspe
       reason: "duplicate" as const,
       prospectId: existing.id,
       queued: false,
+      shouldQualify: false,
     };
   }
 
@@ -301,6 +302,7 @@ export async function ingestWorkerProspect(supabase: Client, input: WorkerProspe
       instagram_post_url: input.instagram_post_url ?? null,
       instagram_post_thumbnail_url: input.instagram_post_thumbnail_url ?? null,
       qualification_reason: qualificationReason,
+      follow_relationship: input.follow_relationship ?? (following ? "following" : "unknown"),
       discovered_at: now,
       last_status_changed_at: now,
       is_sample: false,
@@ -320,9 +322,10 @@ export async function ingestWorkerProspect(supabase: Client, input: WorkerProspe
           ok: true as const,
           created: false as const,
           reason: "duplicate" as const,
-          prospectId: raced.id,
-          queued: false,
-        };
+        prospectId: raced.id,
+        queued: false,
+        shouldQualify: false,
+      };
       }
     }
     console.error("Worker prospect insert failed:", error.message);
@@ -338,7 +341,7 @@ export async function ingestWorkerProspect(supabase: Client, input: WorkerProspe
     {
       prospectId: data.id,
       eventType: "prospect_discovered",
-      description: `Discovered @${username} from Home feed.`,
+      description: `Discovered @${username} from ${sourceLabel(input.source)}.`,
       metadata: { source: input.source ?? "home_feed", actor: "worker" },
     },
   ];
@@ -354,13 +357,21 @@ export async function ingestWorkerProspect(supabase: Client, input: WorkerProspe
 
   await logActivities(supabase, events);
 
+  const relationship = input.follow_relationship ?? (following ? "following" : "unknown");
   return {
     ok: true as const,
     created: true as const,
     prospectId: data.id,
     queued: false,
     status,
+    shouldQualify: relationship === "not_following" && !following,
   };
+}
+
+function sourceLabel(source: ProspectSource | undefined) {
+  if (source === "suggested_accounts") return "Suggested accounts";
+  if (source === "manual") return "manual entry";
+  return "Home feed";
 }
 
 export async function recheckWorkerRelationship(

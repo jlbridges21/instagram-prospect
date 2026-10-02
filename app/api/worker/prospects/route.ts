@@ -51,5 +51,6 @@ export async function POST(request: Request) {
     prospectId: result.prospectId,
     queued: result.queued,
     status: result.created ? result.status : undefined,
+    shouldQualify: "shouldQualify" in result ? result.shouldQualify : false,
   });
 }

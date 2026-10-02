@@ -10,10 +10,20 @@ export async function GET(request: Request) {
   const admin = createAdminClient();
   if (!admin) return workerError(500, "Worker API is not configured.");
 
-  const [settingsResult, targetingResult] = await Promise.all([
-    admin.from("settings").select("*").eq("id", 1).maybeSingle(),
-    admin.from("targeting_settings").select("*").eq("id", 1).maybeSingle(),
-  ]);
+  const settingsColumns = "worker_enabled, heartbeat_interval_seconds, max_active_workers, preferred_browser, automation_enabled, discovery_enabled, max_profiles_per_session, max_profiles_per_hour, discovery_scroll_delay_seconds, discovery_duplicate_cooldown_days, home_feed_enabled, suggested_accounts_enabled, discovery_source_priority, candidate_queue_target, profile_inspection_concurrency";
+  let settingsResult = await admin.from("settings").select(settingsColumns).eq("id", 1).maybeSingle();
+  if (settingsResult.error && /home_feed_enabled|discovery_source_priority|candidate_queue_target/i.test(settingsResult.error.message)) {
+    settingsResult = await admin
+      .from("settings")
+      .select("worker_enabled, heartbeat_interval_seconds, max_active_workers, preferred_browser, automation_enabled, discovery_enabled, max_profiles_per_session, max_profiles_per_hour, discovery_scroll_delay_seconds, discovery_duplicate_cooldown_days")
+      .eq("id", 1)
+      .maybeSingle();
+  }
+  const targetingResult = await admin
+    .from("targeting_settings")
+    .select("min_followers, max_followers, english_only, prefer_united_states, allow_unknown_location, exclude_already_following, exclude_already_contacted, exclude_hobby_accounts, exclude_meme_accounts, exclude_large_agencies, exclude_unrelated_drone")
+    .eq("id", 1)
+    .maybeSingle();
 
   if (settingsResult.error || targetingResult.error) {
     return workerError(500, "Could not read worker configuration.");
@@ -50,6 +60,11 @@ export async function GET(request: Request) {
     maxProfilesPerHour: settings?.max_profiles_per_hour ?? 30,
     discoveryScrollDelaySeconds: settings?.discovery_scroll_delay_seconds ?? 5,
     discoveryDuplicateCooldownDays: settings?.discovery_duplicate_cooldown_days ?? 30,
+    homeFeedEnabled: settings?.home_feed_enabled ?? true,
+    suggestedAccountsEnabled: settings?.suggested_accounts_enabled ?? true,
+    discoverySourcePriority: settings?.discovery_source_priority === "home_first" ? "home_first" : "suggested_first",
+    candidateQueueTarget: settings?.candidate_queue_target ?? 10,
+    profileInspectionConcurrency: 2,
     workerVersion: "6",
     minSupportedWorkerVersion: "6",
   });

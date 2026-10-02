@@ -10,9 +10,21 @@ export type CloudConfig = {
   discoveryScrollDelaySeconds: number;
   discoveryDuplicateCooldownDays: number;
   minSupportedWorkerVersion: string | null;
+  homeFeedEnabled: boolean;
+  suggestedAccountsEnabled: boolean;
+  discoverySourcePriority: "suggested_first" | "home_first";
+  candidateQueueTarget: number;
+  profileInspectionConcurrency: number;
 };
 
+export const CONFIG_CACHE_MS = 60_000;
+
+export function shouldRefreshConfig(cachedAt: number | null, now: number) {
+  return cachedAt === null || now - cachedAt >= CONFIG_CACHE_MS;
+}
+
 export type ProspectCheck = {
+  username?: string;
   exists: boolean;
   prospectId: string | null;
   status: string | null;
@@ -32,6 +44,10 @@ export type JobPayload = {
 };
 
 export class CloudClient {
+  private configCachedAt: number | null = null;
+  private configCache: CloudConfig | null = null;
+  cloudRequests = 0;
+
   constructor(
     private readonly baseUrl: string,
     private readonly secret: string,
@@ -42,6 +58,8 @@ export class CloudClient {
   }
 
   async config() {
+    if (!shouldRefreshConfig(this.configCachedAt, Date.now()) && this.configCache) return this.configCache;
+    this.cloudRequests += 1;
     const response = await fetch(`${this.baseUrl}/api/worker/config`, {
       headers: { authorization: `Bearer ${this.secret}` },
       redirect: "manual",
@@ -49,7 +67,7 @@ export class CloudClient {
     if (response.status === 401) throw authError();
     if (!response.ok) throw new Error(`Cloud config returned ${response.status}.`);
     const json = (await response.json()) as Record<string, unknown>;
-    return {
+    const value = {
       workerEnabled: Boolean(json.workerEnabled),
       automationEnabled: Boolean(json.automationEnabled),
       discoveryEnabled: json.discoveryEnabled !== false,
@@ -59,7 +77,15 @@ export class CloudClient {
       discoveryScrollDelaySeconds: numberOr(json.discoveryScrollDelaySeconds, 5),
       discoveryDuplicateCooldownDays: numberOr(json.discoveryDuplicateCooldownDays, 30),
       minSupportedWorkerVersion: typeof json.minSupportedWorkerVersion === "string" ? json.minSupportedWorkerVersion : null,
+      homeFeedEnabled: json.homeFeedEnabled !== false,
+      suggestedAccountsEnabled: json.suggestedAccountsEnabled !== false,
+      discoverySourcePriority: json.discoverySourcePriority === "home_first" ? "home_first" : "suggested_first",
+      candidateQueueTarget: numberOr(json.candidateQueueTarget, 10),
+      profileInspectionConcurrency: 2,
     } satisfies CloudConfig;
+    this.configCache = value;
+    this.configCachedAt = Date.now();
+    return value;
   }
 
   async recheckRelationship(username: string, relationship: "following" | "not_following" | "requested" | "unknown") {
@@ -69,7 +95,12 @@ export class CloudClient {
     );
   }
 
+  async checkProspects(usernames: string[]) {
+    return this.request<{ results: ProspectCheck[] }>("/api/worker/prospects/check", { usernames });
+  }
+
   async checkProspect(username: string) {
+    this.cloudRequests += 1;
     const url = new URL("/api/worker/prospects/check", this.baseUrl);
     url.searchParams.set("username", username);
     const response = await fetch(url, {
@@ -82,7 +113,7 @@ export class CloudClient {
   }
 
   async ingestProspect(body: Record<string, unknown>) {
-    return this.request<{ created: boolean; prospectId?: string; status?: string; reason?: string }>(
+    return this.request<{ created: boolean; prospectId?: string; status?: string; reason?: string; shouldQualify?: boolean }>(
       "/api/worker/prospects",
       body,
     );
@@ -134,6 +165,7 @@ export class CloudClient {
   }
 
   private async request<T>(pathname: string, body: Record<string, unknown>): Promise<T & { statusCode: number }> {
+    this.cloudRequests += 1;
     const response = await fetch(`${this.baseUrl}${pathname}`, {
       method: "POST",
       headers: {

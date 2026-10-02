@@ -10,6 +10,7 @@ import { fallbackSettings, getSettings } from "@/lib/db/settings";
 import { getLatestWorker } from "@/lib/db/workers";
 import { formatDateTime, formatRelativeTime, platformLabel } from "@/lib/utils/format";
 import { getWorkerHealth } from "@/lib/utils/worker-health";
+import { parseDiscoveryStatus } from "@/lib/worker/discovery-status";
 
 export const metadata: Metadata = { title: "Worker" };
 
@@ -56,6 +57,7 @@ export default async function WorkerPage() {
           {workerResult.error}
         </div>
       ) : null}
+      <DiscoveryV2Status lastEvent={worker?.last_event} task={worker?.current_task} />
       <WorkerStatusPanel
         health={health}
         connected={health.state === "online" || health.state === "attention"}
@@ -126,13 +128,44 @@ export default async function WorkerPage() {
   );
 }
 
+function DiscoveryV2Status({ lastEvent, task }: { lastEvent?: string | null; task?: string | null }) {
+  const status = parseDiscoveryStatus(lastEvent);
+  return (
+    <section className="mb-4 rounded-xl border border-slate-200 bg-white px-4 py-3">
+      <h2 className="text-sm font-semibold text-slate-900">Discovery</h2>
+      <dl className="mt-2 grid gap-2 text-sm sm:grid-cols-4">
+        <div>
+          <dt className="text-xs text-slate-500">Source</dt>
+          <dd className="text-slate-800">{status?.source ?? "Waiting for the worker"}</dd>
+        </div>
+        <div>
+          <dt className="text-xs text-slate-500">Candidate queue</dt>
+          <dd className="text-slate-800">{status ? `${status.pending} pending` : "—"}</dd>
+        </div>
+        <div>
+          <dt className="text-xs text-slate-500">Profile tab 1</dt>
+          <dd className="text-slate-800">{status?.tab1 ?? "—"}</dd>
+        </div>
+        <div>
+          <dt className="text-xs text-slate-500">Profile tab 2</dt>
+          <dd className="text-slate-800">{status?.tab2 ?? "—"}</dd>
+        </div>
+      </dl>
+      {task ? <p className="mt-2 text-xs text-slate-500">{modeLabel(task)}</p> : null}
+    </section>
+  );
+}
+
 function modeLabel(task: string | null | undefined) {
   if (!task || task === "offline") return "Idle";
   if (task === "idle") return "Idle";
   if (task === "paused") return "Paused";
   if (task === "auth_required") return "Authentication Required";
   if (task === "attention_required") return "Attention Required";
-  if (task.startsWith("discovering") || task.startsWith("qualifying")) return "Discovering";
+  if (task === "discovering_candidates") return "Collecting candidates";
+  if (task === "inspecting_profiles") return "Inspecting profiles";
+  if (task === "qualifying_profiles" || task.startsWith("qualifying")) return "Qualifying";
+  if (task.startsWith("discovering")) return "Discovering";
   if (task.startsWith("executing_")) return "Outreach";
   return task;
 }

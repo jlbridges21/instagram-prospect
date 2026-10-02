@@ -257,6 +257,7 @@ export const READ_DOM_SOURCE = `() => {
     });
     if (exactRelationshipHits.length >= 30) break;
   }
+  const suggestedProfiles = suggestedProfileCards();
   return {
     url: location.href,
     title: document.title,
@@ -278,7 +279,48 @@ export const READ_DOM_SOURCE = `() => {
     metaDescription: meta ? (meta.getAttribute("content") || "").slice(0, 500) : null,
     profileIsPrivate: /this account is private/i.test(document.body && document.body.innerText || ""),
     profileImageUrl: profileAvatarUrl(),
+    suggestedProfiles,
   };
+  function suggestedProfileCards() {
+    const found = [];
+    const seen = {};
+    const markers = [...document.querySelectorAll("body *")].filter((el) => {
+      if (el.closest("nav, [role='navigation']")) return false;
+      if (el.children && el.children.length > 6) return false;
+      const text = (el.textContent || "").replace(/\\s+/g, " ").trim();
+      return text === "Suggested for you" || text === "Suggested accounts";
+    }).slice(0, 8);
+    for (const marker of markers) {
+      let scope = marker.parentElement;
+      for (let depth = 0; depth < 6 && scope; depth += 1) {
+        const links = [...scope.querySelectorAll("a[href]")];
+        let added = 0;
+        for (const link of links) {
+          if (link.closest("nav, [role='navigation']")) continue;
+          const username = usernameFromSuggestedHref(link.getAttribute("href") || "");
+          if (!username || seen[username]) continue;
+          seen[username] = true;
+          found.push({ username, href: link.getAttribute("href") || "" });
+          added += 1;
+          if (found.length >= 20) return found;
+        }
+        if (added > 0) break;
+        scope = scope.parentElement;
+      }
+    }
+    return found;
+  }
+  function usernameFromSuggestedHref(href) {
+    try {
+      const path = new URL(href, location.origin).pathname;
+      const part = (path.split("/").filter(Boolean)[0] || "").toLowerCase();
+      if (!part || /^(explore|reels|p|reel|stories|direct|accounts|about|legal)$/.test(part)) return "";
+      if (!/^[a-z0-9._]{1,30}$/.test(part)) return "";
+      return part;
+    } catch (error) {
+      return "";
+    }
+  }
   function profileAvatarUrl() {
     const images = [...document.querySelectorAll("img")].filter((image) => {
       if (image.closest("nav, [role='navigation']")) return false;

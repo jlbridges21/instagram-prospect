@@ -6,7 +6,7 @@ import { ProspectFilters, ProspectPagination } from "@/components/prospects/pros
 import { ProspectsTable } from "@/components/prospects/prospects-table";
 import { categoryLabel } from "@/lib/ai/categories";
 import {
-  PAGE_SIZE,
+  pageSizeFromParam,
   SOURCE_LABELS,
   isFitLabel,
   isProspectSort,
@@ -17,6 +17,7 @@ import {
 import { getProspectCategories, getProspectPage, type ProspectQuery, type ProspectView } from "@/lib/db/prospects";
 import { fallbackSettings, getSettings } from "@/lib/db/settings";
 import { formatDate, formatFollowerCount, parsePositiveInt, readParam } from "@/lib/utils/format";
+import { followingBadge } from "@/lib/prospects/following";
 import { prospectReason } from "@/lib/prospects/reason";
 import { prospectMessage } from "@/lib/utils/message";
 
@@ -54,6 +55,7 @@ export default async function ProspectsPage({
     maxFollowers: readParam(params, "max"),
     sort: isProspectSort(sortValue) ? sortValue : "newest",
     page: parsePositiveInt(readParam(params, "page"), 1),
+    pageSize: pageSizeFromParam(readParam(params, "pageSize")),
   };
 
   const [settingsResult, pageResult, categories] = await Promise.all([
@@ -74,7 +76,7 @@ export default async function ProspectsPage({
   );
 
   const count = pageResult.ok ? pageResult.data.count : 0;
-  const pageCount = Math.max(1, Math.ceil(count / PAGE_SIZE));
+  const pageCount = Math.max(1, Math.ceil(count / query.pageSize));
 
   return (
     <div>
@@ -104,6 +106,7 @@ export default async function ProspectsPage({
           username: row.instagram_username,
           category: categoryLabel(row.category),
           followers: formatFollowerCount(row.follower_count),
+          following: followingBadge(row),
           fitLabel: row.fit_label,
           fitScore: row.fit_score,
           status: row.status,

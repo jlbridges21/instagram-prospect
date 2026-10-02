@@ -38,6 +38,18 @@ export function isAuthenticatedHome(dom: DomSnapshot) {
   return onInstagram && hasFeed && !dom.hasPasswordField;
 }
 
+export function suggestedCandidates(dom: DomSnapshot): FeedCandidate[] {
+  const found: FeedCandidate[] = [];
+  const seen = new Set<string>();
+  for (const card of dom.suggestedProfiles ?? []) {
+    const username = card.username.toLowerCase().replace(/^@/, "").trim();
+    if (!username || seen.has(username)) continue;
+    seen.add(username);
+    found.push({ username, profileUrl: profileUrlFor(username), postUrl: null });
+  }
+  return found;
+}
+
 export function feedCandidates(dom: DomSnapshot): FeedCandidate[] {
   const found: FeedCandidate[] = [];
   const seen = new Set<string>();

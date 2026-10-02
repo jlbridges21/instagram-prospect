@@ -79,6 +79,7 @@ export type ProspectTableRow = {
   username: string;
   category: string;
   followers: string;
+  following: "Yes" | "No" | "Requested" | "Unknown";
   fitLabel: FitLabel | null;
   fitScore: number | null;
   status: ProspectStatus;
@@ -436,6 +437,7 @@ export function ProspectsTable({
             <dl className="mt-3 grid grid-cols-2 gap-2 text-sm">
               <Meta label="Category" value={row.category} />
               <Meta label="Followers" value={row.followers} />
+              <Meta label="Following" value={row.following} />
               <Meta label="Source" value={row.source} />
               <Meta label="Discovered" value={row.discovered} />
               <div className="col-span-2">
@@ -497,6 +499,7 @@ function ColumnCell({
   if (column === "followers") {
     return <span title={row.followers} className={cn(TRUNCATE_CLASS, "tabular-nums text-slate-700")}>{row.followers}</span>;
   }
+  if (column === "following") return <FollowingBadge value={row.following} />;
   if (column === "fit") {
     const label = row.fitLabel ? FIT_LABELS_TEXT[row.fitLabel] : "Unscored";
     return (
@@ -578,6 +581,16 @@ function RowActions({
       </button>
     </div>
   );
+}
+
+function FollowingBadge({ value }: { value: ProspectTableRow["following"] }) {
+  const tone = {
+    Yes: "bg-slate-100 text-slate-700 ring-slate-200",
+    No: "bg-indigo-50 text-indigo-700 ring-indigo-200",
+    Requested: "bg-amber-50 text-amber-800 ring-amber-200",
+    Unknown: "bg-slate-50 text-slate-500 ring-slate-200",
+  }[value];
+  return <span className={cn("inline-flex rounded-md px-1.5 py-0.5 text-xs font-medium ring-1 ring-inset", tone)}>{value}</span>;
 }
 
 function Meta({ label, value }: { label: string; value: string }) {

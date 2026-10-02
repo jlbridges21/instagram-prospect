@@ -30,3 +30,7 @@ export function debugDir() {
 export function pendingResultsPath() {
   return path.join(workerHome(), "pending-results.json");
 }
+
+export function discoveryQueuePath() {
+  return path.join(workerHome(), "discovery-queue.json");
+}

@@ -122,6 +122,48 @@ export async function saveWorkerSettings(input: {
   return { ok: true };
 }
 
+export async function saveDiscoverySettings(input: {
+  enabled: boolean;
+  homeFeedEnabled: boolean;
+  suggestedAccountsEnabled: boolean;
+  sourcePriority: "suggested_first" | "home_first";
+  candidateQueueTarget: number;
+  maxProfilesPerSession: number;
+  maxProfilesPerHour: number;
+}): Promise<ActionResult> {
+  if (!Number.isInteger(input.candidateQueueTarget) || input.candidateQueueTarget < 5 || input.candidateQueueTarget > 25) {
+    return { ok: false, error: "Candidate queue target must be between 5 and 25." };
+  }
+  if (!Number.isInteger(input.maxProfilesPerHour) || input.maxProfilesPerHour < 1 || input.maxProfilesPerHour > 200) {
+    return { ok: false, error: "Maximum profiles per hour must be between 1 and 200." };
+  }
+  if (!Number.isInteger(input.maxProfilesPerSession) || input.maxProfilesPerSession < 1 || input.maxProfilesPerSession > 500) {
+    return { ok: false, error: "Maximum profiles per session must be between 1 and 500." };
+  }
+  const { supabase } = await requireUser();
+  const { error } = await supabase
+    .from("settings")
+    .update({
+      discovery_enabled: input.enabled,
+      home_feed_enabled: input.homeFeedEnabled,
+      suggested_accounts_enabled: input.suggestedAccountsEnabled,
+      discovery_source_priority: input.sourcePriority,
+      candidate_queue_target: input.candidateQueueTarget,
+      profile_inspection_concurrency: 2,
+      max_profiles_per_session: input.maxProfilesPerSession,
+      max_profiles_per_hour: input.maxProfilesPerHour,
+    })
+    .eq("id", 1);
+  if (error) {
+    if (/home_feed_enabled|discovery_source_priority|candidate_queue_target/i.test(error.message)) {
+      return { ok: false, error: "Run the Discovery V2 database migration, then try again." };
+    }
+    return { ok: false, error: error.message };
+  }
+  revalidateSettings();
+  return { ok: true, message: "Discovery settings saved." };
+}
+
 export async function setDiscoveryEnabled(enabled: boolean): Promise<ActionResult> {
   const { supabase } = await requireUser();
   const { error } = await supabase.from("settings").update({ discovery_enabled: enabled }).eq("id", 1);

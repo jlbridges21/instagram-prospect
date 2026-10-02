@@ -2,6 +2,7 @@ import "server-only";
 
 import {
   PAGE_SIZE,
+  PAGE_SIZE_OPTIONS,
   type FitLabel,
   type ProspectSort,
   type ProspectSource,
@@ -25,17 +26,25 @@ export type ProspectQuery = {
   maxFollowers: string;
   sort: ProspectSort;
   page: number;
+  pageSize: number;
   view: ProspectView;
 };
+
+const PROSPECT_LIST_COLUMNS =
+  "id, instagram_username, display_name, first_name, profile_url, profile_picture_url, category, follower_count, follow_relationship, fit_score, fit_label, qualification_reason, qualification_error, qualified, already_following, already_contacted, status, source, discovered_at, message_override, ai_analyzed_at, location_text, instagram_post_url, instagram_post_thumbnail_url";
+
+const PROSPECT_DETAIL_COLUMNS =
+  `${PROSPECT_LIST_COLUMNS}, bio, following_count, language, notes, message_text, sent_message_text, queued_message_text, ai_analysis, ai_model, ai_input_hash, approved_at, contacted_at, replied_at, demo_booked_at, converted_at, last_status_changed_at, is_sample, outreach_cancelled_at, created_at, updated_at`;
 
 export async function getProspectPage(
   query: ProspectQuery,
 ): Promise<DataResult<{ rows: ProspectRow[]; count: number }>> {
   const supabase = await createClient();
-  const from = (query.page - 1) * PAGE_SIZE;
-  const to = from + PAGE_SIZE - 1;
+  const pageSize = PAGE_SIZE_OPTIONS.some((size) => size === query.pageSize) ? query.pageSize : PAGE_SIZE;
+  const from = (query.page - 1) * pageSize;
+  const to = from + pageSize - 1;
 
-  let request = supabase.from("prospects").select("*", { count: "exact" });
+  let request = supabase.from("prospects").select(PROSPECT_LIST_COLUMNS, { count: "exact" });
 
   if (query.view === "active") {
     request = request.eq("already_following", false).not("status", "in", "(disqualified,skipped,converted)");
@@ -97,7 +106,7 @@ export async function getProspectPage(
     };
   }
 
-  return { ok: true, data: { rows: data ?? [], count: count ?? 0 } };
+  return { ok: true, data: { rows: (data ?? []) as ProspectRow[], count: count ?? 0 } };
 }
 
 export async function getProspectCategories(): Promise<string[]> {
@@ -119,7 +128,7 @@ export async function getProspectById(
   const supabase = await createClient();
   const { data, error } = await supabase
     .from("prospects")
-    .select("*")
+    .select(PROSPECT_DETAIL_COLUMNS)
     .eq("id", id)
     .maybeSingle();
 
@@ -131,14 +140,14 @@ export async function getProspectById(
     };
   }
 
-  return { ok: true, data };
+  return { ok: true, data: data as ProspectRow | null };
 }
 
 export async function getReviewQueue(): Promise<DataResult<ProspectRow[]>> {
   const supabase = await createClient();
   const { data, error } = await supabase
     .from("prospects")
-    .select("*")
+    .select(PROSPECT_LIST_COLUMNS)
     .in("status", ["qualified", "review"])
     .order("fit_score", { ascending: false, nullsFirst: false })
     .order("discovered_at", { ascending: false, nullsFirst: false })
@@ -152,7 +161,7 @@ export async function getReviewQueue(): Promise<DataResult<ProspectRow[]>> {
     };
   }
 
-  return { ok: true, data: data ?? [] };
+  return { ok: true, data: (data ?? []) as ProspectRow[] };
 }
 
 export async function getReviewTodayCounts(timeZone: string) {
@@ -176,7 +185,7 @@ export async function getRecentProspects(limit = 6): Promise<DataResult<Prospect
   const supabase = await createClient();
   const { data, error } = await supabase
     .from("prospects")
-    .select("*")
+    .select("id, instagram_username, display_name, first_name, profile_picture_url, follower_count, fit_score, fit_label, status, discovered_at")
     .order("discovered_at", { ascending: false, nullsFirst: false })
     .limit(limit);
 
@@ -188,5 +197,5 @@ export async function getRecentProspects(limit = 6): Promise<DataResult<Prospect
     };
   }
 
-  return { ok: true, data: data ?? [] };
+  return { ok: true, data: (data ?? []) as ProspectRow[] };
 }

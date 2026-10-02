@@ -1,5 +1,6 @@
 import { launchBrowser } from "./browser/launch";
 import { CloudClient, type CloudConfig, type JobPayload } from "./cloud/client";
+import { emptyEfficiency, formatEfficiency, runDiscoveryV2 } from "./discovery/v2";
 import { loadIdentity } from "./identity";
 import {
   ensureHome,
@@ -7,7 +8,6 @@ import {
   previewOutreach,
   readProfile,
   saveErrorScreenshot,
-  scrollFeed,
   sendExactMessage,
 } from "./instagram/actions";
 import { AttentionError, NavigationError, SelectorError } from "./instagram/errors";
@@ -34,7 +34,8 @@ const sleep = (ms: number) =>
   });
 
 export async function runWorker(mode: RunMode) {
-  const discoveryOnly = process.argv.includes("--discovery-only") || mode === "smoke";
+  const discoveryOnly = process.argv.includes("--discovery-only") || process.argv.includes("--discovery-v2-test") || mode === "smoke";
+  const discoveryV2Test = process.argv.includes("--discovery-v2-test");
   const noWrite = process.argv.includes("--no-write") || mode === "smoke" || mode === "login";
   const dryRun = process.argv.includes("--outreach-dry-run");
   const singleOutreach = process.argv.includes("--single-outreach");
@@ -80,6 +81,7 @@ export async function runWorker(mode: RunMode) {
   console.log("✓ Chrome available");
   console.log("✓ Browser launched");
   const stats = { seen: 0, ingested: 0, excluded: 0, qualified: 0, errors: 0, hour: [] as number[] };
+  const efficiency = emptyEfficiency();
   const live = {
     task: "idle",
     username: null as string | null,
@@ -142,12 +144,32 @@ export async function runWorker(mode: RunMode) {
           console.log("Worker API: connected");
           return;
         }
-        if (config.discoveryEnabled && !stopping && stats.seen < config.maxProfilesPerSession && !singleOutreach) {
-          live.task = "discovering_home_feed";
+        if (config.discoveryEnabled && !stopping && stats.seen < (discoveryV2Test ? 10 : config.maxProfilesPerSession) && !singleOutreach) {
+          live.task = "discovering_candidates";
           live.instagramAuthenticated = true;
-          await beat(cloud, identity, live.task, stats, true, true, live.attention, live.username, live.lastEvent);
-          await discoverBatch(cloud, page, identity.worker_id, config, stats, noWrite, live);
-          await sleep(Math.max(config.heartbeatIntervalSeconds, 20) * 1000);
+          if (discoveryV2Test) console.log("Discovery V2 test. Outreach stays paused. Inspecting up to 10 profiles.");
+          let outreachPage: import("playwright").Page | null = null;
+          await runDiscoveryV2({
+            context,
+            homePage: page,
+            cloud,
+            stats,
+            live,
+            workerId: identity.worker_id,
+            noWrite,
+            debug: debug || discoveryOnly,
+            inspectionLimit: discoveryV2Test ? 10 : null,
+            shouldStop: () => stopping,
+            metrics: efficiency,
+            maybeOutreach: async () => {
+              if (discoveryOnly || noWrite || discoveryV2Test) return;
+              const current = await cloud.config();
+              if (!current.automationEnabled) return;
+              outreachPage ??= await context.newPage();
+              await runOneJob(cloud, outreachPage, identity, current, stats);
+            },
+          });
+          if (discoveryV2Test) return;
         } else {
           live.task = "idle";
           await beat(cloud, identity, live.task, stats, true, true, live.attention, live.username, live.lastEvent);
@@ -180,6 +202,10 @@ export async function runWorker(mode: RunMode) {
     }
   } finally {
     clearInterval(timer);
+    if (debug || discoveryOnly) {
+      efficiency.cloudRequests = cloud.cloudRequests;
+      console.log(formatEfficiency(efficiency));
+    }
     live.task = "offline";
     live.browserConnected = false;
     live.username = null;
@@ -242,108 +268,6 @@ async function executeJob(page: import("playwright").Page, job: JobPayload) {
   if (job.type === "follow_profile") return followProfile(page, job.instagramUsername);
   if (!job.message) throw new SelectorError("The send job did not include the locked message.");
   return sendExactMessage(page, job.instagramUsername, job.message);
-}
-
-async function discoverBatch(
-  cloud: CloudClient,
-  page: import("playwright").Page,
-  workerId: string,
-  config: CloudConfig,
-  stats: { seen: number; ingested: number; excluded: number; qualified: number; errors: number; hour: number[] },
-  noWrite: boolean,
-  live: { username: string | null; lastEvent: string | null },
-) {
-  let idleScrolls = 0;
-  const seen = new Set<string>();
-  while (stats.seen < config.maxProfilesPerSession && idleScrolls < 3) {
-    const posts = await ensureHome(page);
-    const fresh = posts.filter((post) => !seen.has(post.username.toLowerCase()));
-    if (fresh.length === 0) {
-      idleScrolls += 1;
-      await scrollFeed(page);
-      await sleep(config.discoveryScrollDelaySeconds * 1000);
-      continue;
-    }
-    idleScrolls = 0;
-    for (const post of fresh) {
-      if (stats.seen >= config.maxProfilesPerSession) break;
-      pruneHour(stats.hour);
-      if (stats.hour.length >= config.maxProfilesPerHour) return;
-      seen.add(post.username.toLowerCase());
-      stats.seen += 1;
-      stats.hour.push(Date.now());
-      live.username = post.username;
-      live.lastEvent = `Opened @${post.username}`;
-      log("info", "profile_seen", { worker_id: workerId, username: post.username, mode: "discovery" });
-      if (noWrite) continue;
-      try {
-        const known = await cloud.checkProspect(post.username);
-        if (known.skip) {
-          log("info", "profile_duplicate", { worker_id: workerId, username: post.username });
-          continue;
-        }
-        const profile = await readProfile(page, post.username);
-        if (!profile.profileExists) continue;
-        const excluded = isExcludedRelationship(profile.relationship);
-        const ingested = await cloud.ingestProspect({
-          instagram_username: post.username,
-          display_name: profile.profile.displayName,
-          profile_url: post.profileUrl,
-          profile_picture_url: profile.profile.profilePictureUrl,
-          bio: profile.profile.bio,
-          follower_count: profile.profile.followerCount,
-          following_count: profile.profile.followingCount,
-          location_text: profile.profile.locationText,
-          already_following: excluded,
-          instagram_post_url: post.postUrl,
-          source: "home_feed",
-          follow_relationship: profile.relationship,
-        });
-        console.log(`@${post.username}`);
-        console.log(`relationship: ${profile.relationship}`);
-        console.log(`followers: ${profile.profile.followerCount ?? "unknown"}`);
-        console.log(`display_name: ${profile.profile.displayName ?? "unknown"}`);
-        console.log(`bio_length: ${profile.profile.bio?.length ?? 0}`);
-        if (ingested.created) stats.ingested += 1;
-        if (excluded) {
-          stats.excluded += 1;
-          live.lastEvent = `Skipped @${post.username} because you already follow this account.`;
-          log("info", "profile_excluded_existing_follow", { worker_id: workerId, username: post.username });
-          continue;
-        }
-        if (profile.relationship === "unknown" || !ingested.prospectId) {
-          live.lastEvent = `Follow status unknown for @${post.username}.`;
-          continue;
-        }
-        log("info", "profile_ingested", { worker_id: workerId, username: post.username });
-        const qualified = await qualifyWithRetry(cloud, ingested.prospectId);
-        if (qualified.ok && !qualified.skipped) {
-          stats.qualified += 1;
-          live.lastEvent = `AI scored @${post.username} ${qualified.fitScore ?? ""} ${qualified.fitLabel ?? ""}`.trim();
-        }
-        console.log(`cloud: ${ingested.created ? "created" : ingested.reason ?? "updated"}`);
-        console.log(`AI: ${qualified.fitLabel ?? qualified.status ?? "skipped"} ${qualified.fitScore ?? ""}`.trim());
-        log("info", "profile_qualification_requested", { worker_id: workerId, username: post.username });
-        await page.goto("https://www.instagram.com/", { waitUntil: "domcontentloaded" }).catch(() => undefined);
-      } catch (error) {
-        if (error instanceof AttentionError) throw error;
-        const status = error instanceof Error && "statusCode" in error ? Number(error.statusCode) : 0;
-        if (status === 401) throw error;
-        const message = error instanceof Error ? error.message : "Profile discovery failed.";
-        stats.errors += 1;
-        log("error", "profile_discovery_error", {
-          worker_id: workerId,
-          username: post.username,
-          mode: "discovery",
-          message,
-          error_category: error instanceof NavigationError ? error.code : "discovery",
-        });
-        await saveErrorScreenshot(page, "discovery").catch(() => undefined);
-      }
-    }
-    await scrollFeed(page);
-    await sleep(config.discoveryScrollDelaySeconds * 1000);
-  }
 }
 
 async function reportComplete(cloud: CloudClient, workerId: string, jobId: string, result: Record<string, unknown>) {
@@ -432,22 +356,6 @@ function isAuthFailure(error: unknown) {
   return true;
 }
 
-async function qualifyWithRetry(cloud: CloudClient, prospectId: string) {
-  let last: unknown;
-  for (let attempt = 0; attempt < 2; attempt += 1) {
-    try {
-      return await cloud.qualifyProspect(prospectId);
-    } catch (error) {
-      if (isAuthFailure(error)) throw error;
-      const status = error instanceof Error && "statusCode" in error ? Number(error.statusCode) : 0;
-      last = error;
-      if (status && status < 500 && status !== 429) throw error;
-      await sleep(2_000);
-    }
-  }
-  throw last instanceof Error ? last : new Error("Qualification failed.");
-}
-
 async function runDryOutreach(cloud: CloudClient, page: import("playwright").Page) {
   const preview = await cloud.previewJob();
   if (!preview.job) {
@@ -531,11 +439,6 @@ export async function inspectUsername(rawUsername: string) {
   } finally {
     await context.close().catch(() => undefined);
   }
-}
-
-function pruneHour(hour: number[]) {
-  const cutoff = Date.now() - 60 * 60 * 1000;
-  while (hour.length > 0 && hour[0] < cutoff) hour.shift();
 }
 
 function printBanner(identity: ReturnType<typeof loadIdentity>, baseUrl: string) {

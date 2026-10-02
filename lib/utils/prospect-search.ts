@@ -11,6 +11,7 @@ export function prospectSearchString(query: ProspectQuery, page = query.page) {
   if (query.minFollowers) params.set("min", query.minFollowers);
   if (query.maxFollowers) params.set("max", query.maxFollowers);
   if (query.sort !== "newest") params.set("sort", query.sort);
+  if (query.pageSize !== 25) params.set("pageSize", String(query.pageSize));
   if (page > 1) params.set("page", String(page));
   const value = params.toString();
   return value ? `?${value}` : "";

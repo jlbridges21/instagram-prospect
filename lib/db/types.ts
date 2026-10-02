@@ -35,6 +35,7 @@ export type ProspectRow = {
   qualification_error?: string | null;
   qualified: boolean;
   already_following: boolean;
+  follow_relationship?: "following" | "requested" | "not_following" | "unknown" | null;
   already_contacted: boolean;
   message_text: string | null;
   message_override: string | null;
@@ -90,6 +91,11 @@ export type SettingsRow = {
   max_profiles_per_hour?: number;
   discovery_scroll_delay_seconds?: number;
   discovery_duplicate_cooldown_days?: number;
+  home_feed_enabled?: boolean;
+  suggested_accounts_enabled?: boolean;
+  discovery_source_priority?: "suggested_first" | "home_first";
+  candidate_queue_target?: number;
+  profile_inspection_concurrency?: number;
   updated_at: string;
 };
 

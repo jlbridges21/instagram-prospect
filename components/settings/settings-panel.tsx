@@ -7,6 +7,7 @@ import {
   saveAppSettings,
   saveMessageTemplate,
   saveTargeting,
+  saveDiscoverySettings,
   saveWorkerSettings,
 } from "@/lib/actions/settings";
 import { DEFAULT_MESSAGE_TEMPLATE } from "@/lib/constants/message";
@@ -68,6 +69,13 @@ export function SettingsPanel({
   const [workerEnabled, setWorkerEnabled] = useState(settings.workerEnabled);
   const [preferredBrowser, setPreferredBrowser] = useState(settings.preferredBrowser);
   const [heartbeat, setHeartbeat] = useState(String(settings.heartbeatIntervalSeconds));
+  const [discoveryEnabled, setDiscoveryEnabled] = useState(settings.discovery.enabled);
+  const [homeFeedEnabled, setHomeFeedEnabled] = useState(settings.discovery.homeFeedEnabled);
+  const [suggestedEnabled, setSuggestedEnabled] = useState(settings.discovery.suggestedAccountsEnabled);
+  const [sourcePriority, setSourcePriority] = useState(settings.discovery.sourcePriority);
+  const [queueTarget, setQueueTarget] = useState(String(settings.discovery.candidateQueueTarget));
+  const [maxSession, setMaxSession] = useState(String(settings.discovery.maxProfilesPerSession));
+  const [maxHour, setMaxHour] = useState(String(settings.discovery.maxProfilesPerHour));
   const [appName, setAppName] = useState(settings.appName);
   const [timezone, setTimezone] = useState(settings.timezone);
   const [dateFormat, setDateFormat] = useState<DateFormat>(settings.dateFormat);
@@ -344,6 +352,53 @@ export function SettingsPanel({
               }
             >
               Save worker settings
+            </Button>
+            <div className="border-t border-slate-100 pt-4">
+              <h2 className="text-sm font-semibold text-slate-900">Discovery</h2>
+              <p className="mt-1 text-sm text-slate-500">
+                Suggested Accounts is preferred. Home Feed fills the queue when suggestions are thin. Profile inspection stays at 2 tabs.
+              </p>
+            </div>
+            <Toggle checked={discoveryEnabled} onChange={setDiscoveryEnabled} label="Discovery enabled" />
+            <Toggle checked={homeFeedEnabled} onChange={setHomeFeedEnabled} label="Home Feed" />
+            <Toggle checked={suggestedEnabled} onChange={setSuggestedEnabled} label="Suggested Accounts" />
+            <Field label="Priority">
+              <SelectInput value={sourcePriority} onChange={(event) => setSourcePriority(event.target.value as typeof sourcePriority)}>
+                <option value="suggested_first">Suggested Accounts first</option>
+                <option value="home_first">Home Feed first</option>
+              </SelectInput>
+            </Field>
+            <Field label="Candidate queue target" hint="5 to 25. Default 10.">
+              <TextInput inputMode="numeric" value={queueTarget} onChange={(event) => setQueueTarget(event.target.value)} />
+            </Field>
+            <Field label="Profile inspection concurrency" hint="Fixed at 2.">
+              <TextInput value="2" readOnly />
+            </Field>
+            <Field label="Maximum profiles per hour">
+              <TextInput inputMode="numeric" value={maxHour} onChange={(event) => setMaxHour(event.target.value)} />
+            </Field>
+            <Field label="Maximum profiles per session">
+              <TextInput inputMode="numeric" value={maxSession} onChange={(event) => setMaxSession(event.target.value)} />
+            </Field>
+            <Button
+              disabled={pending}
+              onClick={() =>
+                save(
+                  () =>
+                    saveDiscoverySettings({
+                      enabled: discoveryEnabled,
+                      homeFeedEnabled,
+                      suggestedAccountsEnabled: suggestedEnabled,
+                      sourcePriority,
+                      candidateQueueTarget: Number.parseInt(queueTarget, 10),
+                      maxProfilesPerHour: Number.parseInt(maxHour, 10),
+                      maxProfilesPerSession: Number.parseInt(maxSession, 10),
+                    }),
+                  "Discovery settings saved",
+                )
+              }
+            >
+              Save discovery settings
             </Button>
           </section>
         ) : null}

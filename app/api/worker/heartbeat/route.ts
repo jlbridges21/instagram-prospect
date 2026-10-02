@@ -103,7 +103,7 @@ export async function POST(request: Request) {
 
   await touchSession(admin, parsed.data, requestedStatus, now).catch(() => undefined);
 
-  return Response.json({ ok: true, workerId: parsed.data.worker_id, lastHeartbeatAt: now });
+  return Response.json({ ok: true });
 }
 
 function compatibleHeartbeat<T extends { status: string; current_task: string | null }>(
@@ -144,13 +144,22 @@ async function touchSession(
   };
   const { data: open, error } = await admin
     .from("worker_sessions")
-    .select("id")
+    .select("id, profiles_seen, profiles_ingested, profiles_excluded_following, profiles_qualified, errors, status, last_error")
     .eq("worker_id", data.worker_id)
     .is("ended_at", null)
     .order("started_at", { ascending: false })
     .limit(1)
     .maybeSingle();
   if (error) return;
+  const unchanged = open
+    && open.profiles_seen === counters.profiles_seen
+    && open.profiles_ingested === counters.profiles_ingested
+    && open.profiles_excluded_following === counters.profiles_excluded_following
+    && open.profiles_qualified === counters.profiles_qualified
+    && open.errors === counters.errors
+    && open.status === counters.status
+    && (open.last_error ?? null) === counters.last_error;
+  if (open && unchanged && !data.new_session && sessionStatus !== "stopped") return;
   if (data.new_session && open) {
     await admin.from("worker_sessions").update({ status: "stopped", ended_at: now }).eq("id", open.id);
     if (sessionStatus === "stopped") return;

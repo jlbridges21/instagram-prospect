@@ -299,7 +299,15 @@ After the Prompt 5 migration, run `supabase/migrations/20261003180000_prompt6_li
 
 ## Daily operation
 
-Discovery reads the Instagram Home feed. Accounts you already follow, and accounts showing Requested, are stored as excluded and are not sent to AI. New accounts are qualified on the server. Strong and possible fits appear in the Review Queue. Approval is still a manual step. Outreach stays paused until you turn it on.
+Discovery V2 keeps Instagram Home open and collects candidate usernames from Suggested Accounts first, then the Home feed. A local queue feeds two reusable profile tabs. Those tabs extract the profile and send it to the cloud, then move on. AI qualification runs on the server after that and does not hold the browser. Duplicate checks are batched. Worker configuration is cached for 60 seconds. Outreach stays paused until you turn it on.
+
+Accounts you already follow, and accounts showing Requested, are stored as excluded and are not sent to AI. Strong and possible fits appear in the Review Queue. Approval is still a manual step.
+
+```bash
+npm run agent -- --discovery-v2-test
+```
+
+That test keeps outreach paused, inspects at most 10 profiles, and prints a local cloud-request summary. It does not follow or send a message.
 
 The Prospects page opens on Active. Excluded holds already-followed, skipped, and disqualified accounts.
 

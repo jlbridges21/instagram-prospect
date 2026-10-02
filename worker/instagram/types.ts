@@ -62,6 +62,7 @@ export type DomSnapshot = {
   metaDescription?: string | null;
   profileIsPrivate?: boolean;
   profileImageUrl?: string | null;
+  suggestedProfiles?: Array<{ username: string; href: string }>;
 };
 
 export type FeedCandidate = {

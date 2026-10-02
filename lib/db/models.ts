@@ -7,6 +7,11 @@ export type DiscoverySettings = {
   maxProfilesPerHour: number;
   scrollDelaySeconds: number;
   duplicateCooldownDays: number;
+  homeFeedEnabled: boolean;
+  suggestedAccountsEnabled: boolean;
+  sourcePriority: "suggested_first" | "home_first";
+  candidateQueueTarget: number;
+  profileInspectionConcurrency: number;
 };
 
 export type AppSettings = {

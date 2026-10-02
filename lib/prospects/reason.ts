@@ -5,6 +5,7 @@ export type ProspectReasonFields = {
   already_contacted?: boolean;
   status?: string;
   ai_analyzed_at?: string | null;
+  follow_relationship?: string | null;
 };
 
 export function prospectReason(prospect: ProspectReasonFields) {
@@ -21,10 +22,12 @@ export function prospectReason(prospect: ProspectReasonFields) {
 }
 
 export function relationshipLabel(prospect: ProspectReasonFields) {
-  if (prospect.already_following) return "Following";
+  if (prospect.follow_relationship === "requested") return "Requested";
+  if (prospect.follow_relationship === "not_following") return "Not following";
+  if (prospect.follow_relationship === "following" || prospect.already_following) return "Following";
+  if (prospect.follow_relationship === "unknown") return "Unknown";
   const reason = prospect.qualification_reason?.trim() ?? "";
   if (/follow status unknown|could not be verified/i.test(reason)) return "Unknown";
-  if (prospect.ai_analyzed_at || (prospect.status && !["discovered"].includes(prospect.status))) return "Not following";
   return "Unknown";
 }
 

@@ -132,7 +132,8 @@ check("missing columns are merged back in", legacy.order.includes("reason") && l
 check("actions remain last when merging an old layout", legacy.order.at(-1) === "actions");
 check("saved widths are clamped when merged", legacy.widths.name === MIN_WIDTHS.name && legacy.widths.username === 200);
 check("saved row height is clamped when merged", legacy.rowHeight === MAX_ROW_HEIGHT);
-check("reason keeps its default place beside fit when it was absent", mergeColumnOrder(["profile", "username", "name", "category", "followers", "fit", "status"]).indexOf("reason") === 6);
+const mergedReason = mergeColumnOrder(["profile", "username", "name", "category", "followers", "fit", "status"]);
+check("reason keeps its default place beside fit when it was absent", mergedReason.indexOf("reason") === mergedReason.indexOf("fit") + 1);
 check("checkbox width stays fixed", CHECKBOX_COLUMN_WIDTH === 44);
 check("broken storage falls back to the default layout", loadTableLayout({ getItem: () => "{", setItem: () => undefined }).order.join() === DEFAULT_ORDER.join());
 

@@ -9,7 +9,7 @@ export async function getLatestWorker(): Promise<DataResult<WorkerInstanceRow | 
   const supabase = await createClient();
   const { data, error } = await supabase
     .from("worker_instances")
-    .select("*")
+    .select("id, worker_id, machine_name, platform, hostname, status, current_task, browser_connected, instagram_authenticated, last_heartbeat_at, started_at, attention_reason, profiles_seen, profiles_ingested, profiles_excluded_following, profiles_qualified, session_errors, current_username, last_event, created_at, updated_at")
     .order("last_heartbeat_at", { ascending: false, nullsFirst: false })
     .limit(1)
     .maybeSingle();
