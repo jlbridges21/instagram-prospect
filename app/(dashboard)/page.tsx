@@ -1,0 +1,156 @@
+import type { Metadata } from "next";
+import { CalendarClock, Check, Inbox, MessageSquare, Reply, Sparkles, UserCheck } from "lucide-react";
+import { FunnelChart, StatCard } from "@/components/dashboard/metrics";
+import { RecentActivity } from "@/components/dashboard/recent-activity";
+import { RecentProspects } from "@/components/dashboard/recent-prospects";
+import { WorkerSummary } from "@/components/dashboard/worker-summary";
+import { DatabaseSetup } from "@/components/layout/database-setup";
+import { PageHeader } from "@/components/layout/page-header";
+import { countFollowUpsDue } from "@/lib/db/follow-ups";
+import { getRecentActivity, getPipelineCounts, emptyPipeline } from "@/lib/db/stats";
+import { getRecentProspects } from "@/lib/db/prospects";
+import { fallbackSettings, getSettings } from "@/lib/db/settings";
+import { getLatestWorker } from "@/lib/db/workers";
+import type { ProspectRow } from "@/lib/db/types";
+import { endOfTodayIso, formatDate, formatRelativeTime, platformLabel, startOfTodayIso } from "@/lib/utils/format";
+import { getWorkerHealth } from "@/lib/utils/worker-health";
+
+export const metadata: Metadata = { title: "Overview" };
+
+function nameOf(row: Pick<ProspectRow, "display_name" | "first_name" | "instagram_username">) {
+  return row.display_name || row.first_name || row.instagram_username;
+}
+
+export default async function OverviewPage() {
+  const settingsResult = await getSettings();
+  const settings = settingsResult.ok ? settingsResult.data : fallbackSettings();
+  const todayStart = startOfTodayIso(settings.timezone);
+
+  const [pipelineResult, recentResult, activityResult, workerResult, dueFollowUps] = await Promise.all([
+    getPipelineCounts(todayStart),
+    getRecentProspects(),
+    getRecentActivity(),
+    getLatestWorker(),
+    countFollowUpsDue(endOfTodayIso(settings.timezone)),
+  ]);
+
+  const failures = [settingsResult, pipelineResult, recentResult, activityResult, workerResult].flatMap(
+    (result) => (result.ok ? [] : [result]),
+  );
+  const missing = failures.find((result) => result.missingTable);
+  const failure = failures.find((result) => !result.missingTable);
+
+  const counts = pipelineResult.ok ? pipelineResult.data : emptyPipeline();
+  const health = getWorkerHealth({
+    status: workerResult.ok ? workerResult.data?.status ?? null : null,
+    lastHeartbeatAt: workerResult.ok ? workerResult.data?.last_heartbeat_at ?? null : null,
+    heartbeatIntervalSeconds: settings.heartbeatIntervalSeconds,
+  });
+  const worker = workerResult.ok ? workerResult.data : null;
+
+  const cards = [
+    { label: "Found today", value: counts.foundToday, hint: "Since midnight", icon: Inbox },
+    { label: "Qualified", value: counts.qualified, hint: "Matches targeting criteria", icon: Sparkles },
+    { label: "Pending review", value: counts.pendingReview, hint: "Needs a decision", icon: UserCheck },
+    { label: "Approved", value: counts.approvedCurrent, hint: "Ready for outreach", icon: Check },
+    { label: "Contacted", value: counts.contacted, hint: "Messages sent", icon: MessageSquare },
+    { label: "Replies", value: counts.replied, hint: "Replies recorded", icon: Reply },
+    { label: "Demos", value: counts.demoBooked, hint: "Demos booked", icon: CalendarClock },
+    { label: "Follow-ups due", value: dueFollowUps, hint: "Due today or overdue", icon: CalendarClock },
+  ];
+
+  return (
+    <div>
+      <PageHeader
+        title="Overview"
+        description="A live read of prospect records, review work, and the local worker."
+      />
+      {missing ? <div className="mb-6"><DatabaseSetup message={missing.error} /></div> : null}
+      {failure ? (
+        <div className="mb-6 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+          {failure.error}
+        </div>
+      ) : null}
+
+      <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-4">
+        {cards.map((card) => (
+          <StatCard
+            key={card.label}
+            label={card.label}
+            value={String(card.value)}
+            hint={card.hint}
+            icon={card.icon}
+          />
+        ))}
+      </div>
+
+      <div className="mt-6 grid gap-4 lg:grid-cols-5">
+        <section className="rounded-xl border border-slate-200 bg-white p-5 lg:col-span-3">
+          <h2 className="text-sm font-semibold text-slate-900">Outreach funnel</h2>
+          <p className="mt-1 text-xs text-slate-500">
+            Each stage counts prospects with that milestone recorded.
+          </p>
+          <div className="mt-5">
+            <FunnelChart
+              stages={[
+                { label: "Discovered", count: counts.discovered },
+                { label: "Qualified", count: counts.qualified },
+                { label: "Approved", count: counts.approved },
+                { label: "Contacted", count: counts.contacted },
+                { label: "Replied", count: counts.replied },
+                { label: "Demo booked", count: counts.demoBooked },
+                { label: "Converted", count: counts.converted },
+              ]}
+            />
+          </div>
+        </section>
+        <div className="lg:col-span-2">
+          <WorkerSummary
+            health={health}
+            machineName={worker?.machine_name || "Not reported"}
+            osLabel={platformLabel(worker?.platform)}
+            lastHeartbeat={
+              worker?.last_heartbeat_at
+                ? formatRelativeTime(worker.last_heartbeat_at)
+                : "Never"
+            }
+            currentTask={worker?.current_task || "None"}
+          />
+        </div>
+      </div>
+
+      <div className="mt-4 grid gap-4 lg:grid-cols-5">
+        <div className="lg:col-span-3">
+          <RecentProspects
+            prospects={(recentResult.ok ? recentResult.data : []).map((prospect) => ({
+              id: prospect.id,
+              name: nameOf(prospect),
+              username: prospect.instagram_username,
+              status: prospect.status,
+              followers: prospect.follower_count,
+              discoveredLabel: formatDate(
+                prospect.discovered_at,
+                settings.timezone,
+                settings.dateFormat,
+              ),
+              pictureUrl: prospect.profile_picture_url,
+              fitLabel: prospect.fit_label,
+              fitScore: prospect.fit_score,
+            }))}
+          />
+        </div>
+        <div className="lg:col-span-2">
+          <RecentActivity
+            events={(activityResult.ok ? activityResult.data : []).map((event) => ({
+              id: event.id,
+              description: event.description,
+              timeLabel: formatRelativeTime(event.created_at),
+              href: event.prospect_id ? `/prospects/${event.prospect_id}` : null,
+              eventType: event.event_type,
+            }))}
+          />
+        </div>
+      </div>
+    </div>
+  );
+}

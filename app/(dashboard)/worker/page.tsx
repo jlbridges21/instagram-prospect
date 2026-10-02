@@ -1,0 +1,74 @@
+import type { Metadata } from "next";
+import { DatabaseSetup } from "@/components/layout/database-setup";
+import { PageHeader } from "@/components/layout/page-header";
+import { WorkerStatusPanel } from "@/components/worker/worker-status";
+import { fallbackSettings, getSettings } from "@/lib/db/settings";
+import { getLatestWorker } from "@/lib/db/workers";
+import { formatDateTime, formatRelativeTime, platformLabel } from "@/lib/utils/format";
+import { getWorkerHealth } from "@/lib/utils/worker-health";
+
+export const metadata: Metadata = { title: "Worker" };
+
+export default async function WorkerPage() {
+  const [workerResult, settingsResult] = await Promise.all([getLatestWorker(), getSettings()]);
+  const settings = settingsResult.ok ? settingsResult.data : fallbackSettings();
+  const worker = workerResult.ok ? workerResult.data : null;
+  const health = getWorkerHealth({
+    status: worker?.status ?? null,
+    lastHeartbeatAt: worker?.last_heartbeat_at ?? null,
+    heartbeatIntervalSeconds: settings.heartbeatIntervalSeconds,
+  });
+
+  const yesNo = (value: boolean | undefined) => {
+    if (!worker) return "Not reported";
+    return value ? "Yes" : "No";
+  };
+
+  return (
+    <div>
+      <PageHeader
+        title="Worker"
+        description="The browser worker runs on your Mac or Windows machine. It does not run on Vercel."
+      />
+      {!workerResult.ok && workerResult.missingTable ? (
+        <div className="mb-6">
+          <DatabaseSetup message={workerResult.error} />
+        </div>
+      ) : null}
+      {!workerResult.ok && !workerResult.missingTable ? (
+        <div className="mb-6 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+          {workerResult.error}
+        </div>
+      ) : null}
+      <WorkerStatusPanel
+        health={health}
+        connected={health.state === "online"}
+        rows={[
+          { label: "Machine name", value: worker?.machine_name || "Not reported" },
+          { label: "Platform", value: platformLabel(worker?.platform) },
+          { label: "Hostname", value: worker?.hostname || "Not reported" },
+          { label: "Worker ID", value: worker?.worker_id || "Not reported" },
+          {
+            label: "Last heartbeat",
+            value: worker?.last_heartbeat_at
+              ? `${formatRelativeTime(worker.last_heartbeat_at)} (${formatDateTime(worker.last_heartbeat_at, settings.timezone, settings.dateFormat)})`
+              : "Never",
+          },
+          { label: "Current task", value: worker?.current_task || "None" },
+          { label: "Browser connected", value: yesNo(worker?.browser_connected) },
+          { label: "Instagram authenticated", value: yesNo(worker?.instagram_authenticated) },
+          {
+            label: "Started at",
+            value: worker?.started_at
+              ? formatDateTime(worker.started_at, settings.timezone, settings.dateFormat)
+              : "Not reported",
+          },
+          {
+            label: "Connection health",
+            value: health.label,
+          },
+        ]}
+      />
+    </div>
+  );
+}

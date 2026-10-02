@@ -1,0 +1,33 @@
+import type { DateFormat, PreferredBrowser } from "@/lib/constants/settings";
+
+export type AppSettings = {
+  messageTemplate: string;
+  appName: string;
+  timezone: string;
+  dateFormat: DateFormat;
+  workerEnabled: boolean;
+  preferredBrowser: PreferredBrowser;
+  heartbeatIntervalSeconds: number;
+  maxActiveWorkers: number;
+  updatedAt: string | null;
+};
+
+export type TargetingSettings = {
+  categories: string[];
+  minFollowers: number;
+  maxFollowers: number;
+  englishOnly: boolean;
+  preferUnitedStates: boolean;
+  allowUnknownLocation: boolean;
+  excludeAlreadyFollowing: boolean;
+  excludeAlreadyContacted: boolean;
+  excludeHobbyAccounts: boolean;
+  excludeMemeAccounts: boolean;
+  excludeLargeAgencies: boolean;
+  excludeUnrelatedDrone: boolean;
+  updatedAt: string | null;
+};
+
+export type DataResult<T> =
+  | { ok: true; data: T }
+  | { ok: false; error: string; missingTable: boolean };

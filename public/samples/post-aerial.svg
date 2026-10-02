@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 360">
+  <rect width="640" height="360" fill="#E0E7FF"/>
+  <rect x="48" y="48" width="544" height="264" rx="16" fill="#EEF2FF"/>
+  <circle cx="220" cy="150" r="46" fill="#4F46E5"/>
+  <path d="M80 270c40-70 90-100 140-100s90 40 140 40 80-30 160-90v150H80z" fill="#C7D2FE"/>
+  <text x="48" y="36" fill="#475569" font-family="Inter, Arial, sans-serif" font-size="14">Sample source post</text>
+</svg>

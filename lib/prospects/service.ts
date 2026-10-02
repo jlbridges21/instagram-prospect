@@ -1,0 +1,357 @@
+import "server-only";
+
+import type { SupabaseClient } from "@supabase/supabase-js";
+import { logActivities } from "@/lib/activity/log";
+import type { ActivityEventType, ProspectSource, ProspectStatus } from "@/lib/constants/prospects";
+import type { Database, Json } from "@/lib/db/types";
+import { canApprove, canSkip } from "@/lib/prospects/status";
+import { normalizeUsername, profileUrlForUsername } from "@/lib/utils/format";
+
+type Client = SupabaseClient<Database>;
+
+export type ManualProspectInput = {
+  instagramUsername: string;
+  displayName: string;
+  firstName: string;
+  profileUrl: string;
+  profilePictureUrl: string;
+  bio: string;
+  followerCount: string;
+  followingCount: string;
+  location: string;
+  language: string;
+  category: string;
+  fitScore: string;
+  qualificationReason: string;
+  sourcePostUrl: string;
+  sourcePostThumbnailUrl: string;
+  notes: string;
+};
+
+const USERNAME_PATTERN = /^[a-z0-9._]{1,30}$/;
+
+function blank(value: string) {
+  const trimmed = value.trim();
+  return trimmed ? trimmed : null;
+}
+
+function countOrNull(value: string) {
+  const trimmed = value.trim();
+  if (!trimmed) return { ok: true as const, value: null };
+  if (!/^\d+$/.test(trimmed)) return { ok: false as const, error: "Follower counts must be whole numbers." };
+  return { ok: true as const, value: Number.parseInt(trimmed, 10) };
+}
+
+function timestampPatch(status: "approved" | "skipped", now: string) {
+  if (status === "approved") {
+    return { status, approved_at: now, last_status_changed_at: now };
+  }
+  return { status: "skipped" as const, last_status_changed_at: now };
+}
+
+export async function changeProspectStatus(
+  supabase: Client,
+  input: {
+    ids: string[];
+    status: "approved" | "skipped";
+    actor: string;
+  },
+) {
+  const uniqueIds = [...new Set(input.ids)];
+  const now = new Date().toISOString();
+  const allowed = input.status === "approved" ? canApprove : canSkip;
+  const updated: { id: string; instagram_username: string }[] = [];
+
+  for (let index = 0; index < uniqueIds.length; index += 100) {
+    const chunk = uniqueIds.slice(index, index + 100);
+    const { data: current, error: readError } = await supabase
+      .from("prospects")
+      .select("id, status")
+      .in("id", chunk);
+
+    if (readError) return { ok: false as const, error: readError.message, updated };
+
+    const eligible = (current ?? [])
+      .filter((row) => allowed(row.status))
+      .map((row) => row.id);
+    if (eligible.length === 0) continue;
+
+    const { data, error } = await supabase
+      .from("prospects")
+      .update(timestampPatch(input.status, now))
+      .in("id", eligible)
+      .select("id, instagram_username");
+
+    if (error) return { ok: false as const, error: error.message, updated };
+    updated.push(...(data ?? []));
+  }
+
+  if (updated.length === 0) {
+    return {
+      ok: false as const,
+      error:
+        input.status === "approved"
+          ? "None of the selected prospects can be approved."
+          : "None of the selected prospects can be skipped.",
+      updated,
+    };
+  }
+
+  const eventType: ActivityEventType =
+    input.status === "approved" ? "prospect_approved" : "prospect_skipped";
+
+  const logged = await logActivities(
+    supabase,
+    updated.map((prospect) => ({
+      prospectId: prospect.id,
+      eventType,
+      description:
+        input.status === "approved"
+          ? `Approved @${prospect.instagram_username} for outreach.`
+          : `Skipped @${prospect.instagram_username}.`,
+      metadata: { actor: input.actor },
+    })),
+  );
+
+  const missed = uniqueIds.length - updated.length;
+  const message =
+    missed > 0
+      ? `Updated ${updated.length} of ${uniqueIds.length}. ${missed} were no longer eligible.`
+      : undefined;
+
+  if (!logged.ok) {
+    return {
+      ok: true as const,
+      updated,
+      message: message ?? "Status updated. The activity log could not be written.",
+    };
+  }
+
+  return { ok: true as const, updated, message };
+}
+
+export async function createManualProspect(
+  supabase: Client,
+  input: ManualProspectInput,
+  actor: string,
+) {
+  const username = normalizeUsername(input.instagramUsername);
+  if (!USERNAME_PATTERN.test(username)) {
+    return {
+      ok: false as const,
+      error: "Username can use letters, numbers, periods, and underscores.",
+    };
+  }
+
+  const followers = countOrNull(input.followerCount);
+  if (!followers.ok) return followers;
+  const following = countOrNull(input.followingCount);
+  if (!following.ok) return following;
+
+  let fitScore: number | null = null;
+  const fitText = input.fitScore.trim();
+  if (fitText) {
+    const parsed = Number.parseInt(fitText, 10);
+    if (!Number.isInteger(parsed) || parsed < 0 || parsed > 100) {
+      return { ok: false as const, error: "Fit score must be a whole number from 0 to 100." };
+    }
+    fitScore = parsed;
+  }
+
+  const fitLabel =
+    fitScore === null ? null : fitScore >= 80 ? "strong_fit" : fitScore >= 50 ? "possible_fit" : "skip";
+
+  const now = new Date().toISOString();
+  const { data, error } = await supabase
+    .from("prospects")
+    .insert({
+      instagram_username: username,
+      display_name: blank(input.displayName),
+      first_name: blank(input.firstName),
+      profile_url: profileUrlForUsername(username, input.profileUrl),
+      profile_picture_url: blank(input.profilePictureUrl),
+      bio: blank(input.bio),
+      follower_count: followers.value,
+      following_count: following.value,
+      location_text: blank(input.location),
+      language: blank(input.language),
+      category: blank(input.category),
+      fit_score: fitScore,
+      fit_label: fitLabel,
+      qualification_reason: blank(input.qualificationReason),
+      qualified: fitScore !== null && fitScore >= 50,
+      already_following: false,
+      already_contacted: false,
+      status: "review",
+      notes: blank(input.notes),
+      source: "manual" satisfies ProspectSource,
+      instagram_post_url: blank(input.sourcePostUrl),
+      instagram_post_thumbnail_url: blank(input.sourcePostThumbnailUrl),
+      discovered_at: now,
+      last_status_changed_at: now,
+      is_sample: false,
+    })
+    .select("id, instagram_username")
+    .single();
+
+  if (error) {
+    if (error.code === "23505") {
+      return {
+        ok: false as const,
+        error: `@${username} is already in the workspace.`,
+      };
+    }
+    return { ok: false as const, error: error.message };
+  }
+
+  await logActivities(supabase, [
+    {
+      prospectId: data.id,
+      eventType: "prospect_discovered",
+      description: `Added @${data.instagram_username} manually.`,
+      metadata: { actor, source: "manual" },
+    },
+  ]);
+
+  return { ok: true as const, id: data.id, username: data.instagram_username };
+}
+
+export async function saveMessageOverride(
+  supabase: Client,
+  id: string,
+  override: string | null,
+) {
+  const { error } = await supabase
+    .from("prospects")
+    .update({ message_override: override })
+    .eq("id", id);
+
+  if (error) return { ok: false as const, error: error.message };
+  return { ok: true as const };
+}
+
+export type WorkerProspectInput = {
+  instagram_username: string;
+  display_name?: string | null;
+  first_name?: string | null;
+  profile_url?: string | null;
+  profile_picture_url?: string | null;
+  bio?: string | null;
+  follower_count?: number | null;
+  following_count?: number | null;
+  location_text?: string | null;
+  language?: string | null;
+  already_following?: boolean;
+  instagram_post_url?: string | null;
+  instagram_post_thumbnail_url?: string | null;
+  source?: ProspectSource;
+};
+
+export async function ingestWorkerProspect(supabase: Client, input: WorkerProspectInput) {
+  const username = normalizeUsername(input.instagram_username);
+  if (!USERNAME_PATTERN.test(username)) {
+    return { ok: false as const, status: 400, error: "Username is not valid." };
+  }
+
+  const { data: existing, error: existingError } = await supabase
+    .from("prospects")
+    .select("id")
+    .eq("instagram_username", username)
+    .maybeSingle();
+
+  if (existingError) return { ok: false as const, status: 500, error: "Could not check for an existing prospect." };
+  if (existing) {
+    return {
+      ok: true as const,
+      created: false as const,
+      reason: "duplicate" as const,
+      prospectId: existing.id,
+      queued: false,
+    };
+  }
+
+  const following = Boolean(input.already_following);
+  const status: ProspectStatus = following ? "disqualified" : "discovered";
+  const now = new Date().toISOString();
+  const { data, error } = await supabase
+    .from("prospects")
+    .insert({
+      instagram_username: username,
+      display_name: input.display_name ?? null,
+      first_name: input.first_name ?? null,
+      profile_url: profileUrlForUsername(username, input.profile_url),
+      profile_picture_url: input.profile_picture_url ?? null,
+      bio: input.bio ?? null,
+      follower_count: input.follower_count ?? null,
+      following_count: input.following_count ?? null,
+      location_text: input.location_text ?? null,
+      language: input.language ?? null,
+      already_following: following,
+      already_contacted: false,
+      qualified: false,
+      status,
+      source: input.source ?? "home_feed",
+      instagram_post_url: input.instagram_post_url ?? null,
+      instagram_post_thumbnail_url: input.instagram_post_thumbnail_url ?? null,
+      qualification_reason: following ? "Already following this account." : null,
+      discovered_at: now,
+      last_status_changed_at: now,
+      is_sample: false,
+    })
+    .select("id")
+    .single();
+
+  if (error) {
+    if (error.code === "23505") {
+      const { data: raced } = await supabase
+        .from("prospects")
+        .select("id")
+        .eq("instagram_username", username)
+        .maybeSingle();
+      if (raced) {
+        return {
+          ok: true as const,
+          created: false as const,
+          reason: "duplicate" as const,
+          prospectId: raced.id,
+          queued: false,
+        };
+      }
+    }
+    console.error("Worker prospect insert failed:", error.message);
+    return { ok: false as const, status: 500, error: "Could not store the prospect." };
+  }
+
+  const events: {
+    prospectId: string;
+    eventType: ActivityEventType;
+    description: string;
+    metadata: Json;
+  }[] = [
+    {
+      prospectId: data.id,
+      eventType: "prospect_discovered",
+      description: `Discovered @${username}.`,
+      metadata: { source: input.source ?? "home_feed", actor: "worker" },
+    },
+  ];
+
+  if (following) {
+    events.push({
+      prospectId: data.id,
+      eventType: "prospect_disqualified",
+      description: `Disqualified @${username} because the account is already followed.`,
+      metadata: { actor: "worker", reason: "already_following" },
+    });
+  }
+
+  await logActivities(supabase, events);
+
+  return {
+    ok: true as const,
+    created: true as const,
+    prospectId: data.id,
+    queued: false,
+    status,
+  };
+}
