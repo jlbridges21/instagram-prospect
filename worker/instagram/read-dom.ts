@@ -6,16 +6,25 @@ const NAVIGATION_TIMEOUT_MS = 25_000;
 
 const READ_DOM_SOURCE = `() => {
   const textOf = (node) => (node.textContent || "").trim().replace(/\\s+/g, " ").slice(0, 180);
-  const links = [...document.querySelectorAll("a")].slice(0, 250).map((anchor) => ({
-    href: anchor.getAttribute("href") || "",
-    text: textOf(anchor),
-  }));
-  const buttons = [...document.querySelectorAll("button, [role='button']")]
-    .slice(0, 80)
-    .map((button) => ({
-      name: (button.getAttribute("aria-label") || button.textContent || "").trim().replace(/\\s+/g, " ").slice(0, 80),
-    }))
-    .filter((button) => button.name);
+  const buttonOf = (button) => {
+    const text = (button.textContent || "").trim().replace(/\\s+/g, " ").slice(0, 80);
+    const label = (button.getAttribute("aria-label") || "").trim().slice(0, 80);
+    return { name: label || text, text, label };
+  };
+  const links = [...document.querySelectorAll("a")].slice(0, 250).map((anchor) => {
+    const titled = anchor.querySelector("[title]");
+    return {
+      href: anchor.getAttribute("href") || "",
+      text: textOf(anchor),
+      label: (anchor.getAttribute("aria-label") || "").trim(),
+      title: (anchor.getAttribute("title") || (titled && titled.getAttribute("title")) || "").trim(),
+    };
+  });
+  const buttons = [...document.querySelectorAll("button, [role='button']")].slice(0, 80).map(buttonOf).filter((button) => button.name);
+  const header = document.querySelector("header");
+  const headerButtons = header ? [...header.querySelectorAll("button, [role='button']")].slice(0, 20).map(buttonOf).filter((button) => button.name) : [];
+  const headerLines = header ? (header.innerText || "").split(/\\n+/).map((line) => line.trim()).filter(Boolean).slice(0, 40) : [];
+  const meta = document.querySelector('meta[property="og:description"]') || document.querySelector('meta[name="description"]');
   const images = [...document.querySelectorAll("img")].slice(0, 20).map((image) => ({
     alt: image.alt || "",
     src: image.currentSrc || image.src || "",
@@ -37,7 +46,6 @@ const READ_DOM_SOURCE = `() => {
     .slice(0, 30)
     .map((node) => textOf(node))
     .filter(Boolean);
-  const header = document.querySelector("header");
   const bioNode = document.querySelector("[data-bio]");
   return {
     url: location.href,
@@ -50,7 +58,11 @@ const READ_DOM_SOURCE = `() => {
     articles,
     hasPasswordField: Boolean(document.querySelector("input[type='password']")),
     threadMessages,
-    bioText: ((bioNode && bioNode.textContent) || (header && header.innerText) || "").trim().slice(0, 500) || null,
+    bioText: (bioNode && bioNode.textContent || "").trim().slice(0, 500) || null,
+    headerLines,
+    headerButtons,
+    metaDescription: meta ? (meta.getAttribute("content") || "").slice(0, 500) : null,
+    profileIsPrivate: /this account is private/i.test(document.body && document.body.innerText || ""),
   };
 }`;
 

@@ -50,5 +50,7 @@ export async function GET(request: Request) {
     maxProfilesPerHour: settings?.max_profiles_per_hour ?? 30,
     discoveryScrollDelaySeconds: settings?.discovery_scroll_delay_seconds ?? 5,
     discoveryDuplicateCooldownDays: settings?.discovery_duplicate_cooldown_days ?? 30,
+    workerVersion: "6",
+    minSupportedWorkerVersion: "6",
   });
 }

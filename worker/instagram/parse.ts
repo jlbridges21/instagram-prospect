@@ -62,12 +62,69 @@ export function profileUrlFor(username: string) {
 
 export type FollowRelationship = "following" | "not_following" | "requested" | "unknown";
 
+export function controlRelationship(value: string): FollowRelationship | null {
+  const text = value.replace(/\s+/g, " ").trim();
+  if (!text || text.length > 80) return null;
+  if (/\d/.test(text) && /follower|following|posts/i.test(text)) return null;
+  if (/^requested\b/i.test(text)) return "requested";
+  if (/^unfollow\b/i.test(text)) return "following";
+  if (/^following\b/i.test(text)) return "following";
+  if (/^follow back\b/i.test(text)) return "not_following";
+  if (/^follow\b/i.test(text)) return "not_following";
+  return null;
+}
+
 export function relationshipFromLabels(labels: string[]): FollowRelationship {
-  const names = labels.map((label) => label.trim()).filter(Boolean);
-  if (names.some((label) => /^requested$/i.test(label))) return "requested";
-  if (names.some((label) => /^following$/i.test(label))) return "following";
-  if (names.some((label) => /^follow$/i.test(label))) return "not_following";
+  const matches: FollowRelationship[] = [];
+  for (const label of labels) {
+    const relationship = controlRelationship(label);
+    if (relationship) matches.push(relationship);
+  }
+  if (matches.length === 0) return "unknown";
+  const first = matches[0];
+  if (first === "following" || first === "requested") return first;
+  if (matches.some((item) => item === "following" || item === "requested")) return "unknown";
+  if (matches.every((item) => item === "not_following")) return "not_following";
   return "unknown";
+}
+
+export function displayNameFromTitle(title: string, username: string | null) {
+  let name = title.replace(/\s*[•|].*$/, "").trim();
+  name = name.replace(/\s*\(@[^)]+\)\s*/g, " ").replace(/\s+/g, " ").trim();
+  name = name.replace(/\s+on Instagram$/i, "").replace(/['’]s profile picture$/i, "").trim();
+  if (!name || /^instagram$/i.test(name)) return null;
+  if (username && name.toLowerCase() === username.toLowerCase()) return null;
+  return name;
+}
+
+export function cleanProfileBio(lines: string[], username: string | null, displayName: string | null) {
+  const noise = /^(follow|follow back|following|requested|message|share|posts?|followers?|following)$/i;
+  const kept = lines
+    .map((line) => line.replace(/\s+/g, " ").trim())
+    .filter((line) => {
+      if (line.length < 2) return false;
+      if (username && line.toLowerCase() === username.toLowerCase()) return false;
+      if (displayName && line.toLowerCase() === displayName.toLowerCase()) return false;
+      if (noise.test(line)) return false;
+      if (/\d/.test(line) && /follower|following|posts/i.test(line)) return false;
+      if (/^@?[a-z0-9._]{1,30}$/i.test(line) && username && line.replace(/^@/, "").toLowerCase() === username) return false;
+      return true;
+    });
+  const bio = kept.join("\n").trim();
+  return bio ? bio.slice(0, 2200) : null;
+}
+
+export function countFromLabeledText(texts: Array<string | null | undefined>, label: "followers" | "following") {
+  for (const text of texts) {
+    if (!text) continue;
+    const pattern = label === "followers" ? /follower/i : /following/i;
+    const other = label === "followers" ? null : /follower/i;
+    if (!pattern.test(text)) continue;
+    if (other?.test(text)) continue;
+    const count = parseFollowerCount(text);
+    if (count !== null) return count;
+  }
+  return null;
 }
 
 export function isExcludedRelationship(relationship: FollowRelationship) {

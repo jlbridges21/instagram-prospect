@@ -23,6 +23,10 @@ export function screenshotDir() {
   return path.join(logDir(), "screenshots");
 }
 
+export function debugDir() {
+  return path.join(logDir(), "debug");
+}
+
 export function pendingResultsPath() {
   return path.join(workerHome(), "pending-results.json");
 }

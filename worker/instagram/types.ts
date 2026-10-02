@@ -1,5 +1,5 @@
-export type DomLink = { href: string; text: string };
-export type DomButton = { name: string };
+export type DomLink = { href: string; text: string; label?: string; title?: string };
+export type DomButton = { name: string; text?: string; label?: string };
 export type DomImage = { alt: string; src: string };
 export type DomTextbox = { name: string; value: string };
 export type DomArticle = { text: string; links: DomLink[] };
@@ -16,6 +16,10 @@ export type DomSnapshot = {
   hasPasswordField: boolean;
   threadMessages: string[];
   bioText: string | null;
+  headerLines?: string[];
+  headerButtons?: DomButton[];
+  metaDescription?: string | null;
+  profileIsPrivate?: boolean;
 };
 
 export type FeedCandidate = {
@@ -32,6 +36,9 @@ export type ProfileExtract = {
   followingCount: number | null;
   profilePictureUrl: string | null;
   relationship: import("./parse").FollowRelationship;
+  locationText: string | null;
+  profileIsPrivate: boolean;
+  strategies: Record<string, string>;
 };
 
 export type PageSignal =

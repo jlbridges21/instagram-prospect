@@ -13,6 +13,8 @@ import type { ProspectRow } from "@/lib/db/types";
 import { createClient } from "@/lib/supabase/server";
 import { sanitizeSearch } from "@/lib/utils/format";
 
+export type ProspectView = "active" | "review" | "approved" | "contacted" | "excluded" | "all";
+
 export type ProspectQuery = {
   q: string;
   status: ProspectStatus | "all";
@@ -23,6 +25,7 @@ export type ProspectQuery = {
   maxFollowers: string;
   sort: ProspectSort;
   page: number;
+  view: ProspectView;
 };
 
 export async function getProspectPage(
@@ -34,6 +37,17 @@ export async function getProspectPage(
 
   let request = supabase.from("prospects").select("*", { count: "exact" });
 
+  if (query.view === "active") {
+    request = request.eq("already_following", false).not("status", "in", "(disqualified,skipped)");
+  } else if (query.view === "review") {
+    request = request.in("status", ["qualified", "review"]);
+  } else if (query.view === "approved") {
+    request = request.eq("status", "approved");
+  } else if (query.view === "contacted") {
+    request = request.in("status", ["contacted", "replied", "follow_up", "demo_booked", "converted"]);
+  } else if (query.view === "excluded") {
+    request = request.or("already_following.eq.true,status.eq.disqualified,status.eq.skipped");
+  }
   if (query.status !== "all") request = request.eq("status", query.status);
   if (query.fit !== "all") request = request.eq("fit_label", query.fit);
   if (query.category) request = request.eq("category", query.category);

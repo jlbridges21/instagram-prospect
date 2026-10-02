@@ -32,6 +32,7 @@ export const WORKER_ERROR_CODES = [
   "unknown",
   "existing_conversation",
   "action_blocked",
+  "preexisting_follow",
 ] as const;
 
 export type WorkerErrorCode = (typeof WORKER_ERROR_CODES)[number];

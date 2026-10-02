@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import type { Page } from "playwright";
-import { screenshotDir } from "../paths";
+import { debugDir, screenshotDir } from "../paths";
 import { AttentionError, SelectorError } from "./errors";
 import {
   composerValue,
@@ -15,6 +15,7 @@ import {
 } from "./interpret";
 import { isExcludedRelationship, profileUrlFor, type FollowRelationship } from "./parse";
 import { openUrl, readDom } from "./read-dom";
+import type { DomSnapshot } from "./types";
 
 const ACTION_TIMEOUT_MS = 8_000;
 
@@ -37,15 +38,52 @@ export async function readProfile(page: Page, username: string) {
 }
 
 async function inspectCurrent(page: Page, username: string) {
-  const dom = await readDom(page);
+  await page.waitForSelector("header, main", { timeout: ACTION_TIMEOUT_MS }).catch(() => undefined);
+  let dom = await readDom(page);
+  let profile = profileFromDom(dom, username);
+  const started = Date.now();
+  while (
+    Date.now() - started < ACTION_TIMEOUT_MS &&
+    profile.relationship === "unknown" &&
+    profile.followerCount === null
+  ) {
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    dom = await readDom(page);
+    profile = profileFromDom(dom, username);
+  }
   const signal = pageSignal(dom);
   if (signal === "login_required" || signal === "instagram_checkpoint" || signal === "action_blocked" || signal === "rate_limited") {
     throw new AttentionError(signal, attentionMessage(signal));
   }
   if (signal === "profile_not_found") {
-    return { profileExists: false as const, relationship: "unknown" as FollowRelationship, profile: profileFromDom(dom, username) };
+    return { profileExists: false as const, relationship: "unknown" as FollowRelationship, profile };
   }
-  return { profileExists: true as const, relationship: profileFromDom(dom, username).relationship, profile: profileFromDom(dom, username) };
+  if (process.argv.includes("--debug")) {
+    console.log(`@${username}`);
+    console.log(`relationship: ${profile.relationship} (${profile.strategies.relationship})`);
+    console.log(`followers: ${profile.followerCount ?? "unknown"} (${profile.strategies.followers})`);
+    console.log(`display_name: ${profile.displayName ?? "unknown"} (${profile.strategies.displayName})`);
+    console.log(`bio_length: ${profile.bio?.length ?? 0} (${profile.strategies.bio})`);
+    if (profile.relationship === "unknown" || profile.followerCount === null) {
+      saveDebugSnapshot(username, dom);
+    }
+  }
+  return { profileExists: true as const, relationship: profile.relationship, profile };
+}
+
+function saveDebugSnapshot(username: string, dom: DomSnapshot) {
+  fs.mkdirSync(debugDir(), { recursive: true });
+  const file = path.join(debugDir(), `${Date.now()}-${username}.json`);
+  const safe = {
+    url: dom.url,
+    title: dom.title,
+    headerLines: dom.headerLines ?? [],
+    headerButtons: dom.headerButtons ?? [],
+    buttons: dom.buttons.slice(0, 30),
+    links: dom.links.filter((link) => /follower|following|posts/i.test(`${link.text} ${link.label ?? ""} ${link.href}`)).slice(0, 20),
+    metaDescription: dom.metaDescription ?? null,
+  };
+  fs.writeFileSync(file, JSON.stringify(safe, null, 2));
 }
 
 export async function followProfile(page: Page, username: string) {
@@ -75,6 +113,16 @@ export async function sendExactMessage(page: Page, username: string, message: st
   const current = await readProfile(page, username);
   if (!current.profileExists) {
     return { sent: false, profileExists: false };
+  }
+  if (current.profile.username && current.profile.username !== username.toLowerCase()) {
+    throw new SelectorError(`The open profile is @${current.profile.username}, not @${username}.`);
+  }
+  if (!message.trim()) throw new SelectorError("The send job did not include the locked message.");
+  if (current.relationship === "requested") {
+    return { sent: false, dmUnavailable: true, profileExists: true };
+  }
+  if (current.relationship !== "following") {
+    throw new SelectorError(`@${username} is not followed by this outreach sequence, so the message was not sent.`);
   }
   const messageButton = page.getByRole("button", { name: /^Message$/ });
   if ((await messageButton.count()) === 0) {
@@ -108,6 +156,41 @@ export async function sendExactMessage(page: Page, username: string, message: st
     throw new SelectorError("The message click did not show a confirmed thread entry.");
   }
   return { sent: true };
+}
+
+export async function previewOutreach(page: Page, username: string, message: string | null) {
+  const current = await readProfile(page, username);
+  const report = {
+    profileExists: current.profileExists,
+    username: current.profile.username,
+    relationship: current.relationship,
+    followers: current.profile.followerCount,
+    displayName: current.profile.displayName,
+    wouldFollow: current.profileExists && current.relationship === "not_following",
+    wouldSend: false,
+    existingConversation: false,
+    message: message ?? "",
+  };
+  if (!current.profileExists || !message) return report;
+  const messageButton = page.getByRole("button", { name: /^Message$/ });
+  if ((await messageButton.count()) === 0) return report;
+  await messageButton.click({ timeout: ACTION_TIMEOUT_MS });
+  const opened = await readDom(page);
+  const openedSignal = pageSignal(opened);
+  if (openedSignal === "instagram_checkpoint" || openedSignal === "action_blocked" || openedSignal === "rate_limited" || openedSignal === "login_required") {
+    throw new AttentionError(openedSignal, attentionMessage(openedSignal));
+  }
+  if (hasPriorConversation(opened, message)) {
+    return { ...report, existingConversation: true, wouldSend: false };
+  }
+  if (!hasMessageComposer(opened)) return report;
+  const box = page.getByRole("textbox", { name: /message/i });
+  await box.fill(message, { timeout: ACTION_TIMEOUT_MS });
+  const typed = await readDom(page);
+  return {
+    ...report,
+    wouldSend: composerValue(typed) === message && current.relationship === "not_following",
+  };
 }
 
 export async function scrollFeed(page: Page) {

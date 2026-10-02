@@ -419,7 +419,7 @@ async function completeFollow(admin: Client, job: OutreachJobRow, result: unknow
   await logActivity(admin, {
     prospectId: job.prospect_id,
     eventType: "prospect_followed",
-    description: "Follow step completed.",
+    description: `Followed @${(await admin.from("prospects").select("instagram_username").eq("id", job.prospect_id).maybeSingle()).data?.instagram_username ?? "account"}.`,
     metadata: { jobId: job.id },
   });
   return { ok: true as const };
@@ -483,7 +483,7 @@ async function completeSend(admin: Client, job: OutreachJobRow, result: unknown,
 
   const prospect = await admin
     .from("prospects")
-    .select("queued_message_text, instagram_username, outreach_cancelled_at, status")
+    .select("queued_message_text, instagram_username, outreach_cancelled_at, status, already_following")
     .eq("id", job.prospect_id)
     .maybeSingle();
   if (prospect.error || !prospect.data) {
@@ -491,6 +491,21 @@ async function completeSend(admin: Client, job: OutreachJobRow, result: unknown,
   }
   if (prospect.data.outreach_cancelled_at) {
     return { ok: false as const, error: "Outreach for this prospect was cancelled.", status: 409 };
+  }
+  if (prospect.data.already_following) {
+    const failed = await failOwnedJob(admin, job, {
+      workerId: job.claimed_by_worker_id ?? "",
+      errorCode: "preexisting_follow",
+      errorMessage: "This account was already followed before outreach, so the message was not sent.",
+      retryable: false,
+      now,
+    });
+    if (!failed.ok) return failed;
+    await admin
+      .from("prospects")
+      .update({ outreach_cancelled_at: now.toISOString() })
+      .eq("id", job.prospect_id);
+    return { ok: true as const };
   }
   const snapshot = prospect.data.queued_message_text?.trim();
   if (!snapshot) return { ok: false as const, error: "The approved message snapshot is missing.", status: 409 };
@@ -513,7 +528,7 @@ async function completeSend(admin: Client, job: OutreachJobRow, result: unknown,
   await logActivity(admin, {
     prospectId: job.prospect_id,
     eventType: "message_sent",
-    description: `Message recorded as sent to @${prospect.data.instagram_username}.`,
+    description: `Sent outreach message to @${prospect.data.instagram_username}.`,
     metadata: { jobId: job.id },
   });
   return { ok: true as const };

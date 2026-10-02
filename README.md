@@ -292,3 +292,44 @@ The outreach message is stored in the `settings` table. `{{name}}` is replaced w
 - Store or ask for the Instagram password
 - Approve prospects by itself
 - Send a message or follow an account unless the cloud queue has a job and outreach is running
+
+## Prompt 6 migration
+
+After the Prompt 5 migration, run `supabase/migrations/20261003180000_prompt6_live.sql` once. Do not edit or rerun the earlier migrations. It adds a qualification error field and worker session details.
+
+## Daily operation
+
+Discovery reads the Instagram Home feed. Accounts you already follow, and accounts showing Requested, are stored as excluded and are not sent to AI. New accounts are qualified on the server. Strong and possible fits appear in the Review Queue. Approval is still a manual step. Outreach stays paused until you turn it on.
+
+The Prospects page opens on Active. Excluded holds already-followed, skipped, and disqualified accounts.
+
+```bash
+npm run agent:status
+npm run agent:smoke
+npm run agent -- --debug
+npm run agent -- --discovery-only
+npm run agent -- --outreach-dry-run
+npm run agent -- --single-outreach
+npm run outreach:reconcile
+```
+
+Dry run previews the next queued message without clicking Follow or Send. Single outreach runs one approved sequence and then stops. Reconciliation reports inconsistent jobs. Add `--fix` only when you want it to cancel jobs that belong to excluded prospects.
+
+Windows setup is in `WINDOWS_SETUP.md`.
+
+If startup prints `Worker API authentication failed. Verify that WORKER_API_SECRET matches the value configured in Vercel.`, the local secret does not match Vercel. The worker stops instead of retrying.
+
+If it prints `Worker update required. Run git pull && npm install.`, update the worker before running it again.
+
+## Controlled first outreach test
+
+1. Keep outreach paused and discovery on.
+2. Run `npm run agent -- --discovery-only` and stop after a few new prospects.
+3. Confirm an already-followed account is under Excluded and did not enter Review.
+4. Confirm a new account has a category, a fit score, and a review status.
+5. Approve one prospect and read the locked message.
+6. Run `npm run agent -- --outreach-dry-run` and confirm it does not send.
+7. Resume outreach in Settings.
+8. Run `npm run agent -- --single-outreach`.
+9. Confirm the dashboard shows contacted, then pause outreach again.
+10. Check the Instagram thread by hand.

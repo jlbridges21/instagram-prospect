@@ -264,10 +264,18 @@ export default async function ProspectDetailPage({
                 }}
               />
             ) : (
-              <p className="text-sm text-slate-600">This profile has not been analyzed yet.</p>
+              <p className="text-sm text-slate-600">
+                {prospect.qualification_error
+                  ? `AI analysis did not finish. ${prospect.qualification_error}`
+                  : "This profile has not been analyzed yet."}
+              </p>
             )}
             <div className="mt-4">
-              <QualifyButton id={prospect.id} analyzed={Boolean(prospect.ai_analyzed_at)} />
+              <QualifyButton
+                id={prospect.id}
+                analyzed={Boolean(prospect.ai_analyzed_at)}
+                failed={Boolean(prospect.qualification_error)}
+              />
             </div>
           </Panel>
 

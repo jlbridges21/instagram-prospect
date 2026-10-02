@@ -1,3 +1,5 @@
+import { AUTH_FAILURE_MESSAGE } from "../version";
+
 export type CloudConfig = {
   workerEnabled: boolean;
   automationEnabled: boolean;
@@ -7,6 +9,7 @@ export type CloudConfig = {
   maxProfilesPerHour: number;
   discoveryScrollDelaySeconds: number;
   discoveryDuplicateCooldownDays: number;
+  minSupportedWorkerVersion: string | null;
 };
 
 export type ProspectCheck = {
@@ -43,6 +46,7 @@ export class CloudClient {
       headers: { authorization: `Bearer ${this.secret}` },
       redirect: "manual",
     });
+    if (response.status === 401) throw authError();
     if (!response.ok) throw new Error(`Cloud config returned ${response.status}.`);
     const json = (await response.json()) as Record<string, unknown>;
     return {
@@ -54,6 +58,7 @@ export class CloudClient {
       maxProfilesPerHour: numberOr(json.maxProfilesPerHour, 30),
       discoveryScrollDelaySeconds: numberOr(json.discoveryScrollDelaySeconds, 5),
       discoveryDuplicateCooldownDays: numberOr(json.discoveryDuplicateCooldownDays, 30),
+      minSupportedWorkerVersion: typeof json.minSupportedWorkerVersion === "string" ? json.minSupportedWorkerVersion : null,
     } satisfies CloudConfig;
   }
 
@@ -64,6 +69,7 @@ export class CloudClient {
       headers: { authorization: `Bearer ${this.secret}` },
       redirect: "manual",
     });
+    if (response.status === 401) throw authError();
     if (!response.ok) throw new Error(`Prospect check returned ${response.status}.`);
     return (await response.json()) as ProspectCheck;
   }
@@ -76,17 +82,36 @@ export class CloudClient {
   }
 
   async qualifyProspect(prospectId: string) {
-    return this.request<{ ok: boolean; status?: string; fitLabel?: string; skipped?: boolean }>(
-      `/api/worker/prospects/${prospectId}/qualify`,
-      {},
+    return this.request<{
+      ok: boolean;
+      status?: string;
+      fitLabel?: string;
+      fitScore?: number;
+      category?: string | null;
+      skipped?: boolean;
+      prospectId?: string;
+    }>(`/api/worker/prospects/${prospectId}/qualify`, {});
+  }
+
+  async nextJob(workerId: string, prospectId?: string) {
+    return this.request<{ job: JobPayload | null; reason?: string | null; nextCheckAfterSeconds?: number }>(
+      "/api/worker/jobs/next",
+      { worker_id: workerId, prospect_id: prospectId },
     );
   }
 
-  async nextJob(workerId: string) {
-    return this.request<{ job: JobPayload | null; reason?: string | null; nextCheckAfterSeconds?: number }>(
-      "/api/worker/jobs/next",
-      { worker_id: workerId },
-    );
+  async previewJob() {
+    const response = await fetch(`${this.baseUrl}/api/worker/jobs/preview`, {
+      headers: { authorization: `Bearer ${this.secret}` },
+      redirect: "manual",
+    });
+    if (response.status === 401) throw authError();
+    if (!response.ok) throw new Error(`Job preview returned ${response.status}.`);
+    return (await response.json()) as {
+      job: JobPayload | null;
+      reason?: string | null;
+      outreachPaused?: boolean;
+    };
   }
 
   async startJob(jobId: string, workerId: string) {
@@ -113,13 +138,22 @@ export class CloudClient {
     });
     const json = (await response.json().catch(() => ({}))) as T;
     if (!response.ok) {
-      const message = typeof (json as { error?: unknown }).error === "string" ? (json as { error: string }).error : `Cloud request failed (${response.status}).`;
+      if (response.status === 401) throw authError();
+      const message = typeof (json as { error?: unknown }).error === "string"
+        ? (json as { error: string }).error
+        : `Cloud request failed (${response.status}).`;
       const error = new Error(message) as Error & { statusCode: number };
       error.statusCode = response.status;
       throw error;
     }
     return { ...json, statusCode: response.status };
   }
+}
+
+function authError() {
+  const error = new Error(AUTH_FAILURE_MESSAGE) as Error & { statusCode: number };
+  error.statusCode = 401;
+  return error;
 }
 
 function numberOr(value: unknown, fallback: number) {

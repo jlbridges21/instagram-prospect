@@ -21,6 +21,7 @@ const prospectSchema = z.object({
   instagram_post_url: z.string().trim().max(500).nullable().optional(),
   instagram_post_thumbnail_url: z.string().trim().max(1000).nullable().optional(),
   source: z.enum(PROSPECT_SOURCES).optional(),
+  follow_relationship: z.enum(["following", "not_following", "requested", "unknown"]).optional(),
 });
 
 export async function POST(request: Request) {

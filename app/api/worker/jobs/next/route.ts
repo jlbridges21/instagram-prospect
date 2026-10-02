@@ -33,6 +33,7 @@ export async function POST(request: Request) {
     admin,
     workerId: parsed.data.worker_id,
     settings,
+    prospectId: parsed.data.prospect_id,
   });
   if (!claimed.ok) return workerError(500, claimed.error);
   if (!claimed.job) {

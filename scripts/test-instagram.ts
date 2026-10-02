@@ -14,12 +14,16 @@ import {
   profileFromDom,
 } from "../worker/instagram/interpret";
 import {
+  cleanProfileBio,
+  countFromLabeledText,
+  displayNameFromTitle,
   parseFollowerCount,
   postUrlFromHref,
   profileUrlFor,
   relationshipFromLabels,
   usernameFromHref,
 } from "../worker/instagram/parse";
+import { startupBlock } from "../worker/version";
 import type { DomSnapshot } from "../worker/instagram/types";
 
 const failures: string[] = [];
@@ -65,6 +69,20 @@ check("follow", relationshipFromLabels(["Follow", "Message"]) === "not_following
 check("following", relationshipFromLabels(["Following"]) === "following");
 check("requested", relationshipFromLabels(["Requested"]) === "requested");
 check("unknown relationship", relationshipFromLabels(["Share"]) === "unknown");
+check(
+  "401 startup message",
+  startupBlock(401, "6") === "Worker API authentication failed. Verify that WORKER_API_SECRET matches the value configured in Vercel.",
+);
+check("version mismatch message", startupBlock(200, "7") === "Worker update required. Run git pull && npm install.");
+check("compatible version", startupBlock(200, "6") === null);
+check("follow back is not following", relationshipFromLabels(["Follow Back", "Message"]) === "not_following");
+check("message with follow", relationshipFromLabels(["Message", "Follow"]) === "not_following");
+check("message with following", relationshipFromLabels(["Message", "Following"]) === "following");
+check("message alone is unknown", relationshipFromLabels(["Message"]) === "unknown");
+check("conflicting follow controls are unknown", relationshipFromLabels(["Follow", "Following"]) === "unknown");
+check("display name drops handle", displayNameFromTitle("Dominic Hayles (@dominicl_hayles) • Instagram", "dominicl_hayles") === "Dominic Hayles");
+check("follower title attribute", countFromLabeledText(["12400 followers"], "followers") === 12400);
+check("bio drops counts", cleanProfileBio(["Dominic Hayles", "12.4K followers", "Dallas drone photos"], "dominicl_hayles", "Dominic Hayles") === "Dallas drone photos");
 
 const login = snapshot({
   url: "https://www.instagram.com/accounts/login/",
@@ -124,6 +142,25 @@ check("profile followers", profile.followerCount === 12400);
 check("profile following count", profile.followingCount === 300);
 check("profile relationship", profile.relationship === "not_following");
 check("profile bio", profile.bio === "Dallas drone photos");
+
+const liveProfile = profileFromDom(
+  snapshot({
+    url: "https://www.instagram.com/dominicl_hayles/",
+    title: "Dominic Hayles (@dominicl_hayles) • Instagram",
+    headerButtons: [
+      { name: "Following", text: "Following", label: "" },
+      { name: "Message", text: "Message", label: "" },
+    ],
+    buttons: [{ name: "Follow", text: "Follow" }],
+    headerLines: ["dominicl_hayles", "1,482 followers", "300 following", "Real estate media in Dallas"],
+    links: [{ href: "/dominicl_hayles/followers/", text: "1,482 followers", title: "1482" }],
+  }),
+  "dominicl_hayles",
+);
+check("header following wins over page follow", liveProfile.relationship === "following");
+check("live follower count", liveProfile.followerCount === 1482);
+check("live display name", liveProfile.displayName === "Dominic Hayles");
+check("live bio skips counts", liveProfile.bio === "Real estate media in Dallas");
 
 const composer = snapshot({
   textboxes: [{ name: "Message", value: "Hi there" }],

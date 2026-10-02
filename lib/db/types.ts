@@ -32,6 +32,7 @@ export type ProspectRow = {
   fit_score: number | null;
   fit_label: FitLabel | null;
   qualification_reason: string | null;
+  qualification_error?: string | null;
   qualified: boolean;
   already_following: boolean;
   already_contacted: boolean;
@@ -151,6 +152,9 @@ export type WorkerInstanceRow = {
   profiles_ingested?: number;
   profiles_excluded_following?: number;
   profiles_qualified?: number;
+  session_errors?: number;
+  current_username?: string | null;
+  last_event?: string | null;
   started_at: string | null;
   created_at: string;
   updated_at: string;

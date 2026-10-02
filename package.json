@@ -16,6 +16,8 @@
     "agent:status": "tsx scripts/agent-status.ts",
     "agent:smoke": "tsx scripts/agent-smoke.ts",
     "worker:test": "tsx scripts/test-instagram.ts",
+    "agent:debug": "tsx scripts/agent.ts -- --debug",
+    "outreach:reconcile": "tsx scripts/reconcile-outreach.ts",
     "ai:test": "tsx scripts/test-qualification.ts",
     "outreach:test": "tsx scripts/test-outreach.ts && tsx scripts/probe-outreach-db.ts",
     "worker:simulate": "tsx scripts/simulate-worker.ts"

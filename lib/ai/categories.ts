@@ -11,12 +11,12 @@ export const AI_CATEGORIES = [
 export type AiCategory = (typeof AI_CATEGORIES)[number];
 
 export const AI_CATEGORY_LABELS: Record<AiCategory, string> = {
-  drone_operator: "Drone operator",
-  real_estate_photographer: "Real estate photographer",
-  real_estate_media_company: "Real estate media company",
+  drone_operator: "Drone Operator",
+  real_estate_photographer: "Real Estate Photographer",
+  real_estate_media_company: "Real Estate Media",
   videographer: "Videographer",
-  commercial_media: "Commercial media",
-  mixed_media: "Mixed media",
+  commercial_media: "Commercial Media",
+  mixed_media: "Media Business",
   other: "Other",
 };
 

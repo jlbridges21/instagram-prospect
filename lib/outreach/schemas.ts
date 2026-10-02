@@ -36,6 +36,7 @@ export const failJobSchema = z.object({
 export const claimJobSchema = z.object({
   worker_id: workerIdSchema,
   machine_name: z.string().trim().max(200).optional(),
+  prospect_id: z.string().uuid().optional(),
 });
 
 export const workerJobSchema = z.object({

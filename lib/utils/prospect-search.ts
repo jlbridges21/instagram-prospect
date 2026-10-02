@@ -2,6 +2,7 @@ import type { ProspectQuery } from "@/lib/db/prospects";
 
 export function prospectSearchString(query: ProspectQuery, page = query.page) {
   const params = new URLSearchParams();
+  if (query.view !== "active") params.set("view", query.view);
   if (query.q) params.set("q", query.q);
   if (query.status !== "all") params.set("status", query.status);
   if (query.fit !== "all") params.set("fit", query.fit);

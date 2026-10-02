@@ -5,6 +5,7 @@ import { isUuid } from "@/lib/utils/format";
 import { isWorkerAuthorized, workerError, workerUnauthorized } from "@/lib/worker/auth";
 
 export const runtime = "nodejs";
+export const maxDuration = 60;
 
 export async function POST(request: Request, { params }: { params: Promise<{ id: string }> }) {
   if (!isWorkerAuthorized(request)) return workerUnauthorized();
@@ -40,14 +41,26 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     targetingFromRow(targetingResult.data),
     { actor: "worker" },
   );
-  if (!qualified.ok) return workerError(500, qualified.error);
+  if (!qualified.ok) {
+    await admin
+      .from("prospects")
+      .update({ qualification_error: qualified.error.slice(0, 500) })
+      .eq("id", id)
+      .then(() => undefined, () => undefined);
+    return workerError(500, qualified.error);
+  }
 
+  await admin.from("prospects").update({ qualification_error: null }).eq("id", id);
+  const decision = qualified.result.decision;
   return Response.json({
     ok: true,
     skipped: false,
-    status: qualified.result.decision.status,
-    fitLabel: qualified.result.decision.fitLabel,
-    qualified: qualified.result.decision.qualified,
+    prospectId: id,
+    qualified: decision.qualified,
+    fitScore: decision.fitScore,
+    fitLabel: decision.fitLabel,
+    status: decision.status,
+    category: decision.category,
     approved: false,
   });
 }

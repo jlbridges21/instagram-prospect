@@ -14,7 +14,7 @@ import {
   isProspectStatus,
   type ProspectSource,
 } from "@/lib/constants/prospects";
-import { getProspectCategories, getProspectPage, type ProspectQuery } from "@/lib/db/prospects";
+import { getProspectCategories, getProspectPage, type ProspectQuery, type ProspectView } from "@/lib/db/prospects";
 import { fallbackSettings, getSettings } from "@/lib/db/settings";
 import { formatDate, formatFollowerCount, parsePositiveInt, readParam } from "@/lib/utils/format";
 import { prospectMessage } from "@/lib/utils/message";
@@ -33,8 +33,18 @@ export default async function ProspectsPage({
   const sourceValue = readParam(params, "source");
   const sortValue = readParam(params, "sort");
 
+  const viewValue = readParam(params, "view");
+  const view: ProspectView =
+    viewValue === "review" ||
+    viewValue === "approved" ||
+    viewValue === "contacted" ||
+    viewValue === "excluded" ||
+    viewValue === "all"
+      ? viewValue
+      : "active";
   const query: ProspectQuery = {
     q: readParam(params, "q"),
+    view,
     status: isProspectStatus(statusValue) ? statusValue : "all",
     fit: isFitLabel(fitValue) ? fitValue : "all",
     category: readParam(params, "category"),
@@ -53,6 +63,7 @@ export default async function ProspectsPage({
   const settings = settingsResult.ok ? settingsResult.data : fallbackSettings();
   const filtered = Boolean(
     query.q ||
+      query.view !== "active" ||
       query.status !== "all" ||
       query.fit !== "all" ||
       query.category ||

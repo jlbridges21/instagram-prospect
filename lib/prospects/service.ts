@@ -245,6 +245,7 @@ export type WorkerProspectInput = {
   instagram_post_url?: string | null;
   instagram_post_thumbnail_url?: string | null;
   source?: ProspectSource;
+  follow_relationship?: "following" | "not_following" | "requested" | "unknown";
 };
 
 export async function ingestWorkerProspect(supabase: Client, input: WorkerProspectInput) {
@@ -271,7 +272,13 @@ export async function ingestWorkerProspect(supabase: Client, input: WorkerProspe
   }
 
   const following = Boolean(input.already_following);
+  const relationshipUnknown = input.follow_relationship === "unknown" && !following;
   const status: ProspectStatus = following ? "disqualified" : "discovered";
+  const qualificationReason = following
+    ? "Already following this account."
+    : relationshipUnknown
+      ? "Follow status unknown."
+      : null;
   const now = new Date().toISOString();
   const { data, error } = await supabase
     .from("prospects")
@@ -293,7 +300,7 @@ export async function ingestWorkerProspect(supabase: Client, input: WorkerProspe
       source: input.source ?? "home_feed",
       instagram_post_url: input.instagram_post_url ?? null,
       instagram_post_thumbnail_url: input.instagram_post_thumbnail_url ?? null,
-      qualification_reason: following ? "Already following this account." : null,
+      qualification_reason: qualificationReason,
       discovered_at: now,
       last_status_changed_at: now,
       is_sample: false,
@@ -331,7 +338,7 @@ export async function ingestWorkerProspect(supabase: Client, input: WorkerProspe
     {
       prospectId: data.id,
       eventType: "prospect_discovered",
-      description: `Discovered @${username}.`,
+      description: `Discovered @${username} from Home feed.`,
       metadata: { source: input.source ?? "home_feed", actor: "worker" },
     },
   ];
@@ -340,7 +347,7 @@ export async function ingestWorkerProspect(supabase: Client, input: WorkerProspe
     events.push({
       prospectId: data.id,
       eventType: "prospect_disqualified",
-      description: `Disqualified @${username} because the account is already followed.`,
+      description: `Skipped @${username} because you already follow this account.`,
       metadata: { actor: "worker", reason: "already_following" },
     });
   }

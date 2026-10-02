@@ -11,9 +11,11 @@ import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 export function QualifyButton({
   id,
   analyzed,
+  failed = false,
 }: {
   id: string;
   analyzed: boolean;
+  failed?: boolean;
 }) {
   const [confirm, setConfirm] = useState(false);
   const [pending, startTransition] = useTransition();
@@ -44,7 +46,7 @@ export function QualifyButton({
         disabled={pending}
         onClick={() => (analyzed ? setConfirm(true) : run(false))}
       >
-        {pending ? "Analyzing profile..." : analyzed ? "Reanalyze" : "Analyze with AI"}
+        {pending ? "Analyzing profile..." : analyzed ? "Reanalyze" : failed ? "Retry AI Analysis" : "Analyze with AI"}
       </Button>
       <ConfirmDialog
         open={confirm}

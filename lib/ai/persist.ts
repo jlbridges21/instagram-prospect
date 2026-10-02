@@ -180,7 +180,7 @@ async function saveDecision(
     prospectId: prospect.id,
     eventType,
     description: decision.qualified
-      ? `Qualified @${prospect.instagram_username} for review. ${FIT_LABELS_TEXT[decision.fitLabel]}, score ${decision.fitScore}.`
+      ? `AI scored @${prospect.instagram_username} ${decision.fitScore} — ${FIT_LABELS_TEXT[decision.fitLabel]}.`
       : `Disqualified @${prospect.instagram_username}. ${decision.analysis.qualification_reason}`,
     metadata: {
       fit_score: decision.fitScore,

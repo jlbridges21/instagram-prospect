@@ -18,6 +18,10 @@ const heartbeatSchema = z.object({
   profiles_ingested: z.number().int().min(0).max(100_000).optional(),
   profiles_excluded_following: z.number().int().min(0).max(100_000).optional(),
   profiles_qualified: z.number().int().min(0).max(100_000).optional(),
+  session_errors: z.number().int().min(0).max(100_000).optional(),
+  current_username: z.string().trim().max(80).nullable().optional(),
+  last_event: z.string().trim().max(300).nullable().optional(),
+  new_session: z.boolean().optional(),
 });
 
 export async function POST(request: Request) {
@@ -67,6 +71,9 @@ export async function POST(request: Request) {
     profiles_ingested: parsed.data.profiles_ingested ?? 0,
     profiles_excluded_following: parsed.data.profiles_excluded_following ?? 0,
     profiles_qualified: parsed.data.profiles_qualified ?? 0,
+    session_errors: parsed.data.session_errors ?? 0,
+    current_username: parsed.data.current_username ?? null,
+    last_event: parsed.data.last_event ?? null,
   };
 
   const writeExtended = existing
@@ -74,11 +81,24 @@ export async function POST(request: Request) {
     : await admin.from("worker_instances").insert(extendedPatch);
 
   if (writeExtended.error) {
-    const compatible = compatibleHeartbeat(basePatch, writeExtended.error.message);
-    const writeBase = existing
-      ? await admin.from("worker_instances").update(compatible).eq("id", existing.id)
-      : await admin.from("worker_instances").insert(compatible);
-    if (writeBase.error) return workerError(500, "Could not store the heartbeat.");
+    const counterPatch = {
+      ...basePatch,
+      attention_reason: parsed.data.attention_reason ?? null,
+      profiles_seen: parsed.data.profiles_seen ?? 0,
+      profiles_ingested: parsed.data.profiles_ingested ?? 0,
+      profiles_excluded_following: parsed.data.profiles_excluded_following ?? 0,
+      profiles_qualified: parsed.data.profiles_qualified ?? 0,
+    };
+    const writeCounters = existing
+      ? await admin.from("worker_instances").update(counterPatch).eq("id", existing.id)
+      : await admin.from("worker_instances").insert(counterPatch);
+    if (writeCounters.error) {
+      const compatible = compatibleHeartbeat(basePatch, writeExtended.error.message);
+      const writeBase = existing
+        ? await admin.from("worker_instances").update(compatible).eq("id", existing.id)
+        : await admin.from("worker_instances").insert(compatible);
+      if (writeBase.error) return workerError(500, "Could not store the heartbeat.");
+    }
   }
 
   await touchSession(admin, parsed.data, requestedStatus, now).catch(() => undefined);
@@ -119,6 +139,7 @@ async function touchSession(
     profiles_excluded_following: data.profiles_excluded_following ?? 0,
     profiles_qualified: data.profiles_qualified ?? 0,
     last_error: data.attention_reason ?? null,
+    errors: data.session_errors ?? 0,
     status: sessionStatus,
   };
   const { data: open, error } = await admin
@@ -130,6 +151,12 @@ async function touchSession(
     .limit(1)
     .maybeSingle();
   if (error) return;
+  if (data.new_session && open) {
+    await admin.from("worker_sessions").update({ status: "stopped", ended_at: now }).eq("id", open.id);
+    if (sessionStatus === "stopped") return;
+    await admin.from("worker_sessions").insert({ worker_id: data.worker_id, ...counters });
+    return;
+  }
   if (open && sessionStatus === "stopped") {
     await admin.from("worker_sessions").update({ ...counters, ended_at: now }).eq("id", open.id);
     return;

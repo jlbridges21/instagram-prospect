@@ -1,5 +1,13 @@
-import { parseFollowerCount, postUrlFromHref, profileUrlFor, relationshipFromLabels, usernameFromHref } from "./parse";
-import type { DomSnapshot, FeedCandidate, PageSignal, ProfileExtract } from "./types";
+import {
+  cleanProfileBio,
+  countFromLabeledText,
+  displayNameFromTitle,
+  postUrlFromHref,
+  profileUrlFor,
+  relationshipFromLabels,
+  usernameFromHref,
+} from "./parse";
+import type { DomButton, DomLink, DomSnapshot, FeedCandidate, PageSignal, ProfileExtract } from "./types";
 
 export function pageSignal(dom: DomSnapshot): PageSignal {
   const url = dom.url.toLowerCase();
@@ -46,26 +54,142 @@ export function feedCandidates(dom: DomSnapshot): FeedCandidate[] {
 }
 
 export function profileFromDom(dom: DomSnapshot, expectedUsername: string | null): ProfileExtract {
+  return extractInstagramProfile(dom, expectedUsername);
+}
+
+export function extractInstagramProfile(dom: DomSnapshot, expectedUsername: string | null): ProfileExtract {
   let pathName = "";
   try {
     pathName = new URL(dom.url).pathname;
   } catch {
     pathName = "";
   }
-  const username = usernameFromHref(pathName) ?? expectedUsername;
-  const followerLink = dom.links.find((link) => /follower/i.test(link.text));
-  const followingLink = dom.links.find((link) => /following/i.test(link.text) && !/follower/i.test(link.text));
+  const username = usernameFromHref(pathName) ?? (expectedUsername ? expectedUsername.toLowerCase() : null);
+  const strategies: Record<string, string> = {};
+  const followers = followerCount(dom, strategies);
+  const following = followingCount(dom, strategies);
+  const relationshipButtons = (dom.headerButtons?.length ? dom.headerButtons : dom.buttons).flatMap(buttonNames);
+  const relationship = relationshipFromLabels(relationshipButtons);
+  strategies.relationship = dom.headerButtons?.length ? "header-button" : relationship === "unknown" ? "none" : "page-button";
+  const displayName = chooseDisplayName(dom, username, strategies);
+  const bio = chooseBio(dom, username, displayName, strategies);
   const picture = dom.images.find((image) => /profile picture/i.test(image.alt));
-  const displayName = dom.title.replace(/\s*[•|].*$/, "").replace(/^\(@[^)]+\)\s*/, "").trim() || null;
+  if (picture?.src) strategies.profilePicture = "img-alt";
+  const location = locationText(dom);
+  if (location) strategies.location = "explicit-text";
   return {
     username,
-    displayName: displayName && displayName.toLowerCase() !== "instagram" ? displayName : null,
-    bio: dom.bioText?.trim() || null,
-    followerCount: parseFollowerCount(followerLink?.text ?? null),
-    followingCount: parseFollowerCount(followingLink?.text ?? null),
+    displayName,
+    bio,
+    followerCount: followers,
+    followingCount: following,
     profilePictureUrl: picture?.src || null,
-    relationship: relationshipFromLabels(dom.buttons.map((button) => button.name)),
+    relationship,
+    locationText: location,
+    profileIsPrivate: Boolean(dom.profileIsPrivate) || /this account is private/i.test(dom.bodyText),
+    strategies,
   };
+}
+
+function buttonNames(button: DomButton) {
+  return [button.text, button.label, button.name].filter((value): value is string => Boolean(value));
+}
+
+function linkTexts(link: DomLink) {
+  return [link.title, link.label, link.text].filter((value): value is string => Boolean(value));
+}
+
+function followerCount(dom: DomSnapshot, strategies: Record<string, string>) {
+  const followerLinks = dom.links.filter((link) => /\/followers\/?$/i.test(link.href) || linkTexts(link).some((text) => /follower/i.test(text)));
+  const fromLink = countFromLabeledText(followerLinks.flatMap(linkTexts), "followers");
+  if (fromLink !== null) {
+    strategies.followers = followerLinks.some((link) => link.title || link.label) ? "header-link-label" : "header-link-text";
+    return fromLink;
+  }
+  const fromButton = countFromLabeledText(dom.buttons.flatMap(buttonNames), "followers");
+  if (fromButton !== null) {
+    strategies.followers = "button-label";
+    return fromButton;
+  }
+  const fromHeader = countFromLabeledText(dom.headerLines ?? [], "followers");
+  if (fromHeader !== null) {
+    strategies.followers = "header-text";
+    return fromHeader;
+  }
+  const fromMeta = countFromLabeledText([dom.metaDescription], "followers");
+  if (fromMeta !== null) {
+    strategies.followers = "meta-description";
+    return fromMeta;
+  }
+  strategies.followers = "unavailable";
+  return null;
+}
+
+function followingCount(dom: DomSnapshot, strategies: Record<string, string>) {
+  const links = dom.links.filter((link) => /\/following\/?$/i.test(link.href) || linkTexts(link).some((text) => /following/i.test(text) && !/follower/i.test(text)));
+  const count = countFromLabeledText(
+    [...links.flatMap(linkTexts), ...(dom.headerLines ?? []), dom.metaDescription],
+    "following",
+  );
+  strategies.following = count === null ? "unavailable" : "labeled-text";
+  return count;
+}
+
+function chooseDisplayName(dom: DomSnapshot, username: string | null, strategies: Record<string, string>) {
+  const fromTitle = displayNameFromTitle(dom.title, username);
+  if (fromTitle) {
+    strategies.displayName = "document-title";
+    return fromTitle;
+  }
+  const line = (dom.headerLines ?? []).find((item) => {
+    const text = item.trim();
+    if (!text || text.length > 80) return false;
+    if (username && text.toLowerCase() === username) return false;
+    if (/follower|following|posts|follow|message/i.test(text)) return false;
+    return /[A-Za-z]/.test(text);
+  });
+  if (line) {
+    strategies.displayName = "header-line";
+    return line.trim();
+  }
+  strategies.displayName = "unavailable";
+  return null;
+}
+
+function chooseBio(dom: DomSnapshot, username: string | null, displayName: string | null, strategies: Record<string, string>) {
+  const lines = dom.headerLines ?? [];
+  const cleaned = cleanProfileBio(lines, username, displayName);
+  if (cleaned) {
+    strategies.bio = "profile-header-lines";
+    return cleaned;
+  }
+  if (dom.bioText) {
+    const explicit = cleanProfileBio(dom.bioText.split("\n"), username, displayName);
+    if (explicit) {
+      strategies.bio = "bio-node";
+      return explicit;
+    }
+  }
+  const meta = bioFromMeta(dom.metaDescription, username);
+  if (meta) {
+    strategies.bio = "meta-description";
+    return meta;
+  }
+  strategies.bio = "unavailable";
+  return null;
+}
+
+function bioFromMeta(meta: string | null | undefined, username: string | null) {
+  if (!meta) return null;
+  const parts = meta.split(" - ").map((part) => part.trim()).filter(Boolean);
+  const tail = parts.length > 1 ? parts.slice(1).join(" - ") : "";
+  if (!tail || /see instagram photos/i.test(tail)) return null;
+  return cleanProfileBio([tail], username, null);
+}
+
+function locationText(dom: DomSnapshot) {
+  const line = (dom.headerLines ?? []).find((item) => /^(located in|based in|location:)\s+/i.test(item));
+  return line?.replace(/^(located in|based in|location:)\s+/i, "").trim() || null;
 }
 
 export function hasMessageComposer(dom: DomSnapshot) {

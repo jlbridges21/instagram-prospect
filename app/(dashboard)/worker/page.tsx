@@ -70,7 +70,16 @@ export default async function WorkerPage() {
               ? `${formatRelativeTime(worker.last_heartbeat_at)} (${formatDateTime(worker.last_heartbeat_at, settings.timezone, settings.dateFormat)})`
               : "Never",
           },
-          { label: "Current task", value: worker?.current_task || "None" },
+          { label: "Connection", value: health.state === "offline" ? "Offline" : health.state === "attention" ? health.label : "Online" },
+          {
+            label: "Current mode",
+            value: health.state === "offline" ? "Offline" : modeLabel(worker?.current_task),
+          },
+          {
+            label: "Current profile",
+            value: worker?.current_username ? `@${worker.current_username}` : "None",
+          },
+          { label: "Last task", value: worker?.current_task === "offline" ? "Stopped" : worker?.current_task || "None" },
           { label: "Browser connected", value: yesNo(worker?.browser_connected) },
           { label: "Instagram authenticated", value: yesNo(worker?.instagram_authenticated) },
           {
@@ -88,12 +97,16 @@ export default async function WorkerPage() {
             value: settings.outreach.automationEnabled ? "Running" : "Paused",
           },
           { label: "Discovery", value: settings.discovery.enabled ? "On" : "Off" },
-          { label: "Profiles seen today", value: String(discovery.seenToday ?? worker?.profiles_seen ?? 0) },
+          { label: "Profiles seen today", value: String(Math.max(discovery.seenToday ?? 0, worker?.profiles_seen ?? 0)) },
           { label: "New prospects today", value: String(discovery.newProspects) },
-          { label: "AI qualified today", value: String(discovery.qualified) },
-          { label: "Existing following skipped", value: String(discovery.followingSkipped) },
-          { label: "Profiles seen this session", value: String(worker?.profiles_seen ?? 0) },
-          { label: "Profiles qualified this session", value: String(worker?.profiles_qualified ?? 0) },
+          { label: "Already-following skipped", value: String(Math.max(discovery.followingSkipped, worker?.profiles_excluded_following ?? 0)) },
+          { label: "AI qualified today", value: String(Math.max(discovery.qualified, worker?.profiles_qualified ?? 0)) },
+          { label: "Session profiles seen", value: String(worker?.profiles_seen ?? 0) },
+          { label: "Session prospects added", value: String(worker?.profiles_ingested ?? 0) },
+          { label: "Session excluded", value: String(worker?.profiles_excluded_following ?? 0) },
+          { label: "Session qualified", value: String(worker?.profiles_qualified ?? 0) },
+          { label: "Session errors", value: String(worker?.session_errors ?? 0) },
+          { label: "Last event", value: worker?.last_event || "None" },
           { label: "Last error", value: worker?.attention_reason || "None" },
           { label: "Current claimed job", value: outreach?.currentJob ?? "None" },
           { label: "Claimed by", value: outreach?.currentWorker ?? "None" },
@@ -111,4 +124,15 @@ export default async function WorkerPage() {
       />
     </div>
   );
+}
+
+function modeLabel(task: string | null | undefined) {
+  if (!task || task === "offline") return "Idle";
+  if (task === "idle") return "Idle";
+  if (task === "paused") return "Paused";
+  if (task === "auth_required") return "Authentication Required";
+  if (task === "attention_required") return "Attention Required";
+  if (task.startsWith("discovering") || task.startsWith("qualifying")) return "Discovering";
+  if (task.startsWith("executing_")) return "Outreach";
+  return task;
 }

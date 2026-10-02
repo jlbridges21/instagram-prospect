@@ -7,7 +7,7 @@ import {
   SOURCE_LABELS,
   STATUS_LABELS,
 } from "@/lib/constants/prospects";
-import type { ProspectQuery } from "@/lib/db/prospects";
+import type { ProspectQuery, ProspectView } from "@/lib/db/prospects";
 import { prospectSearchString } from "@/lib/utils/prospect-search";
 import { SelectInput, TextInput } from "@/components/ui/field";
 import { buttonClasses } from "@/components/ui/button";
@@ -19,11 +19,37 @@ export function ProspectFilters({
   query: ProspectQuery;
   categories: string[];
 }) {
+  const views: { id: ProspectView; label: string }[] = [
+    { id: "active", label: "Active" },
+    { id: "review", label: "Review" },
+    { id: "approved", label: "Approved" },
+    { id: "contacted", label: "Contacted" },
+    { id: "excluded", label: "Excluded" },
+    { id: "all", label: "All" },
+  ];
+
   return (
+    <div className="mb-4">
+      <div className="mb-3 flex gap-2 overflow-x-auto">
+        {views.map((view) => (
+          <Link
+            key={view.id}
+            href={`/prospects${prospectSearchString({ ...query, view: view.id, page: 1 })}`}
+            className={
+              query.view === view.id
+                ? "rounded-full bg-indigo-600 px-3 py-1 text-sm font-medium text-white"
+                : "rounded-full bg-white px-3 py-1 text-sm font-medium text-slate-600 ring-1 ring-slate-200"
+            }
+          >
+            {view.label}
+          </Link>
+        ))}
+      </div>
     <form
       method="get"
       className="mb-4 grid gap-3 rounded-xl border border-slate-200 bg-white p-4 md:grid-cols-2 xl:grid-cols-4"
     >
+      {query.view !== "active" ? <input type="hidden" name="view" value={query.view} /> : null}
       <label className="block md:col-span-2 xl:col-span-2">
         <span className="text-xs font-medium text-slate-500">Search</span>
         <TextInput
@@ -99,6 +125,7 @@ export function ProspectFilters({
         </Link>
       </div>
     </form>
+    </div>
   );
 }
 
