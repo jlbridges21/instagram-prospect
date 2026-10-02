@@ -277,7 +277,23 @@ export const READ_DOM_SOURCE = `() => {
     optionsBox: boxOf(options),
     metaDescription: meta ? (meta.getAttribute("content") || "").slice(0, 500) : null,
     profileIsPrivate: /this account is private/i.test(document.body && document.body.innerText || ""),
+    profileImageUrl: profileAvatarUrl(),
   };
+  function profileAvatarUrl() {
+    const images = [...document.querySelectorAll("img")].filter((image) => {
+      if (image.closest("nav, [role='navigation']")) return false;
+      const alt = (image.alt || "").toLowerCase();
+      if (!alt.includes("profile picture")) return false;
+      if (alt.includes("your profile picture")) return false;
+      const box = image.getBoundingClientRect();
+      return box.width >= 24 && box.width <= 240;
+    });
+    const named = pathUser ? images.find((image) => (image.alt || "").toLowerCase().includes(pathUser)) : null;
+    const near = heading ? images.find((image) => Math.abs(image.getBoundingClientRect().y - heading.getBoundingClientRect().y) < 240) : null;
+    const chosen = named || near;
+    if (!chosen) return null;
+    return (chosen.currentSrc || chosen.src || "").slice(0, 1000) || null;
+  }
 }`;
 
 export async function readDom(page: Page): Promise<DomSnapshot> {

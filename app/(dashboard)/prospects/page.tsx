@@ -17,6 +17,7 @@ import {
 import { getProspectCategories, getProspectPage, type ProspectQuery, type ProspectView } from "@/lib/db/prospects";
 import { fallbackSettings, getSettings } from "@/lib/db/settings";
 import { formatDate, formatFollowerCount, parsePositiveInt, readParam } from "@/lib/utils/format";
+import { prospectReason } from "@/lib/prospects/reason";
 import { prospectMessage } from "@/lib/utils/message";
 
 export const metadata: Metadata = { title: "Prospects" };
@@ -110,6 +111,7 @@ export default async function ProspectsPage({
           discovered: formatDate(row.discovered_at, settings.timezone, settings.dateFormat),
           profileUrl: row.profile_url || `https://www.instagram.com/${row.instagram_username}/`,
           pictureUrl: row.profile_picture_url,
+          reason: prospectReason(row),
           message: prospectMessage({
             template: settings.messageTemplate,
             messageOverride: row.message_override,

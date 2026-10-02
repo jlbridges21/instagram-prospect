@@ -11,7 +11,7 @@ import { databaseErrorMessage, isMissingRelation } from "@/lib/db/errors";
 import type { DataResult } from "@/lib/db/models";
 import type { ProspectRow } from "@/lib/db/types";
 import { createClient } from "@/lib/supabase/server";
-import { sanitizeSearch } from "@/lib/utils/format";
+import { sanitizeSearch, startOfTodayIso } from "@/lib/utils/format";
 
 export type ProspectView = "active" | "review" | "approved" | "contacted" | "excluded" | "all";
 
@@ -38,7 +38,7 @@ export async function getProspectPage(
   let request = supabase.from("prospects").select("*", { count: "exact" });
 
   if (query.view === "active") {
-    request = request.eq("already_following", false).not("status", "in", "(disqualified,skipped)");
+    request = request.eq("already_following", false).not("status", "in", "(disqualified,skipped,converted)");
   } else if (query.view === "review") {
     request = request.in("status", ["qualified", "review"]);
   } else if (query.view === "approved") {
@@ -153,6 +153,23 @@ export async function getReviewQueue(): Promise<DataResult<ProspectRow[]>> {
   }
 
   return { ok: true, data: data ?? [] };
+}
+
+export async function getReviewTodayCounts(timeZone: string) {
+  const supabase = await createClient();
+  const start = startOfTodayIso(timeZone);
+  const [analyzed, excluded] = await Promise.all([
+    supabase.from("prospects").select("id", { count: "exact", head: true }).gte("ai_analyzed_at", start),
+    supabase
+      .from("prospects")
+      .select("id", { count: "exact", head: true })
+      .or("already_following.eq.true,status.eq.disqualified,status.eq.skipped")
+      .gte("last_status_changed_at", start),
+  ]);
+  return {
+    analyzed: analyzed.count ?? 0,
+    excluded: excluded.count ?? 0,
+  };
 }
 
 export async function getRecentProspects(limit = 6): Promise<DataResult<ProspectRow[]>> {

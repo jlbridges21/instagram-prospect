@@ -93,8 +93,10 @@ export function extractInstagramProfile(dom: DomSnapshot, expectedUsername: stri
           : "page-button";
   const displayName = chooseDisplayName(dom, username, strategies);
   const bio = chooseBio(dom, username, displayName, strategies);
-  const picture = dom.images.find((image) => /profile picture/i.test(image.alt));
-  if (picture?.src) strategies.profilePicture = "img-alt";
+  const picture = dom.profileImageUrl
+    ? { src: dom.profileImageUrl }
+    : dom.images.find((image) => /profile picture/i.test(image.alt) && !/your profile picture/i.test(image.alt));
+  if (picture?.src) strategies.profilePicture = dom.profileImageUrl ? "profile-header-image" : "img-alt";
   const location = locationText(dom);
   if (location) strategies.location = "explicit-text";
   return {

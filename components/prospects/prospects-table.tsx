@@ -29,6 +29,7 @@ export type ProspectTableRow = {
   discovered: string;
   profileUrl: string;
   pictureUrl: string | null;
+  reason: string;
   message: string;
 };
 
@@ -127,6 +128,7 @@ export function ProspectsTable({
                 <th className="px-3 py-3 font-medium">Category</th>
                 <th className="px-3 py-3 font-medium">Followers</th>
                 <th className="px-3 py-3 font-medium">Fit</th>
+                <th className="px-3 py-3 font-medium">Reason</th>
                 <th className="px-3 py-3 font-medium">Status</th>
                 <th className="px-3 py-3 font-medium">Source</th>
                 <th className="px-3 py-3 font-medium">Discovered</th>
@@ -144,7 +146,7 @@ export function ProspectsTable({
                     router.push(`/prospects/${row.id}`);
                   }}
                 >
-                  <td className="px-3 py-3">
+                  <td className="px-3 py-2">
                     <input
                       type="checkbox"
                       checked={selected.includes(row.id)}
@@ -152,29 +154,30 @@ export function ProspectsTable({
                       aria-label={`Select @${row.username}`}
                     />
                   </td>
-                  <td className="px-3 py-3">
+                  <td className="px-3 py-2">
                     <Avatar name={row.name} src={row.pictureUrl} size="sm" />
                   </td>
-                  <td className="px-3 py-3 font-medium text-slate-900">
+                  <td className="whitespace-nowrap px-3 py-2 font-medium text-slate-900">
                     <Link href={`/prospects/${row.id}`} className="hover:text-indigo-700">
                       @{row.username}
                     </Link>
                   </td>
-                  <td className="px-3 py-3 text-slate-700">{row.name}</td>
-                  <td className="max-w-48 px-3 py-3 text-slate-600">{row.category}</td>
-                  <td className="px-3 py-3 tabular-nums text-slate-700">{row.followers}</td>
-                  <td className="px-3 py-3">
-                    <p className="tabular-nums font-medium text-slate-900">{row.fitScore ?? "—"}</p>
-                    <div className="mt-1">
-                      <FitBadge label={row.fitLabel} />
-                    </div>
+                  <td className="whitespace-nowrap px-3 py-2 text-slate-700">{row.name}</td>
+                  <td className="max-w-40 truncate px-3 py-2 text-slate-600" title={row.category}>{row.category}</td>
+                  <td className="whitespace-nowrap px-3 py-2 tabular-nums text-slate-700">{row.followers}</td>
+                  <td className="whitespace-nowrap px-3 py-2">
+                    <span className="mr-2 tabular-nums font-medium text-slate-900">{row.fitScore ?? "—"}</span>
+                    <FitBadge label={row.fitLabel} />
                   </td>
-                  <td className="px-3 py-3">
+                  <td className="max-w-64 px-3 py-2 text-slate-600">
+                    <p className="truncate" title={row.reason}>{row.reason}</p>
+                  </td>
+                  <td className="whitespace-nowrap px-3 py-2">
                     <StatusBadge status={row.status} />
                   </td>
-                  <td className="px-3 py-3 text-slate-600">{row.source}</td>
-                  <td className="whitespace-nowrap px-3 py-3 text-slate-600">{row.discovered}</td>
-                  <td className="px-3 py-3">
+                  <td className="whitespace-nowrap px-3 py-2 text-slate-600">{row.source}</td>
+                  <td className="whitespace-nowrap px-3 py-2 text-slate-600">{row.discovered}</td>
+                  <td className="whitespace-nowrap px-3 py-2">
                     <RowActions row={row} onSkip={() => setConfirmSkip([row.id])} />
                   </td>
                 </tr>
@@ -195,7 +198,7 @@ export function ProspectsTable({
                 onChange={() => toggle(row.id)}
                 aria-label={`Select @${row.username}`}
               />
-              <Avatar name={row.name} src={row.pictureUrl} />
+              <Avatar name={row.name} src={row.pictureUrl} size="sm" />
               <div className="min-w-0 flex-1">
                 <Link href={`/prospects/${row.id}`} className="font-medium text-slate-900">
                   @{row.username}
@@ -208,6 +211,9 @@ export function ProspectsTable({
               <Meta label="Followers" value={row.followers} />
               <Meta label="Source" value={row.source} />
               <Meta label="Discovered" value={row.discovered} />
+              <div className="col-span-2">
+                <Meta label="Reason" value={row.reason} />
+              </div>
             </dl>
             <div className="mt-3 flex flex-wrap items-center gap-2">
               <FitBadge label={row.fitLabel} />

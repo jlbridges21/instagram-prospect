@@ -35,7 +35,15 @@ type PendingAction =
   | { type: "skip"; ids: string[] }
   | { type: "approve-all" };
 
-export function ReviewQueue({ items }: { items: ReviewItem[] }) {
+export function ReviewQueue({
+  items,
+  analyzedToday = 0,
+  excludedToday = 0,
+}: {
+  items: ReviewItem[];
+  analyzedToday?: number;
+  excludedToday?: number;
+}) {
   const [selected, setSelected] = useState<string[]>([]);
   const [pendingAction, setPendingAction] = useState<PendingAction | null>(null);
   const [pending, startTransition] = useTransition();
@@ -45,8 +53,19 @@ export function ReviewQueue({ items }: { items: ReviewItem[] }) {
       <div className="rounded-xl border border-slate-200 bg-white">
         <EmptyState
           icon={Inbox}
-          title="Review queue is clear"
-          description="Qualified prospects waiting for a decision will appear here. Approving or skipping updates their status. Nothing is sent to Instagram."
+          title="No qualified prospects are waiting for review."
+          description={
+            analyzedToday > 0
+              ? "Discovery is working. Accounts scoring below your Possible Fit threshold are automatically excluded."
+              : "Qualified prospects waiting for a decision will appear here. Approving or skipping updates their status. Nothing is sent to Instagram."
+          }
+          action={
+            analyzedToday > 0 ? (
+              <p className="text-sm text-slate-600">
+                Analyzed today: {analyzedToday} · Qualified: 0 · Excluded: {excludedToday}
+              </p>
+            ) : null
+          }
         />
       </div>
     );

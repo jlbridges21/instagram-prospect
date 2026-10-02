@@ -1,10 +1,13 @@
-import { initials } from "@/lib/utils/format";
+"use client";
+
+import { useState } from "react";
+import { showProfilePhoto } from "@/lib/prospects/reason";
 import { cn } from "@/lib/utils/cn";
 
 const sizes = {
-  sm: "h-8 w-8 text-[11px]",
-  md: "h-10 w-10 text-xs",
-  lg: "h-16 w-16 text-base",
+  sm: "h-8 w-8 text-[10px]",
+  md: "h-9 w-9 text-[11px]",
+  lg: "h-16 w-16 text-sm",
 };
 
 export function Avatar({
@@ -16,14 +19,19 @@ export function Avatar({
   src?: string | null;
   size?: keyof typeof sizes;
 }) {
-  if (src) {
+  const [failed, setFailed] = useState(false);
+  const sizeClass = sizes[size];
+
+  if (showProfilePhoto(src, failed) && src) {
     return (
-      // Profile photos come from stored URLs and are not known at build time.
+      // Instagram CDN hosts change and block hotlinked requests that send a referrer.
       // eslint-disable-next-line @next/next/no-img-element
       <img
         src={src}
         alt=""
-        className={cn("rounded-lg object-cover", sizes[size])}
+        referrerPolicy="no-referrer"
+        onError={() => setFailed(true)}
+        className={cn("shrink-0 rounded-full object-cover", sizeClass)}
       />
     );
   }
@@ -31,12 +39,13 @@ export function Avatar({
   return (
     <div
       className={cn(
-        "flex items-center justify-center rounded-lg bg-indigo-50 font-semibold text-indigo-700",
-        sizes[size],
+        "flex shrink-0 items-center justify-center rounded-full bg-indigo-50 font-semibold text-indigo-700",
+        sizeClass,
       )}
+      title={name}
       aria-hidden
     >
-      {initials(name)}
+      SP
     </div>
   );
 }

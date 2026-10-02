@@ -61,6 +61,7 @@ export type DomSnapshot = {
   optionsBox?: ElementBox | null;
   metaDescription?: string | null;
   profileIsPrivate?: boolean;
+  profileImageUrl?: string | null;
 };
 
 export type FeedCandidate = {

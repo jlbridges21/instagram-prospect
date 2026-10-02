@@ -3,7 +3,7 @@ import { categoryLabel } from "@/lib/ai/categories";
 import { DatabaseSetup } from "@/components/layout/database-setup";
 import { PageHeader } from "@/components/layout/page-header";
 import { ReviewQueue } from "@/components/review/review-queue";
-import { getReviewQueue } from "@/lib/db/prospects";
+import { getReviewQueue, getReviewTodayCounts } from "@/lib/db/prospects";
 import { fallbackSettings, getSettings } from "@/lib/db/settings";
 import { formatFollowerCount } from "@/lib/utils/format";
 import { prospectMessage } from "@/lib/utils/message";
@@ -11,8 +11,14 @@ import { prospectMessage } from "@/lib/utils/message";
 export const metadata: Metadata = { title: "Review Queue" };
 
 export default async function ReviewPage() {
-  const [queueResult, settingsResult] = await Promise.all([getReviewQueue(), getSettings()]);
-  const settings = settingsResult.ok ? settingsResult.data : fallbackSettings();
+  const settingsPromise = getSettings();
+  const settingsResult = await settingsPromise;
+  const settingsForCounts = settingsResult.ok ? settingsResult.data : fallbackSettings();
+  const [queueResult, counts] = await Promise.all([
+    getReviewQueue(),
+    getReviewTodayCounts(settingsForCounts.timezone),
+  ]);
+  const settings = settingsForCounts;
   const items = queueResult.ok ? queueResult.data : [];
 
   return (
@@ -28,6 +34,8 @@ export default async function ReviewPage() {
         </div>
       ) : null}
       <ReviewQueue
+        analyzedToday={counts.analyzed}
+        excludedToday={counts.excluded}
         items={items.map((prospect) => ({
           id: prospect.id,
           name: prospect.display_name || prospect.first_name || prospect.instagram_username,

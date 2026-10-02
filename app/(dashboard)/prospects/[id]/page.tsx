@@ -24,6 +24,7 @@ import { getProspectOutreach } from "@/lib/db/outreach";
 import { getProspectActivity } from "@/lib/db/stats";
 import { getProspectById } from "@/lib/db/prospects";
 import { fallbackSettings, getSettings } from "@/lib/db/settings";
+import { prospectReason, relationshipLabel } from "@/lib/prospects/reason";
 import { STATUS_MEANING } from "@/lib/prospects/status";
 import { formatDateTime, formatFollowerCount, isUuid } from "@/lib/utils/format";
 import { prospectMessage } from "@/lib/utils/message";
@@ -115,8 +116,18 @@ export default async function ProspectDetailPage({
           <Panel title="Profile">
             <p className="text-sm leading-6 text-slate-800">{prospect.bio || "No bio stored."}</p>
             <dl className="mt-4 grid gap-4 sm:grid-cols-2">
+              <Fact label="Relationship" value={relationshipLabel(prospect)} />
+              <div className="sm:col-span-2">
+                <Fact label="Reason" value={prospectReason(prospect)} />
+              </div>
+              <Fact
+                label="AI result"
+                value={prospect.fit_label ? FIT_LABELS_TEXT[prospect.fit_label as FitLabel] : "Not analyzed"}
+              />
+              <Fact label="Fit score" value={prospect.fit_score === null ? "Not scored" : String(prospect.fit_score)} />
+              <Fact label="Category" value={categoryLabel(prospect.category)} />
               <Fact label="First name" value={prospect.first_name || "Not stored"} />
-              <Fact label="Following" value={formatFollowerCount(prospect.following_count)} />
+              <Fact label="Following count" value={formatFollowerCount(prospect.following_count)} />
               <Fact label="Language" value={prospect.language || "Not set"} />
               <Fact
                 label="Source"
