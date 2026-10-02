@@ -7,7 +7,7 @@ import { WorkerSummary } from "@/components/dashboard/worker-summary";
 import { DatabaseSetup } from "@/components/layout/database-setup";
 import { PageHeader } from "@/components/layout/page-header";
 import { countFollowUpsDue } from "@/lib/db/follow-ups";
-import { getRecentActivity, getPipelineCounts, emptyPipeline } from "@/lib/db/stats";
+import { getRecentActivity, getPipelineCounts, getQualificationSnapshot, emptyPipeline } from "@/lib/db/stats";
 import { getRecentProspects } from "@/lib/db/prospects";
 import { fallbackSettings, getSettings } from "@/lib/db/settings";
 import { getLatestWorker } from "@/lib/db/workers";
@@ -16,6 +16,15 @@ import { endOfTodayIso, formatDate, formatRelativeTime, platformLabel, startOfTo
 import { getWorkerHealth } from "@/lib/utils/worker-health";
 
 export const metadata: Metadata = { title: "Overview" };
+
+function Mini({ label, value }: { label: string; value: number }) {
+  return (
+    <div>
+      <dt className="text-xs text-slate-500">{label}</dt>
+      <dd className="mt-1 text-lg font-semibold tabular-nums text-slate-900">{value}</dd>
+    </div>
+  );
+}
 
 function nameOf(row: Pick<ProspectRow, "display_name" | "first_name" | "instagram_username">) {
   return row.display_name || row.first_name || row.instagram_username;
@@ -26,13 +35,15 @@ export default async function OverviewPage() {
   const settings = settingsResult.ok ? settingsResult.data : fallbackSettings();
   const todayStart = startOfTodayIso(settings.timezone);
 
-  const [pipelineResult, recentResult, activityResult, workerResult, dueFollowUps] = await Promise.all([
-    getPipelineCounts(todayStart),
-    getRecentProspects(),
-    getRecentActivity(),
-    getLatestWorker(),
-    countFollowUpsDue(endOfTodayIso(settings.timezone)),
-  ]);
+  const [pipelineResult, recentResult, activityResult, workerResult, dueFollowUps, qualification] =
+    await Promise.all([
+      getPipelineCounts(todayStart),
+      getRecentProspects(),
+      getRecentActivity(),
+      getLatestWorker(),
+      countFollowUpsDue(endOfTodayIso(settings.timezone)),
+      getQualificationSnapshot(todayStart),
+    ]);
 
   const failures = [settingsResult, pipelineResult, recentResult, activityResult, workerResult].flatMap(
     (result) => (result.ok ? [] : [result]),
@@ -83,6 +94,18 @@ export default async function OverviewPage() {
           />
         ))}
       </div>
+
+      {qualification ? (
+        <section className="mt-4 rounded-xl border border-slate-200 bg-white px-4 py-3">
+          <h2 className="text-sm font-semibold text-slate-900">Qualification</h2>
+          <dl className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-4">
+            <Mini label="Analyzed today" value={qualification.analyzedToday} />
+            <Mini label="Strong fits" value={qualification.strongFits} />
+            <Mini label="Possible fits" value={qualification.possibleFits} />
+            <Mini label="Disqualified" value={qualification.disqualified} />
+          </dl>
+        </section>
+      ) : null}
 
       <div className="mt-6 grid gap-4 lg:grid-cols-5">
         <section className="rounded-xl border border-slate-200 bg-white p-5 lg:col-span-3">

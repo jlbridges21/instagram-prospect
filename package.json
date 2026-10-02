@@ -10,7 +10,8 @@
     "typecheck": "tsc --noEmit",
     "db:seed": "tsx scripts/seed.ts",
     "db:clear-seed": "tsx scripts/clear-seed.ts",
-    "agent": "tsx scripts/agent-pending.ts"
+    "agent": "tsx scripts/agent-pending.ts",
+    "ai:test": "tsx scripts/test-qualification.ts"
   },
   "dependencies": {
     "@supabase/ssr": "^0.12.7",

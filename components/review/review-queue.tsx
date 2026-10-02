@@ -155,7 +155,14 @@ export function ReviewQueue({ items }: { items: ReviewItem[] }) {
 
       <ul className="space-y-3">
         {items.map((item) => (
-          <li key={item.id} className="rounded-xl border border-slate-200 bg-white p-4 sm:p-5">
+          <li
+            key={item.id}
+            className={
+              item.fitLabel === "strong_fit"
+                ? "rounded-xl border border-indigo-200 border-l-4 border-l-indigo-600 bg-white p-4 sm:p-5"
+                : "rounded-xl border border-slate-200 bg-white p-4 sm:p-5"
+            }
+          >
             <div className="flex flex-col gap-4 lg:flex-row">
               <div className="min-w-0 flex-1">
                 <div className="flex items-start gap-3">

@@ -2,9 +2,13 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { ExternalLink } from "lucide-react";
+import { categoryLabel } from "@/lib/ai/categories";
+import { qualificationSchema } from "@/lib/ai/schemas";
 import { ScheduleFollowUp } from "@/components/follow-ups/follow-up-form";
 import { DatabaseSetup } from "@/components/layout/database-setup";
 import { NotesEditor, ProspectActions } from "@/components/prospects/prospect-actions";
+import { QualifyButton } from "@/components/prospects/qualify-controls";
+import { AnalysisReadout } from "@/components/settings/ai-panel";
 import { MessageEditor } from "@/components/prospects/message-editor";
 import { Avatar } from "@/components/ui/avatar";
 import { FitBadge, StatusBadge } from "@/components/ui/badge";
@@ -20,6 +24,8 @@ import { fallbackSettings, getSettings } from "@/lib/db/settings";
 import { STATUS_MEANING } from "@/lib/prospects/status";
 import { formatDateTime, formatFollowerCount, isUuid } from "@/lib/utils/format";
 import { prospectMessage } from "@/lib/utils/message";
+
+export const maxDuration = 60;
 
 export async function generateMetadata({
   params,
@@ -65,6 +71,7 @@ export default async function ProspectDetailPage({
     username: prospect.instagram_username,
   });
   const profileUrl = prospect.profile_url || `https://www.instagram.com/${prospect.instagram_username}/`;
+  const analysis = qualificationSchema.safeParse(prospect.ai_analysis);
   const when = (value: string | null) => formatDateTime(value, settings.timezone, settings.dateFormat);
 
   return (
@@ -94,7 +101,7 @@ export default async function ProspectDetailPage({
                   <FitBadge label={prospect.fit_label} />
                 </div>
                 <p className="mt-3 text-sm text-slate-600">
-                  {prospect.category || "Uncategorized"} · {formatFollowerCount(prospect.follower_count)} followers
+                  {categoryLabel(prospect.category)} · {formatFollowerCount(prospect.follower_count)} followers
                   {prospect.location_text ? ` · ${prospect.location_text}` : ""}
                 </p>
               </div>
@@ -199,6 +206,31 @@ export default async function ProspectDetailPage({
                 </p>
               </div>
             ) : null}
+          </Panel>
+
+          <Panel title="AI analysis">
+            {analysis.success ? (
+              <AnalysisReadout
+                decision={{
+                  analysis: analysis.data,
+                  fitScore: analysis.data.fit_score,
+                  fitLabel: analysis.data.fit_label,
+                  category: analysis.data.category,
+                  qualified: analysis.data.qualified,
+                  status: analysis.data.qualified ? "review" : "disqualified",
+                  firstName: prospect.first_name,
+                  language: prospect.language,
+                  calledModel: prospect.ai_model !== "rules",
+                  inputTokens: null,
+                  outputTokens: null,
+                }}
+              />
+            ) : (
+              <p className="text-sm text-slate-600">This profile has not been analyzed yet.</p>
+            )}
+            <div className="mt-4">
+              <QualifyButton id={prospect.id} analyzed={Boolean(prospect.ai_analyzed_at)} />
+            </div>
           </Panel>
 
           <Panel title="Actions">

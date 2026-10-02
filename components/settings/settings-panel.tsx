@@ -17,6 +17,7 @@ import {
   TIMEZONES,
   type DateFormat,
 } from "@/lib/constants/settings";
+import { AiSettingsSection } from "@/components/settings/ai-panel";
 import type { AppSettings, TargetingSettings } from "@/lib/db/models";
 import { Button } from "@/components/ui/button";
 import { Field, SelectInput, TextArea, TextInput, Toggle } from "@/components/ui/field";
@@ -28,6 +29,7 @@ const tabs = [
   { id: "exclusions", label: "Exclusions" },
   { id: "worker", label: "Worker" },
   { id: "app", label: "Application" },
+  { id: "ai", label: "AI" },
 ] as const;
 
 type TabId = (typeof tabs)[number]["id"];
@@ -35,9 +37,11 @@ type TabId = (typeof tabs)[number]["id"];
 export function SettingsPanel({
   settings,
   targeting,
+  openaiConfigured,
 }: {
   settings: AppSettings;
   targeting: TargetingSettings;
+  openaiConfigured: boolean;
 }) {
   const [tab, setTab] = useState<TabId>("message");
   const [message, setMessage] = useState(settings.messageTemplate);
@@ -380,6 +384,15 @@ export function SettingsPanel({
               Save app settings
             </Button>
           </section>
+        ) : null}
+
+        {tab === "ai" ? (
+          <AiSettingsSection
+            enabled={settings.aiEnabled}
+            strongFitMinimum={settings.strongFitMinimum}
+            possibleFitMinimum={settings.possibleFitMinimum}
+            configured={openaiConfigured}
+          />
         ) : null}
       </div>
     </div>

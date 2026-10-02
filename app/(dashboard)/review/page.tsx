@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import { categoryLabel } from "@/lib/ai/categories";
 import { DatabaseSetup } from "@/components/layout/database-setup";
 import { PageHeader } from "@/components/layout/page-header";
 import { ReviewQueue } from "@/components/review/review-queue";
@@ -32,7 +33,7 @@ export default async function ReviewPage() {
           name: prospect.display_name || prospect.first_name || prospect.instagram_username,
           username: prospect.instagram_username,
           followers: formatFollowerCount(prospect.follower_count),
-          category: prospect.category || "Uncategorized",
+          category: categoryLabel(prospect.category),
           location: prospect.location_text || "",
           fitScore: prospect.fit_score,
           fitLabel: prospect.fit_label,

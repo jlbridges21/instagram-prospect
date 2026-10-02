@@ -99,6 +99,36 @@ export async function getPipelineCounts(
   return { ok: true, data: summarizeProspects(data ?? [], todayStartIso) };
 }
 
+export type QualificationSnapshot = {
+  analyzedToday: number;
+  strongFits: number;
+  possibleFits: number;
+  disqualified: number;
+};
+
+export async function getQualificationSnapshot(
+  todayStartIso: string,
+): Promise<QualificationSnapshot | null> {
+  const supabase = await createClient();
+  const { data, error } = await supabase
+    .from("prospects")
+    .select("fit_label, status, ai_analyzed_at");
+
+  if (error) return null;
+
+  const today = new Date(todayStartIso).getTime();
+  const snapshot = { analyzedToday: 0, strongFits: 0, possibleFits: 0, disqualified: 0 };
+  for (const row of data ?? []) {
+    if (row.fit_label === "strong_fit") snapshot.strongFits += 1;
+    if (row.fit_label === "possible_fit") snapshot.possibleFits += 1;
+    if (row.status === "disqualified") snapshot.disqualified += 1;
+    if (row.ai_analyzed_at && new Date(row.ai_analyzed_at).getTime() >= today) {
+      snapshot.analyzedToday += 1;
+    }
+  }
+  return snapshot;
+}
+
 export async function getRecentActivity(
   limit = 8,
 ): Promise<DataResult<ActivityLogRow[]>> {

@@ -9,6 +9,9 @@ export type AppSettings = {
   preferredBrowser: PreferredBrowser;
   heartbeatIntervalSeconds: number;
   maxActiveWorkers: number;
+  aiEnabled: boolean;
+  strongFitMinimum: number;
+  possibleFitMinimum: number;
   updatedAt: string | null;
 };
 

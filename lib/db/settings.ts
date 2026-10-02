@@ -10,6 +10,10 @@ import {
   isPreferredBrowser,
 } from "@/lib/constants/settings";
 import { DEFAULT_CATEGORIES } from "@/lib/constants/settings";
+import {
+  DEFAULT_POSSIBLE_FIT_MINIMUM,
+  DEFAULT_STRONG_FIT_MINIMUM,
+} from "@/lib/ai/config";
 import { DEFAULT_MESSAGE_TEMPLATE } from "@/lib/constants/message";
 import { databaseErrorMessage, isMissingRelation } from "@/lib/db/errors";
 import type { AppSettings, DataResult, TargetingSettings } from "@/lib/db/models";
@@ -30,6 +34,9 @@ function settingsFromRow(row: SettingsRow): AppSettings {
       : "chromium",
     heartbeatIntervalSeconds: row.heartbeat_interval_seconds,
     maxActiveWorkers: row.max_active_workers,
+    aiEnabled: row.ai_enabled ?? true,
+    strongFitMinimum: row.strong_fit_minimum ?? DEFAULT_STRONG_FIT_MINIMUM,
+    possibleFitMinimum: row.possible_fit_minimum ?? DEFAULT_POSSIBLE_FIT_MINIMUM,
     updatedAt: row.updated_at,
   };
 }
@@ -62,6 +69,9 @@ export function fallbackSettings(): AppSettings {
     preferredBrowser: "chromium",
     heartbeatIntervalSeconds: DEFAULT_HEARTBEAT_SECONDS,
     maxActiveWorkers: 1,
+    aiEnabled: true,
+    strongFitMinimum: DEFAULT_STRONG_FIT_MINIMUM,
+    possibleFitMinimum: DEFAULT_POSSIBLE_FIT_MINIMUM,
     updatedAt: null,
   };
 }

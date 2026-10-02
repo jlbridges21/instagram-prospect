@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { DatabaseSetup } from "@/components/layout/database-setup";
 import { PageHeader } from "@/components/layout/page-header";
 import { SettingsPanel } from "@/components/settings/settings-panel";
+import { isOpenAiConfigured } from "@/lib/ai/env";
 import {
   fallbackSettings,
   fallbackTargeting,
@@ -11,6 +12,7 @@ import {
 import { formatDateTime } from "@/lib/utils/format";
 
 export const metadata: Metadata = { title: "Settings" };
+export const maxDuration = 60;
 
 export default async function SettingsPage() {
   const [settingsResult, targetingResult] = await Promise.all([
@@ -56,7 +58,11 @@ export default async function SettingsPage() {
         </div>
       ) : null}
       {settingsResult.ok && targetingResult.ok ? (
-        <SettingsPanel settings={settings} targeting={targeting} />
+        <SettingsPanel
+          settings={settings}
+          targeting={targeting}
+          openaiConfigured={isOpenAiConfigured()}
+        />
       ) : null}
     </div>
   );

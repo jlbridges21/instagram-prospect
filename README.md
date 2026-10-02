@@ -112,7 +112,7 @@ You can also paste `supabase/seed/clear_sample_data.sql` into the Supabase SQL e
    - `NEXT_PUBLIC_SUPABASE_URL`
    - `NEXT_PUBLIC_SUPABASE_ANON_KEY`
    - `SUPABASE_SERVICE_ROLE_KEY`
-   - `OPENAI_API_KEY` (unused until qualification is added)
+   - `OPENAI_API_KEY`
    - `WORKER_API_SECRET`
 5. Deploy.
 6. In Supabase **Authentication → URL Configuration**, add your Vercel URL, for example `https://your-app.vercel.app`.
@@ -124,6 +124,18 @@ The local worker does not run on Vercel. Vercel only hosts the website. The work
 ## Prompt 2 migration
 
 After the initial migration, run `supabase/migrations/20261002190000_prompt2.sql` once in the Supabase SQL editor. Do not rerun the initial migration.
+
+## Prompt 3 migration
+
+After the Prompt 2 migration, run `supabase/migrations/20261002210000_prompt3_ai.sql` once. Do not edit or rerun the earlier migrations.
+
+Qualification uses `OPENAI_API_KEY` on the server only. The model id lives in `lib/ai/config.ts`. Fit thresholds and the AI on/off switch are in Settings → AI.
+
+```bash
+npm run ai:test
+```
+
+That script qualifies fictional profiles. It does not open Instagram or save prospects.
 
 ## Worker API
 
@@ -170,6 +182,7 @@ npm run build        # production build
 npm run db:seed      # insert fictional prospects
 npm run db:clear-seed
 npm run agent        # reserved for the future worker
+npm run ai:test      # fictional qualification cases
 ```
 
 ## Database notes
@@ -185,5 +198,4 @@ The outreach message is stored in the `settings` table. `{{name}}` is replaced w
 - Instagram discovery
 - Playwright browser automation
 - Sending messages or following accounts
-- AI qualification
 - Automatic follow-ups

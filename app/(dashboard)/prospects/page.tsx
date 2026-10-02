@@ -4,6 +4,7 @@ import { DatabaseSetup } from "@/components/layout/database-setup";
 import { PageHeader } from "@/components/layout/page-header";
 import { ProspectFilters, ProspectPagination } from "@/components/prospects/prospect-filters";
 import { ProspectsTable } from "@/components/prospects/prospects-table";
+import { categoryLabel } from "@/lib/ai/categories";
 import {
   PAGE_SIZE,
   SOURCE_LABELS,
@@ -19,6 +20,7 @@ import { formatDate, formatFollowerCount, parsePositiveInt, readParam } from "@/
 import { prospectMessage } from "@/lib/utils/message";
 
 export const metadata: Metadata = { title: "Prospects" };
+export const maxDuration = 60;
 
 export default async function ProspectsPage({
   searchParams,
@@ -88,7 +90,7 @@ export default async function ProspectsPage({
           id: row.id,
           name: row.display_name || row.first_name || row.instagram_username,
           username: row.instagram_username,
-          category: row.category || "Uncategorized",
+          category: categoryLabel(row.category),
           followers: formatFollowerCount(row.follower_count),
           fitLabel: row.fit_label,
           fitScore: row.fit_score,

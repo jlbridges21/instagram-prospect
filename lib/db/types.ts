@@ -50,6 +50,10 @@ export type ProspectRow = {
   converted_at: string | null;
   last_status_changed_at: string | null;
   is_sample: boolean;
+  ai_analysis: Json | null;
+  ai_analyzed_at: string | null;
+  ai_model: string | null;
+  ai_input_hash: string | null;
   created_at: string;
   updated_at: string;
 };
@@ -64,6 +68,9 @@ export type SettingsRow = {
   preferred_browser: PreferredBrowser;
   heartbeat_interval_seconds: number;
   max_active_workers: number;
+  ai_enabled: boolean;
+  strong_fit_minimum: number;
+  possible_fit_minimum: number;
   updated_at: string;
 };
 
@@ -109,6 +116,17 @@ export type FollowUpRow = {
   created_at: string;
   updated_at: string;
   completed_at: string | null;
+};
+
+export type AiUsageRow = {
+  id: string;
+  prospect_id: string | null;
+  model: string;
+  operation: string;
+  input_tokens: number | null;
+  output_tokens: number | null;
+  estimated_cost_usd: number | null;
+  created_at: string;
 };
 
 export type ActivityLogRow = {
@@ -173,6 +191,20 @@ export type Database = {
         Relationships: [
           {
             foreignKeyName: "follow_ups_prospect_id_fkey";
+            columns: ["prospect_id"];
+            isOneToOne: false;
+            referencedRelation: "prospects";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
+      ai_usage: {
+        Row: AiUsageRow;
+        Insert: Insert<AiUsageRow> & { model: string; operation: string };
+        Update: Insert<AiUsageRow>;
+        Relationships: [
+          {
+            foreignKeyName: "ai_usage_prospect_id_fkey";
             columns: ["prospect_id"];
             isOneToOne: false;
             referencedRelation: "prospects";

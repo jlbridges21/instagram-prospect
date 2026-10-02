@@ -6,6 +6,7 @@ import { useState, useTransition } from "react";
 import { ExternalLink, Inbox } from "lucide-react";
 import { toast } from "sonner";
 import { approveProspects, skipProspects } from "@/lib/actions/prospects";
+import { AnalyzeSelectedButton } from "@/components/prospects/qualify-controls";
 import { canApprove, canSkip } from "@/lib/prospects/status";
 import type { FitLabel, ProspectStatus } from "@/lib/constants/prospects";
 import { Avatar } from "@/components/ui/avatar";
@@ -89,7 +90,13 @@ export function ProspectsTable({
       {selected.length > 0 ? (
         <div className="mb-3 flex items-center justify-between rounded-xl border border-slate-200 bg-white px-4 py-3">
           <p className="text-sm text-slate-700">{selected.length} selected</p>
-          <Button
+          <div className="flex flex-wrap gap-2">
+            <AnalyzeSelectedButton
+              rows={rows
+                .filter((row) => selected.includes(row.id))
+                .map((row) => ({ id: row.id, status: row.status }))}
+            />
+            <Button
             size="sm"
             variant="secondary"
             disabled={pending}
@@ -97,6 +104,7 @@ export function ProspectsTable({
           >
             Skip selected
           </Button>
+          </div>
         </div>
       ) : null}
 

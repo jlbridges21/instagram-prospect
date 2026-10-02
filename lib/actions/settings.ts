@@ -150,3 +150,35 @@ export async function saveAppSettings(input: {
   revalidateSettings();
   return { ok: true };
 }
+
+export async function saveAiSettings(input: {
+  aiEnabled: boolean;
+  strongFitMinimum: number;
+  possibleFitMinimum: number;
+}): Promise<ActionResult> {
+  const strong = input.strongFitMinimum;
+  const possible = input.possibleFitMinimum;
+  if (!Number.isInteger(strong) || strong < 1 || strong > 100) {
+    return { ok: false, error: "Strong fit minimum must be a whole number from 1 to 100." };
+  }
+  if (!Number.isInteger(possible) || possible < 0 || possible > 99) {
+    return { ok: false, error: "Possible fit minimum must be a whole number from 0 to 99." };
+  }
+  if (strong <= possible) {
+    return { ok: false, error: "Strong fit minimum must be higher than the possible fit minimum." };
+  }
+
+  const { supabase } = await requireUser();
+  const { error } = await supabase
+    .from("settings")
+    .update({
+      ai_enabled: input.aiEnabled,
+      strong_fit_minimum: strong,
+      possible_fit_minimum: possible,
+    })
+    .eq("id", 1);
+
+  if (error) return { ok: false, error: error.message };
+  revalidateSettings();
+  return { ok: true };
+}
