@@ -2,6 +2,8 @@ import type { Metadata } from "next";
 import { DatabaseSetup } from "@/components/layout/database-setup";
 import { PageHeader } from "@/components/layout/page-header";
 import { WorkerStatusPanel } from "@/components/worker/worker-status";
+import { AutomationControls } from "@/components/outreach/automation-controls";
+import { getOutreachSnapshot } from "@/lib/db/outreach";
 import { fallbackSettings, getSettings } from "@/lib/db/settings";
 import { getLatestWorker } from "@/lib/db/workers";
 import { formatDateTime, formatRelativeTime, platformLabel } from "@/lib/utils/format";
@@ -11,6 +13,7 @@ export const metadata: Metadata = { title: "Worker" };
 
 export default async function WorkerPage() {
   const [workerResult, settingsResult] = await Promise.all([getLatestWorker(), getSettings()]);
+  const outreach = await getOutreachSnapshot(settingsResult.ok ? settingsResult.data.timezone : fallbackSettings().timezone);
   const settings = settingsResult.ok ? settingsResult.data : fallbackSettings();
   const worker = workerResult.ok ? workerResult.data : null;
   const health = getWorkerHealth({
@@ -29,6 +32,7 @@ export default async function WorkerPage() {
       <PageHeader
         title="Worker"
         description="The browser worker runs on your Mac or Windows machine. It does not run on Vercel."
+        action={<AutomationControls enabled={settings.outreach.automationEnabled} />}
       />
       {!workerResult.ok && workerResult.missingTable ? (
         <div className="mb-6">
@@ -66,6 +70,22 @@ export default async function WorkerPage() {
           {
             label: "Connection health",
             value: health.label,
+          },
+          {
+            label: "Automation",
+            value: settings.outreach.automationEnabled ? "Running" : "Paused",
+          },
+          { label: "Current claimed job", value: outreach?.currentJob ?? "None" },
+          { label: "Claimed by", value: outreach?.currentWorker ?? "None" },
+          { label: "Last completed task", value: outreach?.lastCompleted ?? "None" },
+          { label: "Jobs completed today", value: String(outreach?.completedToday ?? 0) },
+          { label: "Jobs failed today", value: String(outreach?.failedToday ?? 0) },
+          { label: "Queue depth", value: outreach ? `${outreach.queueProspects} prospects` : "Unavailable" },
+          {
+            label: "Next scheduled job",
+            value: outreach?.nextAt
+              ? formatDateTime(outreach.nextAt, settings.timezone, settings.dateFormat)
+              : "None",
           },
         ]}
       />

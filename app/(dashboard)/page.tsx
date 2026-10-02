@@ -1,18 +1,20 @@
 import type { Metadata } from "next";
 import { CalendarClock, Check, Inbox, MessageSquare, Reply, Sparkles, UserCheck } from "lucide-react";
 import { FunnelChart, StatCard } from "@/components/dashboard/metrics";
+import { AutomationControls } from "@/components/outreach/automation-controls";
 import { RecentActivity } from "@/components/dashboard/recent-activity";
 import { RecentProspects } from "@/components/dashboard/recent-prospects";
 import { WorkerSummary } from "@/components/dashboard/worker-summary";
 import { DatabaseSetup } from "@/components/layout/database-setup";
 import { PageHeader } from "@/components/layout/page-header";
 import { countFollowUpsDue } from "@/lib/db/follow-ups";
+import { getOutreachSnapshot } from "@/lib/db/outreach";
 import { getRecentActivity, getPipelineCounts, getQualificationSnapshot, emptyPipeline } from "@/lib/db/stats";
 import { getRecentProspects } from "@/lib/db/prospects";
 import { fallbackSettings, getSettings } from "@/lib/db/settings";
 import { getLatestWorker } from "@/lib/db/workers";
 import type { ProspectRow } from "@/lib/db/types";
-import { endOfTodayIso, formatDate, formatRelativeTime, platformLabel, startOfTodayIso } from "@/lib/utils/format";
+import { endOfTodayIso, formatDate, formatDateTime, formatRelativeTime, platformLabel, startOfTodayIso } from "@/lib/utils/format";
 import { getWorkerHealth } from "@/lib/utils/worker-health";
 
 export const metadata: Metadata = { title: "Overview" };
@@ -35,7 +37,7 @@ export default async function OverviewPage() {
   const settings = settingsResult.ok ? settingsResult.data : fallbackSettings();
   const todayStart = startOfTodayIso(settings.timezone);
 
-  const [pipelineResult, recentResult, activityResult, workerResult, dueFollowUps, qualification] =
+  const [pipelineResult, recentResult, activityResult, workerResult, dueFollowUps, qualification, outreach] =
     await Promise.all([
       getPipelineCounts(todayStart),
       getRecentProspects(),
@@ -43,6 +45,7 @@ export default async function OverviewPage() {
       getLatestWorker(),
       countFollowUpsDue(endOfTodayIso(settings.timezone)),
       getQualificationSnapshot(todayStart),
+      getOutreachSnapshot(settings.timezone),
     ]);
 
   const failures = [settingsResult, pipelineResult, recentResult, activityResult, workerResult].flatMap(
@@ -94,6 +97,29 @@ export default async function OverviewPage() {
           />
         ))}
       </div>
+
+      {outreach ? (
+        <section className="mt-4 rounded-xl border border-slate-200 bg-white px-4 py-3">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <h2 className="text-sm font-semibold text-slate-900">Outreach</h2>
+              <p className="mt-1 text-xs text-slate-500">
+                Worker {health.label.toLowerCase()}
+                {outreach.nextAt
+                  ? ` · Next ${formatDateTime(outreach.nextAt, settings.timezone, settings.dateFormat)}`
+                  : ""}
+              </p>
+            </div>
+            <AutomationControls enabled={settings.outreach.automationEnabled} />
+          </div>
+          <dl className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-4">
+            <Mini label="Queue" value={outreach.queueProspects} />
+            <Mini label="Sent today" value={outreach.sentToday} />
+            <Mini label="Failed jobs" value={outreach.failedJobs} />
+            <Mini label="Scheduled today" value={outreach.scheduledToday} />
+          </dl>
+        </section>
+      ) : null}
 
       {qualification ? (
         <section className="mt-4 rounded-xl border border-slate-200 bg-white px-4 py-3">

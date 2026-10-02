@@ -10,6 +10,8 @@ import { NotesEditor, ProspectActions } from "@/components/prospects/prospect-ac
 import { QualifyButton } from "@/components/prospects/qualify-controls";
 import { AnalysisReadout } from "@/components/settings/ai-panel";
 import { MessageEditor } from "@/components/prospects/message-editor";
+import { OutreachProgress } from "@/components/outreach/progress";
+import { QueuedMessageEditor } from "@/components/outreach/queued-message";
 import { Avatar } from "@/components/ui/avatar";
 import { FitBadge, StatusBadge } from "@/components/ui/badge";
 import {
@@ -18,6 +20,7 @@ import {
   type FitLabel,
   type ProspectSource,
 } from "@/lib/constants/prospects";
+import { getProspectOutreach } from "@/lib/db/outreach";
 import { getProspectActivity } from "@/lib/db/stats";
 import { getProspectById } from "@/lib/db/prospects";
 import { fallbackSettings, getSettings } from "@/lib/db/settings";
@@ -44,10 +47,11 @@ export default async function ProspectDetailPage({
   const { id } = await params;
   if (!isUuid(id)) notFound();
 
-  const [prospectResult, settingsResult, activityResult] = await Promise.all([
+  const [prospectResult, settingsResult, activityResult, outreachResult] = await Promise.all([
     getProspectById(id),
     getSettings(),
     getProspectActivity(id),
+    getProspectOutreach(id),
   ]);
 
   if (!prospectResult.ok) {
@@ -192,12 +196,46 @@ export default async function ProspectDetailPage({
             </dl>
           </Panel>
 
+          <Panel title="Outreach">
+            {outreachResult.ok ? (
+              <OutreachProgress
+                approved={Boolean(prospect.approved_at) || prospect.status === "approved" || prospect.status === "contacted"}
+                messageLocked={Boolean(prospect.queued_message_text?.trim())}
+                contacted={prospect.already_contacted || prospect.status === "contacted"}
+                alreadyFollowing={prospect.already_following}
+                cancelled={Boolean(prospect.outreach_cancelled_at)}
+                jobs={outreachResult.data}
+              />
+            ) : (
+              <p className="text-sm text-slate-600">
+                {outreachResult.missingTable
+                  ? "Outreach progress appears after the Prompt 4 migration."
+                  : "Outreach progress could not be loaded."}
+              </p>
+            )}
+          </Panel>
+
           <Panel title="Message preview">
-            <MessageEditor
-              id={prospect.id}
-              message={message}
-              hasOverride={Boolean(prospect.message_override?.trim())}
-            />
+            {prospect.queued_message_text ? (
+              <QueuedMessageEditor
+                id={prospect.id}
+                message={prospect.queued_message_text}
+                locked={
+                  outreachResult.ok &&
+                  outreachResult.data.some(
+                    (job) =>
+                      job.job_type === "send_message" &&
+                      (job.status === "claimed" || job.status === "running" || job.status === "completed"),
+                  )
+                }
+              />
+            ) : (
+              <MessageEditor
+                id={prospect.id}
+                message={message}
+                hasOverride={Boolean(prospect.message_override?.trim())}
+              />
+            )}
             {prospect.sent_message_text ? (
               <div className="mt-4 border-t border-slate-100 pt-4">
                 <p className="text-xs font-medium text-slate-500">Message sent</p>

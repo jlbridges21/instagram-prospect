@@ -6,6 +6,7 @@ import type {
   ProspectStatus,
 } from "@/lib/constants/prospects";
 import type { DateFormat, PreferredBrowser } from "@/lib/constants/settings";
+import type { OutreachJobStatus, OutreachJobType } from "@/lib/outreach/types";
 
 export type Json =
   | string
@@ -54,6 +55,8 @@ export type ProspectRow = {
   ai_analyzed_at: string | null;
   ai_model: string | null;
   ai_input_hash: string | null;
+  queued_message_text: string | null;
+  outreach_cancelled_at: string | null;
   created_at: string;
   updated_at: string;
 };
@@ -71,6 +74,42 @@ export type SettingsRow = {
   ai_enabled: boolean;
   strong_fit_minimum: number;
   possible_fit_minimum: number;
+  automation_enabled?: boolean;
+  active_days?: string[] | null;
+  active_start_time?: string | null;
+  active_end_time?: string | null;
+  hourly_minimum?: number;
+  hourly_maximum?: number;
+  daily_maximum?: number;
+  minimum_action_delay_seconds?: number;
+  scheduling_spread_seconds?: number;
+  job_claim_lease_seconds?: number;
+  updated_at: string;
+};
+
+export type OutreachJobRow = {
+  id: string;
+  prospect_id: string;
+  job_type: OutreachJobType;
+  status: OutreachJobStatus;
+  priority: number;
+  sequence_order: number;
+  depends_on_job_id: string | null;
+  scheduled_for: string;
+  available_at: string;
+  claimed_at: string | null;
+  claimed_by_worker_id: string | null;
+  claim_expires_at: string | null;
+  started_at: string | null;
+  completed_at: string | null;
+  failed_at: string | null;
+  cancelled_at: string | null;
+  attempt_count: number;
+  max_attempts: number;
+  last_error: string | null;
+  result: Json | null;
+  idempotency_key: string;
+  created_at: string;
   updated_at: string;
 };
 
@@ -212,6 +251,27 @@ export type Database = {
           },
         ];
       };
+      outreach_jobs: {
+        Row: OutreachJobRow;
+        Insert: Insert<OutreachJobRow> & {
+          prospect_id: string;
+          job_type: OutreachJobType;
+          sequence_order: number;
+          scheduled_for: string;
+          available_at: string;
+          idempotency_key: string;
+        };
+        Update: Insert<OutreachJobRow>;
+        Relationships: [
+          {
+            foreignKeyName: "outreach_jobs_prospect_id_fkey";
+            columns: ["prospect_id"];
+            isOneToOne: false;
+            referencedRelation: "prospects";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
       activity_log: {
         Row: ActivityLogRow;
         Insert: Insert<ActivityLogRow> & {
@@ -231,6 +291,26 @@ export type Database = {
       };
     };
     Views: Record<string, never>;
-    Functions: Record<string, never>;
+    Functions: {
+      claim_next_outreach_job: {
+        Args: {
+          p_worker_id: string;
+          p_lease_seconds: number;
+          p_now: string;
+          p_prospect_id?: string | null;
+        };
+        Returns: Json | null;
+      };
+      queue_outreach_sequence: {
+        Args: {
+          p_prospect_id: string;
+          p_message: string;
+          p_verify_at: string;
+          p_follow_at: string;
+          p_send_at: string;
+        };
+        Returns: Json;
+      };
+    };
   };
 };

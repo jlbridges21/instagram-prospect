@@ -137,6 +137,19 @@ npm run ai:test
 
 That script qualifies fictional profiles. It does not open Instagram or save prospects.
 
+## Prompt 4 migration
+
+After the Prompt 3 migration, run `supabase/migrations/20261002230000_prompt4_outreach_queue.sql` once. Do not edit or rerun the earlier migrations.
+
+Outreach automation starts paused. The local simulator can complete queued jobs without opening Instagram:
+
+```bash
+npm run outreach:test
+npm run worker:simulate -- --once
+```
+
+Set `WORKER_SIMULATION_MODE=true` only on the machine that runs the simulator. Do not turn that on for the Vercel deployment.
+
 ## Worker API
 
 The local worker is not built yet. These routes accept a bearer token and talk to Supabase on the server:

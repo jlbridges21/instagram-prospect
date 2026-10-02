@@ -46,6 +46,17 @@ export const ACTIVITY_EVENTS = [
   "worker_started",
   "worker_stopped",
   "worker_error",
+  "outreach_queued",
+  "outreach_cancelled",
+  "prospect_verified",
+  "prospect_followed",
+  "prospect_excluded_existing_follow",
+  "worker_job_claimed",
+  "worker_job_started",
+  "worker_job_completed",
+  "worker_job_failed",
+  "automation_paused",
+  "automation_resumed",
 ] as const;
 
 export type ActivityEventType = (typeof ACTIVITY_EVENTS)[number];

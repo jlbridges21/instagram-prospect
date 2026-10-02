@@ -44,5 +44,6 @@ export async function GET(request: Request) {
     excludeLargeAgencies: targeting?.exclude_large_agencies ?? fallbackRules.excludeLargeAgencies,
     excludeUnrelatedDrone:
       targeting?.exclude_unrelated_drone ?? fallbackRules.excludeUnrelatedDrone,
+    automationEnabled: settings?.automation_enabled ?? false,
   });
 }

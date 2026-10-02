@@ -1,4 +1,5 @@
 import type { DateFormat, PreferredBrowser } from "@/lib/constants/settings";
+import type { OutreachSettings } from "@/lib/outreach/types";
 
 export type AppSettings = {
   messageTemplate: string;
@@ -12,6 +13,7 @@ export type AppSettings = {
   aiEnabled: boolean;
   strongFitMinimum: number;
   possibleFitMinimum: number;
+  outreach: OutreachSettings;
   updatedAt: string | null;
 };
 

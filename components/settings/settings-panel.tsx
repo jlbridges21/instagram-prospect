@@ -18,6 +18,7 @@ import {
   type DateFormat,
 } from "@/lib/constants/settings";
 import { AiSettingsSection } from "@/components/settings/ai-panel";
+import { OutreachSettingsForm } from "@/components/settings/outreach-settings";
 import type { AppSettings, TargetingSettings } from "@/lib/db/models";
 import { Button } from "@/components/ui/button";
 import { Field, SelectInput, TextArea, TextInput, Toggle } from "@/components/ui/field";
@@ -28,6 +29,7 @@ const tabs = [
   { id: "targeting", label: "Targeting" },
   { id: "exclusions", label: "Exclusions" },
   { id: "worker", label: "Worker" },
+  { id: "automation", label: "Automation" },
   { id: "app", label: "Application" },
   { id: "ai", label: "AI" },
 ] as const;
@@ -385,6 +387,8 @@ export function SettingsPanel({
             </Button>
           </section>
         ) : null}
+
+        {tab === "automation" ? <OutreachSettingsForm outreach={settings.outreach} /> : null}
 
         {tab === "ai" ? (
           <AiSettingsSection
