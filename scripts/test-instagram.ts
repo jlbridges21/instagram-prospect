@@ -247,6 +247,75 @@ check(
   relationshipFromCandidates([action("Follow"), action("Following")]).relationship === "unknown",
 );
 check("dom reader source parses", typeof new Function(`return (${READ_DOM_SOURCE})`) === "function");
+check("following count phrase is ignored", controlRelationship("Following count") === null);
+check("accounts you follow is ignored", controlRelationship("Accounts you follow") === null);
+
+function stat(text: string, extras: Partial<RelationshipCandidate> = {}): RelationshipCandidate {
+  return action(text, { tag: "div", role: "", tabIndex: "", isInteractive: false, besideOptions: false, ...extras });
+}
+
+check("stats div is ignored", relationshipFromCandidates([stat("801 following")]).relationship === "unknown");
+check("stats span is ignored", relationshipFromCandidates([stat("following", { tag: "span" })]).relationship === "unknown");
+check(
+  "follower link is ignored",
+  relationshipFromCandidates([stat("3,860 followers", { tag: "a", href: "/studio.new/followers/" })]).relationship === "unknown",
+);
+check(
+  "role button following still matches",
+  relationshipFromCandidates([action("Following", { tag: "div", role: "button" })]).relationship === "following",
+);
+check(
+  "native following button",
+  relationshipFromCandidates([action("Following", { tag: "button", role: "button" })]).relationship === "following",
+);
+check(
+  "native follow button",
+  relationshipFromCandidates([action("Follow", { tag: "button", role: "button" })]).relationship === "not_following",
+);
+check(
+  "role button follow back",
+  relationshipFromCandidates([action("Follow Back", { tag: "div", role: "button" })]).relationship === "not_following",
+);
+check(
+  "native requested button",
+  relationshipFromCandidates([action("Requested", { tag: "button", role: "button" })]).relationship === "requested",
+);
+check(
+  "followed by phrase is ignored",
+  relationshipFromCandidates([stat("Followed by abc", { tag: "span" })]).relationship === "unknown",
+);
+
+const statsAndFollow = [
+  stat("2,282 posts 398K followers 801 following"),
+  stat("followers", { tag: "span" }),
+  stat("following", { tag: "span" }),
+  action("Follow", { tag: "button", role: "button" }),
+];
+check("stats plus follow button", relationshipFromCandidates(statsAndFollow).relationship === "not_following");
+check(
+  "stats plus following button",
+  relationshipFromCandidates([
+    stat("801 following"),
+    stat("following", { tag: "span" }),
+    action("Following", { tag: "div", role: "button" }),
+  ]).relationship === "following",
+);
+const statsOnly = profileFromDom(
+  snapshot({
+    url: "https://www.instagram.com/studio.new/",
+    title: "Matt Diamante (@studio.new) • Instagram",
+    relationshipCandidates: [
+      stat("2,282 posts 398K followers 801 following"),
+      stat("followers", { tag: "span" }),
+      stat("following", { tag: "span" }),
+    ],
+    links: [{ href: "/studio.new/followers/", text: "398K followers", title: "398000" }],
+  }),
+  "studio.new",
+);
+check("stats only stays unknown", statsOnly.relationship === "unknown");
+check("stats only keeps followers", statsOnly.followerCount === 398000);
+check("stats only keeps display name", statsOnly.displayName === "Matt Diamante");
 
 const composer = snapshot({
   textboxes: [{ name: "Message", value: "Hi there" }],

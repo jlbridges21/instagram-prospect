@@ -71,18 +71,37 @@ export function normalizeControlText(value: string) {
   return compact;
 }
 
+const EXACT_RELATIONSHIP_LABEL = /^(follow|follow back|following|requested)$/i;
+
 export function controlRelationship(value: string): FollowRelationship | null {
   const text = normalizeControlText(value);
   if (!text || text.length > 40) return null;
   if (/\d/.test(text)) return null;
   if (/^followed by\b/i.test(text)) return null;
-  if (/^(message|messages|options|more|share)$/i.test(text)) return null;
-  const handle = "(?:\\s+@?[a-z0-9._]{1,30})?";
-  if (new RegExp(`^requested${handle}$`, "i").test(text)) return "requested";
-  if (new RegExp(`^(?:following|unfollow)${handle}$`, "i").test(text)) return "following";
-  if (new RegExp(`^follow back${handle}$`, "i").test(text)) return "not_following";
-  if (new RegExp(`^follow${handle}$`, "i").test(text)) return "not_following";
-  return null;
+  if (!EXACT_RELATIONSHIP_LABEL.test(text)) return null;
+  if (/^requested$/i.test(text)) return "requested";
+  if (/^following$/i.test(text)) return "following";
+  if (/^follow back$/i.test(text)) return "not_following";
+  return "not_following";
+}
+
+export function isRelationshipAction(candidate: {
+  tag?: string;
+  role?: string;
+  text?: string;
+  ariaLabel?: string;
+  title?: string;
+  href?: string;
+  isInteractive?: boolean;
+}) {
+  const tag = (candidate.tag || "").toLowerCase();
+  const role = (candidate.role || "").toLowerCase();
+  const href = (candidate.href || "").split("?")[0];
+  const button = tag === "button" || role === "button";
+  const actionAnchor = tag === "a" && !/\/(followers|following|posts)\/?$/i.test(href);
+  if (candidate.isInteractive === false && !button) return false;
+  if (!button && !actionAnchor) return false;
+  return [candidate.ariaLabel, candidate.text, candidate.title].some((value) => value && controlRelationship(value));
 }
 
 export function relationshipFromLabels(labels: string[]): FollowRelationship {
@@ -143,11 +162,15 @@ export function relationshipFromCandidates(
     title?: string;
     scope?: "primary" | "outside";
     besideOptions?: boolean;
+    isInteractive?: boolean;
+    href?: string;
   }>,
 ) {
   const labelsOf = (items: typeof candidates) =>
-    items.flatMap((candidate) => [candidate.ariaLabel, candidate.text, candidate.title].filter((value): value is string => Boolean(value)));
-  const primary = candidates.filter((candidate) => candidate.scope !== "outside");
+    items
+      .filter((candidate) => isRelationshipAction(candidate))
+      .flatMap((candidate) => [candidate.ariaLabel, candidate.text, candidate.title].filter((value): value is string => Boolean(value)));
+  const primary = candidates.filter((candidate) => candidate.scope !== "outside" && isRelationshipAction(candidate));
   const beside = primary.filter((candidate) => candidate.besideOptions);
   const besideRelationship = relationshipFromLabels(labelsOf(beside));
   const pool = besideRelationship === "unknown" ? primary : beside;
@@ -155,7 +178,7 @@ export function relationshipFromCandidates(
   const matched = pool.find((candidate) =>
     [candidate.ariaLabel, candidate.text, candidate.title].some((value) => value && controlRelationship(value)),
   );
-  let strategy = relationship === "unknown" ? "none" : "primary-action-region-text";
+  let strategy = "none";
   if (matched && relationship !== "unknown") {
     const role = (matched.role || "").toLowerCase();
     if (role === "button" && (matched.tag || "").toLowerCase() !== "button") strategy = "primary-action-region-role-button";

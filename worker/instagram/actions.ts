@@ -13,7 +13,7 @@ import {
   pageSignal,
   profileFromDom,
 } from "./interpret";
-import { isExcludedRelationship, profileUrlFor, type FollowRelationship } from "./parse";
+import { isExcludedRelationship, isRelationshipAction, profileUrlFor, type FollowRelationship } from "./parse";
 import { openUrl, readDom } from "./read-dom";
 import type { DomSnapshot } from "./types";
 
@@ -56,12 +56,20 @@ async function inspectCurrent(page: Page, username: string, options?: { debug?: 
   }
   if (options?.debug || process.argv.includes("--debug")) {
     const primary = (dom.relationshipCandidates ?? []).filter((candidate) => candidate.scope !== "outside");
+    const accepted = primary.filter((candidate) => isRelationshipAction(candidate));
     console.log(`@${username}`);
     console.log("relationship candidates:");
     if (primary.length === 0) console.log("  none");
     primary.forEach((candidate, index) => {
       const text = candidate.ariaLabel || candidate.text || candidate.title;
-      console.log(`  [${index}] role=${candidate.role || candidate.tag} text="${text}"`);
+      const interactive = candidate.isInteractive === true || candidate.tag === "button" || candidate.role === "button";
+      console.log(`  [${index}] tag=${candidate.tag} role=${candidate.role || "null"} text="${text}" interactive=${interactive ? "true" : "false"}`);
+    });
+    console.log("accepted action candidates:");
+    if (accepted.length === 0) console.log("  none");
+    accepted.forEach((candidate, index) => {
+      const text = candidate.ariaLabel || candidate.text || candidate.title;
+      console.log(`  [${index}] tag=${candidate.tag} role=${candidate.role || "null"} text="${text}"`);
     });
     console.log(`relationship: ${profile.relationship}`);
     console.log(`strategy: ${profile.strategies.relationship}`);
@@ -92,6 +100,7 @@ function saveDebugSnapshot(username: string, dom: DomSnapshot) {
       href: candidate.href,
       tabIndex: candidate.tabIndex,
       scope: candidate.scope,
+      isInteractive: candidate.isInteractive === true,
     })),
     buttons: dom.buttons.slice(0, 30),
     links: dom.links.filter((link) => /follower|following|posts/i.test(`${link.text} ${link.label ?? ""} ${link.href}`)).slice(0, 20),

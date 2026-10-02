@@ -88,9 +88,16 @@ export const READ_DOM_SOURCE = `() => {
     }
   }
   if (!region) region = (heading && heading.parentElement) || header || document.querySelector("main");
-  const hasRelationship = (root) => [...root.querySelectorAll("button, [role='button'], a, [tabindex], div, span")].some((el) => {
+  const exactAction = (name) => /^(follow|follow back|following|requested)$/i.test(name);
+  const hasRelationship = (root) => [...root.querySelectorAll("button, [role='button'], a")].some((el) => {
     if (inDialog(el) || inSuggestion(el)) return false;
-    return namesOf(el).some((name) => /^(follow|follow back|following|unfollow|requested)$/i.test(name));
+    const tag = el.tagName;
+    const role = (el.getAttribute("role") || "").toLowerCase();
+    const href = (el.getAttribute("href") || "").split("?")[0];
+    const button = tag === "BUTTON" || role === "button";
+    const actionAnchor = tag === "A" && !/\\/(followers|following|posts)\\/?$/i.test(href);
+    if (!button && !actionAnchor) return false;
+    return namesOf(el).some(exactAction);
   });
   let hops = 0;
   while (region && region.parentElement && region.parentElement !== document.body && hops < 5 && !hasRelationship(region)) {
@@ -98,17 +105,24 @@ export const READ_DOM_SOURCE = `() => {
     region = region.parentElement;
     hops += 1;
   }
-  const toCandidate = (el, scope) => ({
-    tag: el.tagName.toLowerCase(),
-    role: (el.getAttribute("role") || (el.tagName === "BUTTON" ? "button" : "")).toLowerCase(),
-    text: (directText(el) || undouble(el.innerText || "")).slice(0, 80),
-    ariaLabel: undouble(el.getAttribute("aria-label") || labelledBy(el)).slice(0, 80),
-    title: undouble(el.getAttribute("title") || "").slice(0, 80),
-    href: el.getAttribute("href") || "",
-    tabIndex: el.getAttribute("tabindex") || "",
-    scope,
-    besideOptions: Boolean(options && options.parentElement && options.parentElement.contains(el)),
-  });
+  const toCandidate = (el, scope) => {
+    const tag = el.tagName.toLowerCase();
+    const role = (el.getAttribute("role") || "").toLowerCase();
+    const href = el.getAttribute("href") || "";
+    const statsLink = tag === "a" && /\\/(followers|following|posts)\\/?$/i.test(href.split("?")[0]);
+    return {
+      tag,
+      role,
+      text: (directText(el) || undouble(el.innerText || "")).slice(0, 80),
+      ariaLabel: undouble(el.getAttribute("aria-label") || labelledBy(el)).slice(0, 80),
+      title: undouble(el.getAttribute("title") || "").slice(0, 80),
+      href,
+      tabIndex: el.getAttribute("tabindex") || "",
+      scope,
+      isInteractive: tag === "button" || role === "button" || (tag === "a" && !statsLink),
+      besideOptions: Boolean(options && options.parentElement && options.parentElement.contains(el)),
+    };
+  };
   const collect = (root, scope, skipInside) => {
     if (!root) return [];
     const picked = [];
@@ -117,11 +131,13 @@ export const READ_DOM_SOURCE = `() => {
       if (skipInside && skipInside.contains(el)) continue;
       if (inDialog(el) || inSuggestion(el)) continue;
       if (!interesting(el)) continue;
-      const own = namesOf(el).map((name) => name.toLowerCase());
-      const nested = [...el.querySelectorAll("button, [role='button'], a, div, span")].some((child) =>
-        namesOf(child).some((name) => own.includes(name.toLowerCase()) && name.length <= 40),
-      );
-      if (nested) continue;
+      const tag = el.tagName;
+      const role = (el.getAttribute("role") || "").toLowerCase();
+      const interactive = tag === "BUTTON" || role === "button" || tag === "A";
+      if (!interactive) {
+        const wrapsAction = [...el.querySelectorAll("button, [role='button']")].length > 0;
+        if (wrapsAction) continue;
+      }
       picked.push(toCandidate(el, scope));
       if (picked.length >= 25) break;
     }

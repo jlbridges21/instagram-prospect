@@ -10,6 +10,7 @@ export type RelationshipCandidate = {
   tabIndex: string;
   scope: "primary" | "outside";
   besideOptions?: boolean;
+  isInteractive?: boolean;
 };
 export type DomImage = { alt: string; src: string };
 export type DomTextbox = { name: string; value: string };
