@@ -1,4 +1,5 @@
 import { launchBrowser } from "./browser/launch";
+import { createHeartbeatSession, mustHeartbeatBeforeClaim, safeHeartbeatError } from "./heartbeat-session";
 import { CloudClient, type CloudConfig, type JobPayload } from "./cloud/client";
 import { emptyEfficiency, formatEfficiency, runDiscoveryV2 } from "./discovery/v2";
 import { loadIdentity } from "./identity";
@@ -90,11 +91,31 @@ export async function runWorker(mode: RunMode) {
     instagramAuthenticated: false,
     attention: undefined as string | undefined,
   };
-  const timer = setInterval(() => {
-    beat(cloud, identity, live.task, stats, live.browserConnected, live.instagramAuthenticated, live.attention, live.username, live.lastEvent).catch(() => undefined);
-  }, Math.max(startup.heartbeatIntervalSeconds, 15) * 1000);
+  const claimsOutreach = mustHeartbeatBeforeClaim({
+    mode,
+    dryRun,
+    singleOutreach,
+    discoveryOnly,
+    noWrite,
+  });
+  const heartbeats = createHeartbeatSession(Math.max(startup.heartbeatIntervalSeconds, 15) * 1000, () =>
+    beat(
+      cloud,
+      identity,
+      live.task,
+      stats,
+      live.browserConnected,
+      live.instagramAuthenticated,
+      live.attention,
+      live.username,
+      live.lastEvent,
+    ),
+  );
+  if (!claimsOutreach) heartbeats.startInterval();
+  let outreachReady = false;
   let backoff = 5_000;
   let announced = false;
+  let statusAnnounced = false;
 
   try {
     await flushPending(cloud, identity.worker_id);
@@ -113,9 +134,27 @@ export async function runWorker(mode: RunMode) {
         if (!announced) {
           console.log("✓ Automation configuration loaded");
           console.log(config.discoveryEnabled ? "✓ Discovery ON" : "Discovery: OFF");
-          console.log(config.automationEnabled ? "Outreach: RUNNING" : "✓ Outreach PAUSED");
           if (debug) console.log("Debug logging is on.");
           announced = true;
+        }
+        if (claimsOutreach && !outreachReady) {
+          await ensureHome(page);
+          live.instagramAuthenticated = true;
+          console.log("✓ Instagram authenticated");
+          try {
+            await heartbeats.register();
+          } catch (error) {
+            if (isAuthFailure(error)) return;
+            console.log("Worker heartbeat failed. Outreach was not started.");
+            console.log(`Reason: ${safeHeartbeatError(error)}`);
+            return;
+          }
+          console.log("✓ Worker heartbeat registered");
+          outreachReady = true;
+        }
+        if (!statusAnnounced) {
+          console.log(config.automationEnabled ? "Outreach: RUNNING" : "✓ Outreach PAUSED");
+          statusAnnounced = true;
         }
         if (dryRun) {
           await runDryOutreach(cloud, page);
@@ -201,7 +240,7 @@ export async function runWorker(mode: RunMode) {
       }
     }
   } finally {
-    clearInterval(timer);
+    heartbeats.stop();
     if (debug || discoveryOnly) {
       efficiency.cloudRequests = cloud.cloudRequests;
       console.log(formatEfficiency(efficiency));
@@ -395,6 +434,7 @@ async function runSingleOutreach(
     else if (first.reason) console.log(`Reason: ${first.reason}`);
     return;
   }
+  console.log(`Claimed outreach for @${first.job.instagramUsername}`);
   const prospectId = first.job.prospectId;
   let job: JobPayload | null = first.job;
   while (job) {
