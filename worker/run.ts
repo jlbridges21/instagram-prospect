@@ -113,7 +113,6 @@ export async function runWorker(mode: RunMode) {
               messageActionClicked: inspection.messageAction,
               directOpenedFromProfile: inspection.conversationOpened,
             },
-            conflicting: inspection.conflicting === true,
             composerFound: inspection.composerFound,
           }),
         );
@@ -121,6 +120,7 @@ export async function runWorker(mode: RunMode) {
       console.log("");
       console.log(`Conversation recipient: ${"recipientConfirmed" in inspection && inspection.recipientConfirmed ? "confirmed" : "not confirmed"}`);
       console.log(`Recipient strategy: ${"recipientStrategy" in inspection && inspection.recipientStrategy ? inspection.recipientStrategy : "none"}`);
+      console.log(`Conflicting recipient evidence: ${"conflicting" in inspection && inspection.conflicting ? "yes" : "no"}`);
       if ("recipientReason" in inspection && inspection.recipientReason) console.log(inspection.recipientReason);
       console.log(`Composer found: ${inspection.composerFound ? "yes" : "no"}`);
       console.log(`Composer strategy: ${inspection.composerStrategy ?? "none"}`);

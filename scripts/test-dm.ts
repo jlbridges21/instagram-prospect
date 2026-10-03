@@ -1,8 +1,11 @@
 import assert from "node:assert/strict";
 import { failurePlan } from "../lib/outreach/decisions";
 import {
+  classifyHeaderCandidate,
   confirmConversationRecipient,
   detectComposer,
+  directSurfaceLine,
+  formatHeaderInspect,
   messageAllowedForSequence,
   sendAllowed,
   queueSendStatusLabel,
@@ -292,6 +295,73 @@ const noIdentity = confirmConversationRecipient({
 });
 assert.equal(noIdentity.confirmed, false);
 assert.equal(noIdentity.strategy, null);
+const chrome = (text: string) => ({ text, href: "", role: "button", tag: "button", ariaLabel: "", title: "", alt: "", scope: "active-header" as const });
+const liveThread = confirmConversationRecipient({
+  username: "vsiaerial",
+  displayName: "VSI Aerial",
+  candidates: [
+    chrome("Go back"),
+    { text: "VSI Aerial", href: "/vsiaerial/", role: "link", tag: "a", ariaLabel: "Open the profile page of vsiaerial", title: "", alt: "", scope: "active-header" },
+    chrome("Expand"),
+    chrome("Close"),
+    { text: "vsiaerial · Instagram", href: "", role: "span", tag: "span", ariaLabel: "", title: "", alt: "", scope: "active-header" },
+  ],
+  provenance: proof,
+});
+assert.equal(liveThread.confirmed, true);
+assert.equal(liveThread.strategy, "conversation-header-profile-link");
+assert.equal(liveThread.evidence.some((item) => item.classification === "identity_conflict"), false);
+assert.equal(liveThread.evidence[0]?.classification, "ui_control");
+assert.equal(liveThread.evidence[1]?.classification, "identity_match");
+assert.equal(liveThread.evidence[4]?.classification, "identity_match");
+const unrelatedControls = confirmConversationRecipient({
+  username: "vsiaerial",
+  displayName: "VSI Aerial",
+  candidates: [
+    { text: "VSI Aerial", href: "/vsiaerial/", role: "link", ...blank },
+    chrome("Info"),
+    chrome("Mute"),
+    chrome("Video call"),
+  ],
+  provenance: noProof,
+});
+assert.equal(unrelatedControls.confirmed, true);
+assert.equal(unrelatedControls.evidence.some((item) => item.classification === "identity_conflict"), false);
+const mixedAccounts = confirmConversationRecipient({
+  username: "vsiaerial",
+  displayName: "VSI Aerial",
+  candidates: [
+    { text: "VSI Aerial", href: "/vsiaerial/", role: "link", ...blank },
+    { text: "Other", href: "/differentuser/", role: "link", ...blank },
+  ],
+  provenance: proof,
+});
+assert.equal(mixedAccounts.confirmed, false);
+assert.equal(mixedAccounts.evidence.some((item) => item.classification === "identity_conflict"), true);
+const ariaOnly = confirmConversationRecipient({
+  username: "vsiaerial",
+  displayName: "VSI Aerial",
+  candidates: [{ text: "VSI Aerial", href: "", role: "button", ariaLabel: "Open the profile page of vsiaerial", title: "", alt: "" }],
+  provenance: noProof,
+});
+assert.equal(ariaOnly.confirmed, true);
+assert.equal(ariaOnly.strategy, "conversation-header-aria-username");
+assert.equal(classifyHeaderCandidate({ text: "Go back", href: "", role: "button", ariaLabel: "", title: "", alt: "" }, "vsiaerial", "VSI Aerial").classification, "ui_control");
+assert.equal(classifyHeaderCandidate({ text: "Expand", href: "", role: "button", ariaLabel: "", title: "", alt: "" }, "vsiaerial", "VSI Aerial").classification, "ui_control");
+assert.equal(classifyHeaderCandidate({ text: "Close", href: "", role: "button", ariaLabel: "", title: "", alt: "" }, "vsiaerial", "VSI Aerial").classification, "ui_control");
+assert.equal(directSurfaceLine({ directPath: "", paneFound: true, composerFound: true, messageActionClicked: true }), "Direct surface: conversation overlay");
+assert.equal(directSurfaceLine({ directPath: "/direct/t/123/", paneFound: true, composerFound: true, messageActionClicked: true }), "Direct URL: /direct/t/123/");
+const overlayPrint = formatHeaderInspect({
+  paneFound: true,
+  directPath: "",
+  candidates: [{ text: "Go back", href: "", role: "button", ariaLabel: "", title: "", alt: "" }],
+  displayName: "VSI Aerial",
+  usernameRendered: true,
+  provenance: proof,
+  composerFound: true,
+});
+assert.match(overlayPrint, /Direct surface: conversation overlay/);
+assert.match(overlayPrint, /classification: ui_control/);
 const unconfirmed = sendRecoveryDecision({
   sendAttempted: false,
   exactOutboundPresent: false,

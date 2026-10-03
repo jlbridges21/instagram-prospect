@@ -260,9 +260,7 @@ export async function inspectDirectMessage(page: Page, username: string) {
     directPath: opened.dom.directPath ?? "",
     displayName: current.profile.displayName,
     sourceVerified: current.profile.username === username.toLowerCase(),
-    conflicting: opened.recipient.evidence.some(
-      (item) => item.reason === "profile href belongs to another account" || item.reason === "different participant in the active header",
-    ),
+    conflicting: opened.recipient.evidence.some((item) => item.classification === "identity_conflict"),
     composerFound: opened.composerFound,
     composerStrategy: opened.composerStrategy,
     existingConversation: opened.existingConversation,

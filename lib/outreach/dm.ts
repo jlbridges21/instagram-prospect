@@ -154,10 +154,6 @@ export function profileUsernameFromHref(href: string) {
   return name;
 }
 
-function candidateBlob(candidate: RecipientCandidate) {
-  return [candidate.text, candidate.ariaLabel, candidate.title, candidate.alt].join(" ").replace(/\s+/g, " ").trim();
-}
-
 function sameDisplayName(value: string, displayName: string) {
   const display = displayName.trim().toLowerCase();
   const text = value.trim().toLowerCase();
@@ -169,21 +165,97 @@ function activeHeader(candidates: RecipientCandidate[]) {
   return candidates.filter((candidate) => !candidate.scope || candidate.scope === "active-header");
 }
 
-function isChromeLabel(value: string) {
-  return /^(message|send|like|info|details|close|back|search|audio call|video call|chat)$/i.test(value.trim());
+export type HeaderClassification =
+  | "identity_match"
+  | "identity_conflict"
+  | "supporting_identity"
+  | "ui_control"
+  | "irrelevant";
+
+const UI_CONTROL =
+  /^(go back|back|expand|close|info|details|video call|audio call|call|mute|unmute|search|chat|send|like|message|options|more|menu|emoji|gallery|inbox|messages|new message|minimize|maximize|thread details|view profile|instagram)$/i;
+
+function uiControlLabel(value: string) {
+  return UI_CONTROL.test(value.trim());
 }
 
-function isOtherParticipant(value: string, username: string, displayName: string) {
+function profileAriaUsername(value: string) {
+  const match = value.trim().match(/open the profile page of\s+@?([a-z0-9._]{1,30})\b/i);
+  return match ? match[1].toLowerCase() : null;
+}
+
+function identityText(value: string) {
   const text = value.trim();
-  if (!text || isChromeLabel(text) || /message/i.test(text)) return false;
-  if (text.toLowerCase() === username || text.toLowerCase() === `@${username}`) return false;
-  if (displayName && sameDisplayName(text, displayName)) return false;
   const mention = text.match(/^@([a-z0-9._]{1,30})$/i);
-  if (mention) return mention[1].toLowerCase() !== username;
-  if (/^[a-z0-9._]{1,30}$/i.test(text) && text.toLowerCase() !== username) return true;
-  if (/^profile picture$/i.test(text)) return false;
-  if (!displayName || displayName.length < 2) return false;
-  return text.length >= 2 && text.length <= 60 && /[a-z]/i.test(text);
+  if (mention) return { username: mention[1].toLowerCase(), kind: "at" as const };
+  const titled = text.match(/^([a-z0-9._]{1,30})\s*[·•|]\s*instagram$/i);
+  if (titled) return { username: titled[1].toLowerCase(), kind: "username" as const };
+  if (uiControlLabel(text)) return null;
+  const bare = text.match(/^([a-z0-9._]{1,30})$/i);
+  if (!bare) return null;
+  const name = bare[1].toLowerCase();
+  if (["instagram", "direct", "explore", "accounts", "reels", "stories"].includes(name)) return null;
+  return { username: name, kind: "username" as const };
+}
+
+function namedProfilePicture(value: string) {
+  const match = value.trim().match(/^(.+)'s profile picture$/i);
+  return match?.[1].trim() || null;
+}
+
+export function classifyHeaderCandidate(
+  candidate: RecipientCandidate,
+  username: string,
+  displayName: string,
+): { classification: HeaderClassification; reason: string; match: "href" | "aria" | "at" | "username" | "display" | "avatar" | null } {
+  const target = username.replace(/^@/, "").toLowerCase();
+  const display = displayName.trim();
+  if (candidate.scope === "outside") {
+    return { classification: "irrelevant", reason: "outside the active conversation header", match: null };
+  }
+  const hrefUser = profileUsernameFromHref(candidate.href);
+  const ariaUser = profileAriaUsername(candidate.ariaLabel) || profileAriaUsername(candidate.title);
+  const textIdentity = identityText(candidate.text);
+  const labelIdentity = identityText(candidate.ariaLabel);
+  const identities = [hrefUser, ariaUser, textIdentity?.username ?? null, labelIdentity?.username ?? null].filter(
+    (value): value is string => Boolean(value),
+  );
+  if (identities.some((value) => value !== target)) {
+    return {
+      classification: "identity_conflict",
+      reason: hrefUser && hrefUser !== target ? "profile href belongs to another account" : "different participant in the active header",
+      match: null,
+    };
+  }
+  if (display) {
+    const pictures = [candidate.alt, candidate.title, candidate.ariaLabel]
+      .map(namedProfilePicture)
+      .filter((name): name is string => Boolean(name));
+    if (pictures.some((name) => !sameDisplayName(name, display))) {
+      return { classification: "identity_conflict", reason: "different participant in the active header", match: null };
+    }
+  }
+  if (hrefUser === target) return { classification: "identity_match", reason: "profile href matches target", match: "href" };
+  if (ariaUser === target) return { classification: "identity_match", reason: "profile aria-label matches target", match: "aria" };
+  if (textIdentity?.username === target || labelIdentity?.username === target) {
+    const at = textIdentity?.kind === "at" || labelIdentity?.kind === "at";
+    return {
+      classification: "identity_match",
+      reason: at ? "visible @username" : "visible username",
+      match: at ? "at" : "username",
+    };
+  }
+  const fields = [candidate.text, candidate.ariaLabel, candidate.title].map((value) => value.trim()).filter(Boolean);
+  if (fields.length > 0 && fields.every(uiControlLabel)) {
+    return { classification: "ui_control", reason: "generic header control", match: null };
+  }
+  if (display && (sameDisplayName(candidate.text, display) || sameDisplayName(candidate.ariaLabel, display))) {
+    return { classification: "supporting_identity", reason: "display name in the active header", match: "display" };
+  }
+  if (display && (sameDisplayName(candidate.alt, display) || sameDisplayName(candidate.title, display) || [candidate.alt, candidate.title].some((value) => sameDisplayName(namedProfilePicture(value) ?? "", display)))) {
+    return { classification: "supporting_identity", reason: "avatar matches the profile display name", match: "avatar" };
+  }
+  return { classification: "irrelevant", reason: "visible in active conversation header", match: null };
 }
 
 export function confirmConversationRecipient(input: {
@@ -196,42 +268,21 @@ export function confirmConversationRecipient(input: {
   const display = input.displayName?.trim() ?? "";
   const header = activeHeader(input.candidates);
   const evidence = input.candidates.map((candidate) => {
-    if (candidate.scope === "outside") {
-      return { ...candidate, accepted: false, reason: "outside the active conversation header" };
-    }
-    const hrefUser = profileUsernameFromHref(candidate.href);
-    if (hrefUser && hrefUser !== username) {
-      return { ...candidate, accepted: false, reason: "profile href belongs to another account" };
-    }
-    if ([candidate.text, candidate.ariaLabel, candidate.alt, candidate.title].some((value) => isOtherParticipant(value, username, display))) {
-      return { ...candidate, accepted: false, reason: "different participant in the active header" };
-    }
-    if (hrefUser === username) {
-      return { ...candidate, accepted: true, reason: "profile href matches target" };
-    }
-    const blob = candidateBlob(candidate);
-    if (new RegExp(`(^|\\s)@${username}(\\s|$)`, "i").test(blob)) {
-      return { ...candidate, accepted: true, reason: "visible @username" };
-    }
-    if (new RegExp(`(^|\\s)${username}(\\s|$)`, "i").test(blob)) {
-      return { ...candidate, accepted: true, reason: "visible username" };
-    }
-    if (display && (sameDisplayName(candidate.text, display) || sameDisplayName(candidate.ariaLabel, display))) {
-      return { ...candidate, accepted: false, reason: "display name in the active header" };
-    }
-    if (display && (sameDisplayName(candidate.alt, display) || sameDisplayName(candidate.title, display))) {
-      return { ...candidate, accepted: false, reason: "avatar matches the profile display name" };
-    }
-    return { ...candidate, accepted: false, reason: "visible in active conversation header" };
+    const classified = classifyHeaderCandidate(candidate, username, display);
+    return {
+      ...candidate,
+      accepted: classified.classification === "identity_match",
+      reason: classified.reason,
+      classification: classified.classification,
+      match: classified.match,
+    };
   });
   const provenanceOk =
     input.provenance.sourceProfileVerified &&
     input.provenance.messageActionClicked &&
     input.provenance.directOpenedFromProfile &&
     input.provenance.sourceProfileUsername.replace(/^@/, "").toLowerCase() === username;
-  const conflict = evidence.find(
-    (item) => item.reason === "profile href belongs to another account" || item.reason === "different participant in the active header",
-  );
+  const conflict = evidence.find((item) => item.classification === "identity_conflict");
   if (conflict) {
     return {
       confirmed: false as const,
@@ -240,8 +291,11 @@ export function confirmConversationRecipient(input: {
       ambiguousReason: "Conversation recipient could not be confirmed.",
     };
   }
-  if (evidence.some((item) => item.reason === "profile href matches target")) {
+  if (evidence.some((item) => item.match === "href")) {
     return { confirmed: true as const, strategy: "conversation-header-profile-link", evidence, ambiguousReason: null };
+  }
+  if (evidence.some((item) => item.match === "aria")) {
+    return { confirmed: true as const, strategy: "conversation-header-aria-username", evidence, ambiguousReason: null };
   }
   if (evidence.some((item) => item.reason === "visible @username")) {
     return { confirmed: true as const, strategy: "conversation-header-at-username", evidence, ambiguousReason: null };
@@ -277,6 +331,17 @@ export function confirmConversationRecipient(input: {
   };
 }
 
+export function directSurfaceLine(input: {
+  directPath: string | null;
+  paneFound: boolean;
+  composerFound: boolean;
+  messageActionClicked: boolean;
+}) {
+  if (input.directPath && /\/direct\//.test(input.directPath)) return `Direct URL: ${input.directPath}`;
+  if (input.messageActionClicked && input.paneFound && input.composerFound) return "Direct surface: conversation overlay";
+  return "Direct URL: not a direct thread";
+}
+
 export function formatHeaderInspect(input: {
   paneFound: boolean;
   directPath: string | null;
@@ -284,25 +349,35 @@ export function formatHeaderInspect(input: {
   displayName: string | null;
   usernameRendered: boolean;
   provenance: NavigationProvenance;
-  conflicting: boolean;
   composerFound: boolean;
 }) {
+  const username = input.provenance.sourceProfileUsername;
+  const display = input.displayName ?? "";
+  const conflicting = input.candidates.some(
+    (candidate) => classifyHeaderCandidate(candidate, username, display).classification === "identity_conflict",
+  );
   const lines = [
     `Active conversation pane: ${input.paneFound ? "found" : "not found"}`,
-    `Direct URL: ${input.directPath || "not a direct thread"}`,
+    directSurfaceLine({
+      directPath: input.directPath,
+      paneFound: input.paneFound,
+      composerFound: input.composerFound,
+      messageActionClicked: input.provenance.messageActionClicked,
+    }),
     "",
     "Header candidates:",
   ];
   if (input.candidates.length === 0) lines.push("none");
   input.candidates.forEach((candidate, index) => {
     const box = candidate.box;
+    const classified = classifyHeaderCandidate(candidate, username, display);
     lines.push(`[${index}]`);
     lines.push(`tag: ${candidate.tag || candidate.role || "unknown"}`);
     lines.push(`text: ${candidate.text ? `"${candidate.text}"` : "null"}`);
     lines.push(`aria-label: ${candidate.ariaLabel || "null"}`);
     lines.push(`href: ${candidate.href || "null"}`);
     lines.push(box ? `bounds: x=${box.x}, y=${box.y}, width=${box.width}, height=${box.height}` : "bounds: null");
-    lines.push(`reason: ${candidate.scope === "outside" ? "outside the active conversation header" : "visible in active conversation header"}`);
+    lines.push(`classification: ${classified.classification}`);
   });
   lines.push("");
   lines.push("Conversation recipient evidence:");
@@ -315,7 +390,7 @@ export function formatHeaderInspect(input: {
   lines.push(`main Message action clicked: ${input.provenance.messageActionClicked ? "yes" : "no"}`);
   lines.push(`Direct opened immediately: ${input.provenance.directOpenedFromProfile ? "yes" : "no"}`);
   lines.push(`composer found: ${input.composerFound ? "yes" : "no"}`);
-  lines.push(`conflicting recipient evidence: ${input.conflicting ? "yes" : "none"}`);
+  lines.push(`conflicting recipient evidence: ${conflicting ? "yes" : "no"}`);
   return lines.join("\n");
 }
 
