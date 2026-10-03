@@ -3,7 +3,7 @@ import { createHeartbeatSession, mustHeartbeatBeforeClaim, safeHeartbeatError } 
 import { CloudClient, type CloudConfig, type JobPayload } from "./cloud/client";
 import { emptyEfficiency, formatEfficiency, runDiscoveryV2 } from "./discovery/v2";
 import { loadIdentity } from "./identity";
-import { formatComposerComparison, formatHeaderInspect, sequenceOwnsFollow } from "../lib/outreach/dm";
+import { formatComposerComparison, formatHeaderInspect, formatInitialComposer, sequenceOwnsFollow } from "../lib/outreach/dm";
 import { dryRunPlan, formatDryRun } from "../lib/outreach/dry-run-plan";
 import { recoverFollowDecision } from "../lib/outreach/follow-confirm";
 import {
@@ -153,13 +153,17 @@ export async function runWorker(mode: RunMode) {
           console.log("");
           console.log(inspection.candidatesText);
         }
+        if ("draft" in inspection && inspection.draft) {
+          console.log("");
+          console.log(formatInitialComposer(inspection.draft));
+        }
         if ("beforeLength" in inspection) {
           console.log("");
           console.log("Before insertion:");
           console.log(`Composer semantic length: ${inspection.beforeLength ?? "not read"}`);
           console.log("");
           console.log("Focused:");
-          console.log(inspection.focused ? "yes" : "no");
+          console.log(inspection.method === "already-present" ? "not required" : inspection.focused ? "yes" : "no");
           console.log("");
           console.log("Insertion method:");
           console.log(inspection.method ?? "not inserted");
@@ -167,7 +171,7 @@ export async function runWorker(mode: RunMode) {
         if (inspection.reason) console.log(inspection.reason);
         if (inspection.inserted || ("beforeLength" in inspection && inspection.beforeLength !== null && inspection.composerText !== undefined)) {
           console.log("");
-          console.log("After insertion:");
+          console.log(inspection.method === "already-present" ? "Composer readback:" : "After insertion:");
           console.log(`Composer semantic length: ${inspection.composerText.length}`);
           console.log("");
           console.log(formatComposerComparison(locked.message, inspection.composerText));
@@ -433,6 +437,7 @@ async function settleExecution(
     recoveredWithoutClick?: boolean;
     composerNotFound?: boolean;
     composerTextMismatch?: boolean;
+    existingDraftMismatch?: boolean;
     manualReview?: boolean;
     recipientUnconfirmed?: boolean;
     ambiguousReason?: string;
@@ -446,6 +451,7 @@ async function settleExecution(
     result.profileExists !== false &&
     result.composerNotFound !== true &&
     result.composerTextMismatch !== true &&
+    result.existingDraftMismatch !== true &&
     result.manualReview !== true &&
     result.recipientUnconfirmed !== true &&
     result.confirmation !== "uncertain"
@@ -459,6 +465,18 @@ async function settleExecution(
       true,
     );
     console.log("The composer text did not match the queued message, so it was not sent.");
+    return "stop" as const;
+  }
+  if (outcome.existingDraftMismatch) {
+    await reportFailure(
+      cloud,
+      workerId,
+      job.id,
+      "existing_draft_mismatch",
+      "Existing composer draft does not match the queued message. Manual review required.",
+      false,
+    );
+    console.log("Existing composer draft does not match the queued message. Manual review required.");
     return "stop" as const;
   }
   if (outcome.composerTextMismatch) {

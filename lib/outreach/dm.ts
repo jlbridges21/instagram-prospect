@@ -189,21 +189,46 @@ export function sameActiveComposer(
   );
 }
 
+export const EXISTING_DRAFT_MISMATCH = "Existing composer draft does not match the queued message. Manual review required.";
+
+export type ComposerDraft = "empty" | "queued-message" | "other-draft";
+
+export function composerDraftDecision(queued: string, composer: string): ComposerDraft {
+  if (normalizeComposerForComparison(composer) === "") return "empty";
+  if (composerTextMatches(queued, composer)) return "queued-message";
+  return "other-draft";
+}
+
+export function shouldInsertComposerText(draft: ComposerDraft) {
+  return draft === "empty";
+}
+
+export function formatInitialComposer(draft: ComposerDraft) {
+  if (draft === "queued-message") return "Initial composer:\nqueued message already present: YES";
+  if (draft === "empty") return "Initial composer:\nempty";
+  return "Initial composer:\nnon-matching draft present";
+}
+
+export function sendClickBudget(input: { gateOpen: boolean; sendAttempted: boolean; confirmationUncertain: boolean }) {
+  if (!input.gateOpen || input.sendAttempted || input.confirmationUncertain) return 0;
+  return 1;
+}
+
 export function composerReadyToSend(input: {
   recipientConfirmed: boolean;
+  followOwnedBySequence: boolean;
   existingConversation: boolean;
-  composerSelected: boolean;
-  focusConfirmed: boolean;
-  initiallyEmpty: boolean;
+  composerFound: boolean;
   semanticMatch: boolean;
+  sendAttempted: boolean;
 }) {
   return (
     input.recipientConfirmed &&
+    input.followOwnedBySequence &&
     !input.existingConversation &&
-    input.composerSelected &&
-    input.focusConfirmed &&
-    input.initiallyEmpty &&
-    input.semanticMatch
+    input.composerFound &&
+    input.semanticMatch &&
+    !input.sendAttempted
   );
 }
 
@@ -697,7 +722,7 @@ export function sendRecoveryDecision(input: {
 export function sendConfirmation(input: { composerText: string; threadMessages: string[]; locked: string }) {
   const locked = input.locked.trim();
   if (threadHasExactOutbound(input.threadMessages, locked)) return "confirmed" as const;
-  if (input.composerText.trim() === "") return "confirmed" as const;
+  if (normalizeComposerForComparison(input.composerText) === "") return "confirmed" as const;
   return "uncertain" as const;
 }
 
@@ -734,14 +759,15 @@ export function queueSendStatusLabel(job: {
   if (job.status === "retry_wait") {
     if (
     job.last_error &&
-    (/recipient|thread identity|previous attempt is uncertain|composer_text_mismatch/i.test(job.last_error) ||
-      job.last_error === "The composer text did not match the queued message, so it was not sent.")
+    (/recipient|thread identity|previous attempt is uncertain|composer_text_mismatch|existing_draft_mismatch/i.test(job.last_error) ||
+      job.last_error === "The composer text did not match the queued message, so it was not sent." ||
+      job.last_error === EXISTING_DRAFT_MISMATCH)
   ) {
     return job.last_error;
   }
     return "Retry scheduled";
   }
-  if (job.status === "failed") return "Failed";
+  if (job.status === "failed") return job.last_error === EXISTING_DRAFT_MISMATCH ? job.last_error : "Failed";
   if (job.status === "running" || job.status === "claimed") {
     const now = job.now ?? new Date();
     const expires = job.claim_expires_at ? new Date(job.claim_expires_at).getTime() : 0;

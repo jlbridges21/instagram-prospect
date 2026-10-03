@@ -4,6 +4,7 @@ import {
   classifyHeaderCandidate,
   clearKeysIncludeEnter,
   compareComposerText,
+  composerDraftDecision,
   composerReadyToSend,
   composerTextMatches,
   confirmConversationRecipient,
@@ -15,13 +16,16 @@ import {
   queueSendStatusLabel,
   selectPrimaryMessageAction,
   draftClearKeys,
+  formatInitialComposer,
   inspectMaySend,
   readComposerSemanticText,
   sendConfirmation,
   sameActiveComposer,
   selectActiveMessageComposer,
+  sendClickBudget,
   sendRecoveryDecision,
   shouldClickSend,
+  shouldInsertComposerText,
   sequenceOwnsFollow,
   shouldMarkContacted,
   threadHasExactOutbound,
@@ -480,39 +484,36 @@ const paragraphMessage = "Hi vsiaerial\n\nI'd love to connect";
 assert.equal(composerTextMatches(paragraphMessage, paragraphMessage), true);
 assert.equal(paragraphMessage.split("\n")[1], "");
 assert.equal(shouldClickSend(false), false);
+const ready = {
+  recipientConfirmed: true,
+  followOwnedBySequence: true,
+  existingConversation: false,
+  composerFound: true,
+  sendAttempted: false,
+};
+assert.equal(composerDraftDecision(paragraphMessage, "\n"), "empty");
+assert.equal(shouldInsertComposerText("empty"), true);
+assert.equal(composerDraftDecision(paragraphMessage, paragraphMessage), "queued-message");
+assert.equal(shouldInsertComposerText("queued-message"), false);
 assert.equal(
-  composerReadyToSend({
-    recipientConfirmed: true,
-    existingConversation: false,
-    composerSelected: true,
-    focusConfirmed: true,
-    initiallyEmpty: true,
-    semanticMatch: composerTextMatches(paragraphMessage, ""),
-  }),
-  false,
-);
-assert.equal(
-  composerReadyToSend({
-    recipientConfirmed: true,
-    existingConversation: false,
-    composerSelected: true,
-    focusConfirmed: true,
-    initiallyEmpty: true,
-    semanticMatch: composerTextMatches(paragraphMessage, "Hello there"),
-  }),
-  false,
-);
-assert.equal(
-  composerReadyToSend({
-    recipientConfirmed: true,
-    existingConversation: false,
-    composerSelected: true,
-    focusConfirmed: true,
-    initiallyEmpty: true,
-    semanticMatch: composerTextMatches(paragraphMessage, paragraphMessage),
-  }),
+  composerReadyToSend({ ...ready, semanticMatch: composerTextMatches(paragraphMessage, paragraphMessage) }),
   true,
 );
+assert.equal(composerDraftDecision(paragraphMessage, "a different note"), "other-draft");
+assert.equal(shouldInsertComposerText("other-draft"), false);
+assert.equal(composerReadyToSend({ ...ready, semanticMatch: false }), false);
+assert.equal(sendClickBudget({ gateOpen: true, sendAttempted: false, confirmationUncertain: false }), 1);
+assert.equal(sendClickBudget({ gateOpen: true, sendAttempted: true, confirmationUncertain: true }), 0);
+assert.equal(formatInitialComposer("queued-message"), "Initial composer:\nqueued message already present: YES");
+assert.equal(formatInitialComposer("empty"), "Initial composer:\nempty");
+assert.equal(formatInitialComposer("other-draft"), "Initial composer:\nnon-matching draft present");
+assert.equal(sendRecoveryDecision({
+  sendAttempted: true,
+  exactOutboundPresent: false,
+  composerFound: true,
+  priorConversation: false,
+  conversationMatches: true,
+}).send, false);
 assert.equal(inspectMaySend(), false);
 assert.equal(clearKeysIncludeEnter(draftClearKeys("darwin")), false);
 assert.equal(clearKeysIncludeEnter(draftClearKeys("win32")), false);

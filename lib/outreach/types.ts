@@ -38,6 +38,7 @@ export const WORKER_ERROR_CODES = [
   "recipient_confirmation_failed",
   "send_confirmation_uncertain",
   "composer_text_mismatch",
+  "existing_draft_mismatch",
 ] as const;
 
 export type WorkerErrorCode = (typeof WORKER_ERROR_CODES)[number];

@@ -15,8 +15,10 @@ import {
 import {
   type ActiveComposerCandidate,
   compareComposerText,
+  composerDraftDecision,
   composerReadyToSend,
   confirmConversationRecipient,
+  EXISTING_DRAFT_MISMATCH,
   type NavigationProvenance,
   detectComposer,
   draftClearKeys,
@@ -342,14 +344,22 @@ export async function sendExactMessage(
     await saveComposerDebug(page, username, opened.dom);
     return { sent: false, composerNotFound: true, sendAttempted: false, profileExists: true };
   }
+  if (inserted.draft === "queued-message") {
+    console.log("Composer already contains queued message.");
+    console.log("No duplicate insertion required.");
+  }
+  if (inserted.draft === "other-draft") {
+    console.log(EXISTING_DRAFT_MISMATCH);
+    return { sent: false, sendAttempted: false, existingDraftMismatch: true, profileExists: true };
+  }
   const comparison = compareComposerText(message, inserted.composerText);
   const verified = composerReadyToSend({
     recipientConfirmed: opened.recipient.confirmed,
+    followOwnedBySequence: owned,
     existingConversation: false,
-    composerSelected: true,
-    focusConfirmed: inserted.focused,
-    initiallyEmpty: inserted.initiallyEmpty,
-    semanticMatch: comparison.semanticMatch && inserted.sameComposer,
+    composerFound: inserted.sameComposer,
+    semanticMatch: comparison.semanticMatch,
+    sendAttempted: prior?.sendAttempted === true,
   });
   if (!verified) {
     console.log(formatComposerComparison(message, inserted.composerText));
@@ -562,11 +572,12 @@ async function insertLockedMessage(page: Page, message: string, mode: "send" | "
       candidatesText,
       clearNote: "",
       blockReason: "More than one composer matched, or none was inside the active conversation.",
+      draft: null as "empty" | "queued-message" | "other-draft" | null,
     };
   }
   const beforeText = (await readActiveComposerText(page)) ?? "";
-  const initiallyEmpty = normalizeComposerForComparison(beforeText) === "";
-  if (!initiallyEmpty) {
+  const draft = composerDraftDecision(message, beforeText);
+  if (draft === "other-draft") {
     return {
       composerSelected: true,
       focused: false,
@@ -577,7 +588,25 @@ async function insertLockedMessage(page: Page, message: string, mode: "send" | "
       beforeLength: beforeText.length,
       candidatesText,
       clearNote: "",
-      blockReason: "Composer was not empty, so the locked message was not inserted.",
+      blockReason: EXISTING_DRAFT_MISMATCH,
+      draft,
+    };
+  }
+  if (draft === "queued-message") {
+    const again = (await readActiveComposerText(page)) ?? "";
+    const after = await getActiveMessageComposer(page);
+    return {
+      composerSelected: after.status === "selected",
+      focused: true,
+      initiallyEmpty: false,
+      sameComposer: Boolean(after.selected && sameActiveComposer(before.selected, after.selected)),
+      method: "already-present",
+      composerText: again,
+      beforeLength: beforeText.length,
+      candidatesText,
+      clearNote: "",
+      blockReason: null,
+      draft,
     };
   }
   const focused = await focusActiveComposer(page);
@@ -593,6 +622,7 @@ async function insertLockedMessage(page: Page, message: string, mode: "send" | "
       candidatesText,
       clearNote: "",
       blockReason: "Composer focused: no",
+      draft: "empty" as const,
     };
   }
   await page.keyboard.insertText(message);
@@ -626,6 +656,7 @@ async function insertLockedMessage(page: Page, message: string, mode: "send" | "
     candidatesText,
     clearNote: "",
     blockReason: null,
+    draft: "empty" as const,
   };
 }
 
@@ -805,7 +836,7 @@ export async function inspectComposerMessage(page: Page, username: string, messa
   const inserted = await insertLockedMessage(page, message, "inspect");
   let clearNote = "";
   let cleared = false;
-  if (inserted.method) {
+  if (inserted.method && inserted.method !== "already-present") {
     const clearedResult = await clearComposerDraft(page);
     cleared = clearedResult.cleared;
     clearNote = clearedResult.note;
@@ -824,6 +855,7 @@ export async function inspectComposerMessage(page: Page, username: string, messa
     focused: inserted.focused,
     method: inserted.method,
     initiallyEmpty: inserted.initiallyEmpty,
+    draft: inserted.draft,
   };
 }
 
