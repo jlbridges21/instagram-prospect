@@ -37,6 +37,7 @@ export const WORKER_ERROR_CODES = [
   "dm_composer_not_found",
   "recipient_confirmation_failed",
   "send_confirmation_uncertain",
+  "composer_text_mismatch",
 ] as const;
 
 export type WorkerErrorCode = (typeof WORKER_ERROR_CODES)[number];

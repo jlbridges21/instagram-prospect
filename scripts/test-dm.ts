@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import { failurePlan } from "../lib/outreach/decisions";
 import {
   classifyHeaderCandidate,
+  compareComposerText,
+  composerTextMatches,
   confirmConversationRecipient,
   detectComposer,
   directSurfaceLine,
@@ -10,8 +12,10 @@ import {
   sendAllowed,
   queueSendStatusLabel,
   selectPrimaryMessageAction,
+  readComposerSemanticText,
   sendConfirmation,
   sendRecoveryDecision,
+  shouldClickSend,
   sequenceOwnsFollow,
   shouldMarkContacted,
   threadHasExactOutbound,
@@ -384,6 +388,67 @@ assert.equal(
 );
 assert.equal(shouldMarkContacted({ sent: false }), false);
 
+const queued = "Hello\n\nWorld";
+assert.equal(composerTextMatches(queued, "Hello\r\n\r\nWorld"), true);
+assert.equal(composerTextMatches("Hello world", "Hello\u00A0world"), true);
+assert.equal(composerTextMatches("Hello", "Hello\n"), true);
+assert.equal(composerTextMatches("Hello", "Hello\u200B"), true);
+assert.equal(composerTextMatches("it\u2019s", "it's"), false);
+assert.equal(composerTextMatches("Hello world", "Hello there"), false);
+assert.equal(composerTextMatches("Hello", "hello"), false);
+assert.equal(composerTextMatches("Hello\n\nWorld", "Hello\nWorld"), false);
+assert.equal(composerTextMatches("Hello world", "Hello  world"), false);
+const paragraphs = readComposerSemanticText({
+  type: "element",
+  tag: "div",
+  children: [
+    { type: "element", tag: "p", children: [{ type: "text", text: "Hello" }] },
+    { type: "element", tag: "p", children: [{ type: "text", text: "World" }] },
+  ],
+});
+assert.equal(composerTextMatches("Hello\nWorld", paragraphs), true);
+const trailingBreak = readComposerSemanticText({
+  type: "element",
+  tag: "div",
+  children: [{ type: "element", tag: "p", children: [{ type: "text", text: "Hello" }, { type: "element", tag: "br" }] }],
+});
+assert.equal(composerTextMatches("Hello", trailingBreak), true);
+const spaced = readComposerSemanticText({
+  type: "element",
+  tag: "div",
+  children: [{ type: "element", tag: "p", children: [{ type: "text", text: "Hello  world" }] }],
+});
+assert.equal(spaced, "Hello  world");
+assert.equal(composerTextMatches("Hello world", spaced), false);
+const mismatch = compareComposerText("it\u2019s", "it's");
+assert.equal(mismatch.semanticMatch, false);
+assert.equal(mismatch.mismatch?.queued, `U+2019 ${JSON.stringify("\u2019")}`);
+assert.equal(shouldClickSend(false), false);
+assert.equal(shouldClickSend(composerTextMatches(queued, "Hello\r\n\r\nWorld")), true);
+assert.equal(
+  sendAllowed({
+    recipientConfirmed: true,
+    existingConversation: false,
+    composerFound: true,
+    lockedMessageMatches: composerTextMatches(queued, "Hello\r\n\r\nWorld"),
+    followOwnedBySequence: true,
+  }),
+  true,
+);
+assert.equal(
+  sendAllowed({
+    recipientConfirmed: true,
+    existingConversation: false,
+    composerFound: true,
+    lockedMessageMatches: composerTextMatches("Hello", "hello"),
+    followOwnedBySequence: true,
+  }),
+  false,
+);
+assert.equal(
+  queueSendStatusLabel({ job_type: "send_message", status: "retry_wait", last_error: "composer_text_mismatch" }),
+  "composer_text_mismatch",
+);
 assert.equal(queueSendStatusLabel({ job_type: "send_message", status: "retry_wait" }), "Retry scheduled");
 assert.equal(
   queueSendStatusLabel({

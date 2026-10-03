@@ -150,6 +150,16 @@ export class CloudClient {
     });
   }
 
+  async previewLockedMessage(username: string) {
+    const response = await fetch(`${this.baseUrl}/api/worker/jobs/preview?username=${encodeURIComponent(username)}`, {
+      headers: { authorization: `Bearer ${this.secret}` },
+      redirect: "manual",
+    });
+    if (response.status === 401) throw authError();
+    if (!response.ok) throw new Error(`Locked message preview returned ${response.status}.`);
+    return (await response.json()) as { instagramUsername: string; message: string | null };
+  }
+
   async previewJob() {
     const response = await fetch(`${this.baseUrl}/api/worker/jobs/preview`, {
       headers: { authorization: `Bearer ${this.secret}` },

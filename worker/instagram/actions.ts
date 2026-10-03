@@ -13,15 +13,18 @@ import {
   profileFromDom,
 } from "./interpret";
 import {
+  compareComposerText,
   confirmConversationRecipient,
   type NavigationProvenance,
   detectComposer,
+  formatComposerComparison,
   DM_OPEN_POLL_MS,
   DM_OPEN_WINDOW_MS,
   selectPrimaryMessageAction,
   SEND_CONFIRM_WINDOW_MS,
   sendConfirmation,
   sendRecoveryDecision,
+  shouldClickSend,
   threadHasExactOutbound,
 } from "../../lib/outreach/dm";
 import {
@@ -332,8 +335,10 @@ export async function sendExactMessage(
     return { sent: false, composerNotFound: true, sendAttempted: false, profileExists: true };
   }
   const typed = await writeComposer(page, opened.composerStrategy, message);
-  if (typed !== message) {
-    return { sent: false, sendAttempted: false, profileExists: true };
+  const comparison = compareComposerText(message, typed.text);
+  if (!shouldClickSend(comparison.semanticMatch)) {
+    console.log(formatComposerComparison(message, typed.text));
+    return { sent: false, sendAttempted: false, composerTextMismatch: true, profileExists: true };
   }
   const send = page.getByRole("button", { name: /^Send$/ });
   await send.click({ timeout: ACTION_TIMEOUT_MS });
@@ -370,7 +375,34 @@ const CLICK_MESSAGE_SOURCE = `({ x, y }) => {
   return true;
 }`;
 
-const WRITE_COMPOSER_SOURCE = `({ strategy, text }) => {
+const WRITE_COMPOSER_SOURCE = `({ strategy, text, clear }) => {
+  function readComposerSemanticText(root) {
+    if (!root) return "";
+    const tagName = root.tagName ? root.tagName.toLowerCase() : "";
+    if (tagName === "textarea") return String(root.value || "");
+    const blocks = { p: 1, div: 1, li: 1, blockquote: 1, h1: 1, h2: 1, h3: 1 };
+    const out = [];
+    function append(node) {
+      if (!node) return;
+      if (node.nodeType === 3) {
+        out.push(node.nodeValue || "");
+        return;
+      }
+      if (node.nodeType !== 1) return;
+      const tag = node.tagName.toLowerCase();
+      if (tag === "br") {
+        out.push("\\n");
+        return;
+      }
+      if (blocks[tag]) {
+        const current = out.join("");
+        if (current.length && current.charAt(current.length - 1) !== "\\n") out.push("\\n");
+      }
+      for (let index = 0; index < node.childNodes.length; index += 1) append(node.childNodes[index]);
+    }
+    for (let index = 0; index < root.childNodes.length; index += 1) append(root.childNodes[index]);
+    return out.join("");
+  }
   const nodes = [...document.querySelectorAll("textarea, [role='textbox'], [contenteditable='true']")];
   const node = nodes.find((box) => {
     const tag = box.tagName.toLowerCase();
@@ -383,18 +415,40 @@ const WRITE_COMPOSER_SOURCE = `({ strategy, text }) => {
     if (strategy === "aria-label-message") return /message/i.test(label);
     return editable;
   });
-  if (!node) return "";
+  if (!node) return { text: "", cleared: false };
   node.focus();
+  if (clear) {
+    const selection = window.getSelection();
+    if (!selection) return { text: readComposerSemanticText(node), cleared: false };
+    const range = document.createRange();
+    range.selectNodeContents(node);
+    selection.removeAllRanges();
+    selection.addRange(range);
+    document.execCommand("delete", false);
+    const remaining = readComposerSemanticText(node);
+    return { text: remaining, cleared: remaining.replace(/\\s/g, "") === "" };
+  }
   if (node.tagName.toLowerCase() === "textarea") {
     const descriptor = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, "value");
     if (descriptor && descriptor.set) descriptor.set.call(node, text);
     else node.value = text;
     node.dispatchEvent(new Event("input", { bubbles: true }));
-    return node.value;
+    return { text: String(node.value || ""), cleared: false };
   }
-  node.textContent = text;
-  node.dispatchEvent(new InputEvent("input", { bubbles: true, data: text, inputType: "insertText" }));
-  return (node.innerText || node.textContent || "").trim();
+  const selection = window.getSelection();
+  let inserted = false;
+  if (selection) {
+    const range = document.createRange();
+    range.selectNodeContents(node);
+    selection.removeAllRanges();
+    selection.addRange(range);
+    inserted = document.execCommand("insertText", false, text);
+  }
+  if (!inserted) {
+    node.textContent = text;
+    node.dispatchEvent(new InputEvent("input", { bubbles: true, data: text, inputType: "insertText" }));
+  }
+  return { text: readComposerSemanticText(node), cleared: false };
 }`;
 
 async function clickMessageHit(page: Page, box: { x: number; y: number; width: number; height: number }) {
@@ -402,9 +456,13 @@ async function clickMessageHit(page: Page, box: { x: number; y: number; width: n
   return page.evaluate(click, { x: box.x + box.width / 2, y: box.y + box.height / 2 });
 }
 
-async function writeComposer(page: Page, strategy: string, message: string) {
-  const write = new Function(`return (${WRITE_COMPOSER_SOURCE})`)() as (payload: { strategy: string; text: string }) => string;
-  return page.evaluate(write, { strategy, text: message });
+async function writeComposer(page: Page, strategy: string, message: string, clear = false) {
+  const write = new Function(`return (${WRITE_COMPOSER_SOURCE})`)() as (payload: {
+    strategy: string;
+    text: string;
+    clear: boolean;
+  }) => { text: string; cleared: boolean };
+  return page.evaluate(write, { strategy, text: message, clear });
 }
 
 function directSnapshot(
@@ -530,6 +588,72 @@ async function saveRecipientDebug(page: Page, username: string, dom: DomSnapshot
       2,
     ),
   );
+}
+
+export async function inspectComposerMessage(page: Page, username: string, message: string) {
+  const current = await readProfile(page, username);
+  const dom = await readDom(page);
+  const action = selectPrimaryMessageAction(dom.messageActionHits ?? [], dom.usernameBox);
+  if (!action.found || !action.hit?.box) {
+    return { recipientConfirmed: false, composerFound: false, existingConversation: false, inserted: false, cleared: false, clearNote: "", composerText: "", reason: "Message action was not found." };
+  }
+  const clicked = await clickMessageHit(page, action.hit.box);
+  if (!clicked) {
+    return { recipientConfirmed: false, composerFound: false, existingConversation: false, inserted: false, cleared: false, clearNote: "", composerText: "", reason: "Message action could not be opened." };
+  }
+  const opened = await waitForDirect(page, username, current.profile.displayName, message, current.profile.username === username.toLowerCase());
+  if (!opened.recipient.confirmed) {
+    return {
+      recipientConfirmed: false,
+      composerFound: opened.composerFound,
+      existingConversation: opened.existingConversation,
+      inserted: false,
+      cleared: false,
+      clearNote: "",
+      composerText: "",
+      reason: opened.recipient.ambiguousReason,
+    };
+  }
+  if (opened.existingConversation) {
+    return {
+      recipientConfirmed: true,
+      composerFound: opened.composerFound,
+      existingConversation: true,
+      inserted: false,
+      cleared: false,
+      clearNote: "",
+      composerText: "",
+      reason: "An existing conversation is visible, so the composer was not changed.",
+    };
+  }
+  if (!opened.composerStrategy) {
+    return {
+      recipientConfirmed: true,
+      composerFound: false,
+      existingConversation: false,
+      inserted: false,
+      cleared: false,
+      clearNote: "",
+      composerText: "",
+      reason: "Composer was not found.",
+    };
+  }
+  const typed = await writeComposer(page, opened.composerStrategy, message);
+  let cleared = false;
+  let clearNote = "Composer cleared: yes";
+  const clearedResult = await writeComposer(page, opened.composerStrategy, "", true);
+  if (clearedResult.cleared) cleared = true;
+  else clearNote = "Composer was left unchanged because it could not be cleared confidently.";
+  return {
+    recipientConfirmed: true,
+    composerFound: true,
+    existingConversation: false,
+    inserted: true,
+    cleared,
+    clearNote,
+    composerText: typed.text,
+    reason: null,
+  };
 }
 
 export async function previewOutreach(page: Page, username: string, message: string | null) {

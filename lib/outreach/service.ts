@@ -597,6 +597,8 @@ async function releaseUnsentRecipientFailures(admin: Client, now: Date) {
     const text = job.last_error ?? "";
     const recoverable =
       text === "Message state is ambiguous. Manual review required." ||
+      text === "The composer text did not match the queued message, so it was not sent." ||
+      text === "composer_text_mismatch" ||
       /recipient|thread identity/i.test(text);
     if (!recoverable) continue;
     await admin
@@ -1101,7 +1103,10 @@ async function failOwnedJob(
     maxAttempts: job.max_attempts,
     retryable: input.retryable,
   });
-  const errorText = input.errorCode === "dm_composer_not_found" ? "dm_composer_not_found" : clipError(input.errorMessage);
+  const errorText =
+    input.errorCode === "dm_composer_not_found" || input.errorCode === "composer_text_mismatch"
+      ? input.errorCode
+      : clipError(input.errorMessage);
   const availableAt =
     plan.delayMinutes === null
       ? null

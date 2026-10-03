@@ -48,6 +48,22 @@ export async function previewNextJob(admin: Client, settings: AppSettings) {
   return { ok: true as const, job: null, reason: "no_job" as const };
 }
 
+export async function previewLockedMessage(admin: Client, username: string) {
+  const name = username.replace(/^@/, "").trim().toLowerCase();
+  const prospect = await admin
+    .from("prospects")
+    .select("instagram_username, queued_message_text")
+    .eq("instagram_username", name)
+    .maybeSingle();
+  if (prospect.error) return { ok: false as const, error: "Could not read the locked message." };
+  if (!prospect.data) return { ok: true as const, message: null, instagramUsername: name };
+  return {
+    ok: true as const,
+    message: prospect.data.queued_message_text ?? "",
+    instagramUsername: prospect.data.instagram_username,
+  };
+}
+
 export async function previewProspectSequence(admin: Client) {
   const next = await admin
     .from("outreach_jobs")

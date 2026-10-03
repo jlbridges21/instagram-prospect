@@ -394,6 +394,148 @@ export function formatHeaderInspect(input: {
   return lines.join("\n");
 }
 
+const BLOCK_TAGS = new Set(["p", "div", "li", "blockquote", "h1", "h2", "h3"]);
+
+export type SemanticNode = {
+  type: "element" | "text";
+  tag?: string;
+  text?: string;
+  children?: SemanticNode[];
+};
+
+export function readComposerSemanticText(node: SemanticNode | null) {
+  if (!node) return "";
+  if (node.type === "text") return node.text ?? "";
+  if ((node.tag || "").toLowerCase() === "textarea") return node.text ?? "";
+  const out: string[] = [];
+  for (const child of node.children ?? []) appendSemanticNode(child, out);
+  return out.join("");
+}
+
+function appendSemanticNode(node: SemanticNode, out: string[]) {
+  if (node.type === "text") {
+    out.push(node.text ?? "");
+    return;
+  }
+  const tag = (node.tag || "").toLowerCase();
+  if (tag === "br") {
+    out.push("\n");
+    return;
+  }
+  if (tag === "textarea") {
+    out.push(node.text ?? "");
+    return;
+  }
+  if (BLOCK_TAGS.has(tag)) {
+    const current = out.join("");
+    if (current.length > 0 && !current.endsWith("\n")) out.push("\n");
+  }
+  for (const child of node.children ?? []) appendSemanticNode(child, out);
+}
+
+export function normalizeComposerForComparison(text: string) {
+  const unified = text
+    .replace(/\r\n/g, "\n")
+    .replace(/\r/g, "\n")
+    .replace(/\u00A0/g, " ")
+    .replace(/[\u200B\u200C\u200D\uFEFF]/g, "");
+  return unified.replace(/^\n+|\n+$/g, "").replace(/^[ \t\f\v]+|[ \t\f\v]+$/g, "");
+}
+
+export function composerTextMatches(queued: string, composer: string) {
+  return normalizeComposerForComparison(queued) === normalizeComposerForComparison(composer);
+}
+
+export function shouldClickSend(semanticMatch: boolean) {
+  return semanticMatch;
+}
+
+function formatCodePoint(char: string | undefined) {
+  if (char === undefined) return "end of text";
+  const code = char.codePointAt(0) ?? 0;
+  return `U+${code.toString(16).toUpperCase().padStart(4, "0")} ${JSON.stringify(char)}`;
+}
+
+export function normalizationDifferences(queued: string, composer: string) {
+  const notes: string[] = [];
+  const samples = [queued, composer];
+  if (samples.some((value) => value.includes("\r"))) notes.push("CRLF -> LF");
+  if (samples.some((value) => value.includes("\u00A0"))) notes.push("NBSP -> space");
+  if (samples.some((value) => /[\u200B\u200C\u200D\uFEFF]/.test(value))) notes.push("zero-width editor character removed");
+  const stripped = samples.map((value) =>
+    value.replace(/\r\n/g, "\n").replace(/\r/g, "\n").replace(/\u00A0/g, " ").replace(/[\u200B\u200C\u200D\uFEFF]/g, ""),
+  );
+  if (stripped.some((value) => value !== value.replace(/^\n+|\n+$/g, ""))) notes.push("trailing editor newline removed");
+  if (stripped.some((value) => value.replace(/^\n+|\n+$/g, "") !== value.replace(/^\n+|\n+$/g, "").replace(/^[ \t\f\v]+|[ \t\f\v]+$/g, ""))) {
+    notes.push("surrounding editor whitespace removed");
+  }
+  return notes;
+}
+
+export function compareComposerText(queued: string, composer: string) {
+  const queuedNormalized = normalizeComposerForComparison(queued);
+  const composerNormalized = normalizeComposerForComparison(composer);
+  const left = Array.from(queuedNormalized);
+  const right = Array.from(composerNormalized);
+  let mismatch: { index: number; queued: string; composer: string } | null = null;
+  const length = Math.max(left.length, right.length);
+  for (let index = 0; index < length; index += 1) {
+    if (left[index] !== right[index]) {
+      mismatch = { index, queued: formatCodePoint(left[index]), composer: formatCodePoint(right[index]) };
+      break;
+    }
+  }
+  return {
+    rawMatch: queued === composer,
+    semanticMatch: queuedNormalized === composerNormalized,
+    queuedLength: queued.length,
+    composerLength: composer.length,
+    queuedNormalizedLength: queuedNormalized.length,
+    composerNormalizedLength: composerNormalized.length,
+    notes: normalizationDifferences(queued, composer),
+    mismatch,
+  };
+}
+
+export function formatComposerComparison(queued: string, composer: string) {
+  const compared = compareComposerText(queued, composer);
+  const lines = [
+    `Queued raw length: ${compared.queuedLength}`,
+    `Composer raw length: ${compared.composerLength}`,
+    "",
+    "Queued message:",
+    `length: ${compared.queuedLength}`,
+    `normalized length: ${compared.queuedNormalizedLength}`,
+    "",
+    "Composer:",
+    `length: ${compared.composerLength}`,
+    `normalized length: ${compared.composerNormalizedLength}`,
+    "",
+    `Raw match: ${compared.rawMatch ? "yes" : "no"}`,
+    `Semantic normalized match: ${compared.semanticMatch ? "yes" : "no"}`,
+    `Raw comparison: ${compared.rawMatch ? "MATCH" : "DIFFERENT"}`,
+    `Normalized semantic comparison: ${compared.semanticMatch ? "MATCH" : "DIFFERENT"}`,
+  ];
+  if (compared.notes.length > 0) {
+    lines.push("");
+    lines.push("Normalization differences:");
+    compared.notes.forEach((note) => lines.push(`- ${note}`));
+  }
+  if (!compared.semanticMatch && compared.mismatch) {
+    lines.push("");
+    lines.push(`First semantic mismatch at character ${compared.mismatch.index}:`);
+    lines.push(`queued: ${compared.mismatch.queued}`);
+    lines.push(`composer: ${compared.mismatch.composer}`);
+  }
+  lines.push("");
+  lines.push("Queued text:");
+  lines.push(queued);
+  lines.push("");
+  lines.push("Composer text:");
+  lines.push(composer);
+  return lines.join("\n");
+}
+
 export function sendAllowed(input: {
   recipientConfirmed: boolean;
   existingConversation: boolean;
@@ -477,7 +619,13 @@ export function queueSendStatusLabel(job: {
 }) {
   if (job.job_type !== "send_message") return null;
   if (job.status === "retry_wait") {
-    if (job.last_error && /recipient|thread identity|previous attempt is uncertain/i.test(job.last_error)) return job.last_error;
+    if (
+    job.last_error &&
+    (/recipient|thread identity|previous attempt is uncertain|composer_text_mismatch/i.test(job.last_error) ||
+      job.last_error === "The composer text did not match the queued message, so it was not sent.")
+  ) {
+    return job.last_error;
+  }
     return "Retry scheduled";
   }
   if (job.status === "failed") return "Failed";

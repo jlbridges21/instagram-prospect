@@ -3,12 +3,13 @@ import { createHeartbeatSession, mustHeartbeatBeforeClaim, safeHeartbeatError } 
 import { CloudClient, type CloudConfig, type JobPayload } from "./cloud/client";
 import { emptyEfficiency, formatEfficiency, runDiscoveryV2 } from "./discovery/v2";
 import { loadIdentity } from "./identity";
-import { formatHeaderInspect, sequenceOwnsFollow } from "../lib/outreach/dm";
+import { formatComposerComparison, formatHeaderInspect, sequenceOwnsFollow } from "../lib/outreach/dm";
 import { dryRunPlan, formatDryRun } from "../lib/outreach/dry-run-plan";
 import { recoverFollowDecision } from "../lib/outreach/follow-confirm";
 import {
   ensureHome,
   followProfile,
+  inspectComposerMessage,
   inspectDirectMessage,
   readProfile,
   saveErrorScreenshot,
@@ -129,6 +130,37 @@ export async function runWorker(mode: RunMode) {
       console.log("Nothing was typed or sent.");
     } catch (error) {
       console.log(error instanceof Error ? error.message : "The DM inspection failed.");
+    }
+    await context.close().catch(() => undefined);
+    return;
+  }
+  const inspectComposerArg = inspectComposerArgument();
+  if (inspectComposerArg) {
+    try {
+      await ensureHome(page);
+      console.log("✓ Instagram authenticated");
+      const locked = await cloud.previewLockedMessage(inspectComposerArg);
+      console.log(`@${inspectComposerArg}`);
+      if (!locked.message) {
+        console.log("Locked message: not found");
+        console.log("Nothing was typed or sent.");
+      } else {
+        const inspection = await inspectComposerMessage(page, inspectComposerArg, locked.message);
+        console.log(`Recipient confirmed: ${inspection.recipientConfirmed ? "yes" : "no"}`);
+        console.log(`Composer found: ${inspection.composerFound ? "yes" : "no"}`);
+        console.log(`Existing conversation: ${inspection.existingConversation ? "yes" : "no"}`);
+        if (inspection.reason) console.log(inspection.reason);
+        if (inspection.inserted) {
+          console.log("");
+          console.log(formatComposerComparison(locked.message, inspection.composerText));
+          console.log("");
+          console.log(inspection.clearNote);
+        }
+        console.log("");
+        console.log("Nothing was sent.");
+      }
+    } catch (error) {
+      console.log(error instanceof Error ? error.message : "The composer inspection failed.");
     }
     await context.close().catch(() => undefined);
     return;
@@ -380,6 +412,7 @@ async function settleExecution(
     confirmation?: string;
     recoveredWithoutClick?: boolean;
     composerNotFound?: boolean;
+    composerTextMismatch?: boolean;
     manualReview?: boolean;
     recipientUnconfirmed?: boolean;
     ambiguousReason?: string;
@@ -392,6 +425,7 @@ async function settleExecution(
     result.preexistingFollow !== true &&
     result.profileExists !== false &&
     result.composerNotFound !== true &&
+    result.composerTextMismatch !== true &&
     result.manualReview !== true &&
     result.recipientUnconfirmed !== true &&
     result.confirmation !== "uncertain"
@@ -404,6 +438,11 @@ async function settleExecution(
       "The composer text did not match the queued message, so it was not sent.",
       true,
     );
+    console.log("The composer text did not match the queued message, so it was not sent.");
+    return "stop" as const;
+  }
+  if (outcome.composerTextMismatch) {
+    await reportFailure(cloud, workerId, job.id, "composer_text_mismatch", "composer_text_mismatch", true);
     console.log("The composer text did not match the queued message, so it was not sent.");
     return "stop" as const;
   }
@@ -684,6 +723,18 @@ async function runSingleOutreach(
   }
   console.log("Single outreach finished.");
   void stats;
+}
+
+function inspectComposerArgument() {
+  const inline = process.argv.find((item) => item.startsWith("--inspect-composer="));
+  const raw = inline
+    ? inline.slice("--inspect-composer=".length)
+    : process.argv.includes("--inspect-composer")
+      ? process.argv[process.argv.indexOf("--inspect-composer") + 1]
+      : "";
+  const username = (raw || "").replace(/^@/, "").trim().toLowerCase();
+  if (!username) return null;
+  return /^[a-z0-9._]{1,30}$/.test(username) ? username : null;
 }
 
 function inspectDmArgument() {
