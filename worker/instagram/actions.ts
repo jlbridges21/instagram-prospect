@@ -13,18 +13,24 @@ import {
   profileFromDom,
 } from "./interpret";
 import {
+  type ActiveComposerCandidate,
   compareComposerText,
+  composerReadyToSend,
   confirmConversationRecipient,
   type NavigationProvenance,
   detectComposer,
+  draftClearKeys,
+  formatComposerCandidates,
   formatComposerComparison,
+  normalizeComposerForComparison,
   DM_OPEN_POLL_MS,
   DM_OPEN_WINDOW_MS,
   selectPrimaryMessageAction,
   SEND_CONFIRM_WINDOW_MS,
   sendConfirmation,
   sendRecoveryDecision,
-  shouldClickSend,
+  sameActiveComposer,
+  selectActiveMessageComposer,
   threadHasExactOutbound,
 } from "../../lib/outreach/dm";
 import {
@@ -330,14 +336,23 @@ export async function sendExactMessage(
     };
   }
   if (decision.action === "existing_conversation") return { sent: false, existingConversation: true };
-  if (decision.action === "retry_composer" || !opened.composerStrategy) {
+  const inserted = await insertLockedMessage(page, message, "send");
+  if (!inserted.composerSelected) {
+    console.log(inserted.candidatesText);
     await saveComposerDebug(page, username, opened.dom);
     return { sent: false, composerNotFound: true, sendAttempted: false, profileExists: true };
   }
-  const typed = await writeComposer(page, opened.composerStrategy, message);
-  const comparison = compareComposerText(message, typed.text);
-  if (!shouldClickSend(comparison.semanticMatch)) {
-    console.log(formatComposerComparison(message, typed.text));
+  const comparison = compareComposerText(message, inserted.composerText);
+  const verified = composerReadyToSend({
+    recipientConfirmed: opened.recipient.confirmed,
+    existingConversation: false,
+    composerSelected: true,
+    focusConfirmed: inserted.focused,
+    initiallyEmpty: inserted.initiallyEmpty,
+    semanticMatch: comparison.semanticMatch && inserted.sameComposer,
+  });
+  if (!verified) {
+    console.log(formatComposerComparison(message, inserted.composerText));
     return { sent: false, sendAttempted: false, composerTextMismatch: true, profileExists: true };
   }
   const send = page.getByRole("button", { name: /^Send$/ });
@@ -375,8 +390,8 @@ const CLICK_MESSAGE_SOURCE = `({ x, y }) => {
   return true;
 }`;
 
-const WRITE_COMPOSER_SOURCE = `({ strategy, text, clear }) => {
-  function readComposerSemanticText(root) {
+const ACTIVE_COMPOSER_SOURCE = `() => {
+  function semanticText(root) {
     if (!root) return "";
     const tagName = root.tagName ? root.tagName.toLowerCase() : "";
     if (tagName === "textarea") return String(root.value || "");
@@ -403,52 +418,74 @@ const WRITE_COMPOSER_SOURCE = `({ strategy, text, clear }) => {
     for (let index = 0; index < root.childNodes.length; index += 1) append(root.childNodes[index]);
     return out.join("");
   }
-  const nodes = [...document.querySelectorAll("textarea, [role='textbox'], [contenteditable='true']")];
-  const node = nodes.find((box) => {
-    const tag = box.tagName.toLowerCase();
-    const role = (box.getAttribute("role") || "").toLowerCase();
-    const label = box.getAttribute("aria-label") || "";
-    const placeholder = box.getAttribute("placeholder") || "";
-    const editable = box.getAttribute("contenteditable") === "true";
-    if (strategy === "textarea-placeholder-message") return tag === "textarea" && /message/i.test(placeholder + " " + label);
-    if (strategy === "role-textbox-contenteditable") return role === "textbox" && editable;
-    if (strategy === "aria-label-message") return /message/i.test(label);
-    return editable;
-  });
-  if (!node) return { text: "", cleared: false };
-  node.focus();
-  if (clear) {
-    const selection = window.getSelection();
-    if (!selection) return { text: readComposerSemanticText(node), cleared: false };
-    const range = document.createRange();
-    range.selectNodeContents(node);
-    selection.removeAllRanges();
-    selection.addRange(range);
-    document.execCommand("delete", false);
-    const remaining = readComposerSemanticText(node);
-    return { text: remaining, cleared: remaining.replace(/\\s/g, "") === "" };
+  function isHidden(el) {
+    if (el.getAttribute("aria-hidden") === "true" || el.hasAttribute("hidden")) return true;
+    const style = window.getComputedStyle(el);
+    return style.display === "none" || style.visibility === "hidden" || Number(style.opacity) === 0;
   }
-  if (node.tagName.toLowerCase() === "textarea") {
-    const descriptor = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, "value");
-    if (descriptor && descriptor.set) descriptor.set.call(node, text);
-    else node.value = text;
-    node.dispatchEvent(new Event("input", { bubbles: true }));
-    return { text: String(node.value || ""), cleared: false };
+  function isSearch(el) {
+    const label = ((el.getAttribute("aria-label") || "") + " " + (el.getAttribute("placeholder") || "")).toLowerCase();
+    return label.includes("search") || Boolean(el.closest && el.closest("nav, [role='navigation']"));
   }
-  const selection = window.getSelection();
-  let inserted = false;
-  if (selection) {
-    const range = document.createRange();
-    range.selectNodeContents(node);
-    selection.removeAllRanges();
-    selection.addRange(range);
-    inserted = document.execCommand("insertText", false, text);
+  function paneFrom(anchor) {
+    const composerBox = anchor.getBoundingClientRect();
+    let node = anchor.parentElement;
+    let pane = null;
+    for (let depth = 0; node && node !== document.body && depth < 14; depth += 1) {
+      const rect = node.getBoundingClientRect();
+      const includesInbox = rect.width > composerBox.width + 280 && rect.left < composerBox.left - 180;
+      if (includesInbox) break;
+      if (rect.width >= 260 && rect.height >= 220 && rect.left <= composerBox.left && rect.right >= composerBox.right - 8) pane = node;
+      node = node.parentElement;
+    }
+    return pane;
   }
-  if (!inserted) {
-    node.textContent = text;
-    node.dispatchEvent(new InputEvent("input", { bubbles: true, data: text, inputType: "insertText" }));
+  function collect() {
+    const nodes = [...document.querySelectorAll("textarea, [role='textbox'], [contenteditable='true']")];
+    let anchor = null;
+    let bestBottom = -1;
+    for (const el of nodes) {
+      if (isHidden(el) || isSearch(el)) continue;
+      const rect = el.getBoundingClientRect();
+      if (rect.width < 1 || rect.height < 1) continue;
+      const bottom = rect.y + rect.height;
+      if (bottom >= bestBottom) {
+        bestBottom = bottom;
+        anchor = el;
+      }
+    }
+    const pane = anchor ? paneFrom(anchor) : null;
+    const candidates = nodes.map((el) => {
+      const rect = el.getBoundingClientRect();
+      const style = window.getComputedStyle(el);
+      const hidden = isHidden(el);
+      return {
+        tag: el.tagName.toLowerCase(),
+        role: (el.getAttribute("role") || "").toLowerCase(),
+        contentEditable: el.getAttribute("contenteditable") === "true",
+        ariaLabel: (el.getAttribute("aria-label") || "").slice(0, 80),
+        placeholder: (el.getAttribute("placeholder") || "").slice(0, 80),
+        box: rect.width >= 1 && rect.height >= 1 ? { x: Math.round(rect.x), y: Math.round(rect.y), width: Math.round(rect.width), height: Math.round(rect.height) } : null,
+        visible: !hidden && style.visibility !== "hidden" && rect.width >= 1 && rect.height >= 1,
+        hidden,
+        insideActiveConversation: Boolean(pane && pane.contains(el)),
+        searchField: isSearch(el),
+        enabled: !el.disabled && el.getAttribute("aria-disabled") !== "true" && el.getAttribute("contenteditable") !== "false",
+      };
+    });
+    return { nodes, candidates };
   }
-  return { text: readComposerSemanticText(node), cleared: false };
+  function activeElement() {
+    const collected = collect();
+    const eligible = [];
+    collected.candidates.forEach((candidate, index) => {
+      const editable = candidate.contentEditable || candidate.tag === "textarea" || candidate.role === "textbox";
+      if (!editable || candidate.hidden || !candidate.visible || !candidate.box || !candidate.enabled || candidate.searchField || !candidate.insideActiveConversation) return;
+      eligible.push(collected.nodes[index]);
+    });
+    return eligible.length === 1 ? eligible[0] : null;
+  }
+  return { collect, semanticText, activeElement };
 }`;
 
 async function clickMessageHit(page: Page, box: { x: number; y: number; width: number; height: number }) {
@@ -456,13 +493,152 @@ async function clickMessageHit(page: Page, box: { x: number; y: number; width: n
   return page.evaluate(click, { x: box.x + box.width / 2, y: box.y + box.height / 2 });
 }
 
-async function writeComposer(page: Page, strategy: string, message: string, clear = false) {
-  const write = new Function(`return (${WRITE_COMPOSER_SOURCE})`)() as (payload: {
-    strategy: string;
-    text: string;
-    clear: boolean;
-  }) => { text: string; cleared: boolean };
-  return page.evaluate(write, { strategy, text: message, clear });
+export async function getActiveMessageComposer(page: Page) {
+  const read = new Function(`return () => (${ACTIVE_COMPOSER_SOURCE})().collect()`)() as () => { candidates: ActiveComposerCandidate[] };
+  const collected = await page.evaluate(read);
+  return selectActiveMessageComposer(collected.candidates);
+}
+
+async function readActiveComposerText(page: Page) {
+  const read = new Function(`return () => {
+    const api = (${ACTIVE_COMPOSER_SOURCE})();
+    const el = api.activeElement();
+    return el ? api.semanticText(el) : null;
+  }`)() as () => string | null;
+  return page.evaluate(read);
+}
+
+async function composerIsFocused(page: Page) {
+  const read = new Function(`return () => {
+    const el = (${ACTIVE_COMPOSER_SOURCE})().activeElement();
+    const active = document.activeElement;
+    return Boolean(el && active && (active === el || el.contains(active)));
+  }`)() as () => boolean;
+  return page.evaluate(read);
+}
+
+async function focusActiveComposer(page: Page) {
+  const choice = await getActiveMessageComposer(page);
+  if (choice.status !== "selected" || !choice.selected?.box) return false;
+  const box = choice.selected.box;
+  await page.mouse.click(box.x + box.width / 2, box.y + Math.min(box.height / 2, 24));
+  await page.waitForTimeout(200);
+  return composerIsFocused(page);
+}
+
+async function dispatchInsertText(page: Page, message: string) {
+  const dispatch = new Function(`return (text) => {
+    const el = (${ACTIVE_COMPOSER_SOURCE})().activeElement();
+    if (!el) return false;
+    el.focus();
+    const before = new InputEvent("beforeinput", { bubbles: true, cancelable: true, data: text, inputType: "insertText" });
+    const prevented = !el.dispatchEvent(before);
+    if (!prevented) document.execCommand("insertText", false, text);
+    return true;
+  }`)() as (text: string) => boolean;
+  return page.evaluate(dispatch, message);
+}
+
+async function typeMessageWithoutEnter(page: Page, message: string) {
+  const parts = message.split("\n");
+  for (let index = 0; index < parts.length; index += 1) {
+    if (parts[index]) await page.keyboard.type(parts[index], { delay: 0 });
+    if (index < parts.length - 1) await page.keyboard.insertText("\n");
+  }
+}
+
+async function insertLockedMessage(page: Page, message: string, mode: "send" | "inspect") {
+  const before = await getActiveMessageComposer(page);
+  const candidatesText = formatComposerCandidates(before);
+  if (before.status !== "selected" || !before.selected) {
+    return {
+      composerSelected: false,
+      focused: false,
+      initiallyEmpty: false,
+      sameComposer: false,
+      method: null as string | null,
+      composerText: "",
+      beforeLength: null as number | null,
+      candidatesText,
+      clearNote: "",
+      blockReason: "More than one composer matched, or none was inside the active conversation.",
+    };
+  }
+  const beforeText = (await readActiveComposerText(page)) ?? "";
+  const initiallyEmpty = normalizeComposerForComparison(beforeText) === "";
+  if (!initiallyEmpty) {
+    return {
+      composerSelected: true,
+      focused: false,
+      initiallyEmpty: false,
+      sameComposer: true,
+      method: null,
+      composerText: beforeText,
+      beforeLength: beforeText.length,
+      candidatesText,
+      clearNote: "",
+      blockReason: "Composer was not empty, so the locked message was not inserted.",
+    };
+  }
+  const focused = await focusActiveComposer(page);
+  if (!focused) {
+    return {
+      composerSelected: true,
+      focused: false,
+      initiallyEmpty: true,
+      sameComposer: true,
+      method: null,
+      composerText: beforeText,
+      beforeLength: beforeText.length,
+      candidatesText,
+      clearNote: "",
+      blockReason: "Composer focused: no",
+    };
+  }
+  await page.keyboard.insertText(message);
+  await page.waitForTimeout(600);
+  let method = "keyboard.insertText";
+  let composerText = (await readActiveComposerText(page)) ?? "";
+  if (mode === "inspect" && normalizeComposerForComparison(composerText) === "") {
+    await dispatchInsertText(page, message);
+    await page.waitForTimeout(600);
+    const afterInput = (await readActiveComposerText(page)) ?? "";
+    if (normalizeComposerForComparison(afterInput) !== "") {
+      method = "beforeinput-insertText";
+      composerText = afterInput;
+    } else {
+      await typeMessageWithoutEnter(page, message);
+      await page.waitForTimeout(600);
+      method = "keyboard.type-segments";
+      composerText = (await readActiveComposerText(page)) ?? "";
+    }
+  }
+  const after = await getActiveMessageComposer(page);
+  const sameComposer = Boolean(after.selected && sameActiveComposer(before.selected, after.selected));
+  return {
+    composerSelected: after.status === "selected",
+    focused: true,
+    initiallyEmpty: true,
+    sameComposer,
+    method,
+    composerText,
+    beforeLength: beforeText.length,
+    candidatesText,
+    clearNote: "",
+    blockReason: null,
+  };
+}
+
+async function clearComposerDraft(page: Page) {
+  const focused = await focusActiveComposer(page);
+  if (!focused) return { cleared: false, note: "Composer draft remains. Nothing was sent." };
+  for (const key of draftClearKeys(process.platform)) {
+    await page.keyboard.press(key);
+  }
+  await page.waitForTimeout(300);
+  const remaining = (await readActiveComposerText(page)) ?? "";
+  if (normalizeComposerForComparison(remaining) === "") return { cleared: true, note: "Composer cleared after inspection: yes" };
+  return { cleared: false, note: "Composer draft remains. Nothing was sent." };
 }
 
 function directSnapshot(
@@ -626,33 +802,28 @@ export async function inspectComposerMessage(page: Page, username: string, messa
       reason: "An existing conversation is visible, so the composer was not changed.",
     };
   }
-  if (!opened.composerStrategy) {
-    return {
-      recipientConfirmed: true,
-      composerFound: false,
-      existingConversation: false,
-      inserted: false,
-      cleared: false,
-      clearNote: "",
-      composerText: "",
-      reason: "Composer was not found.",
-    };
-  }
-  const typed = await writeComposer(page, opened.composerStrategy, message);
+  const inserted = await insertLockedMessage(page, message, "inspect");
+  let clearNote = "";
   let cleared = false;
-  let clearNote = "Composer cleared: yes";
-  const clearedResult = await writeComposer(page, opened.composerStrategy, "", true);
-  if (clearedResult.cleared) cleared = true;
-  else clearNote = "Composer was left unchanged because it could not be cleared confidently.";
+  if (inserted.method) {
+    const clearedResult = await clearComposerDraft(page);
+    cleared = clearedResult.cleared;
+    clearNote = clearedResult.note;
+  }
   return {
     recipientConfirmed: true,
-    composerFound: true,
+    composerFound: inserted.composerSelected,
     existingConversation: false,
-    inserted: true,
+    inserted: Boolean(inserted.method),
     cleared,
     clearNote,
-    composerText: typed.text,
-    reason: null,
+    composerText: inserted.composerText,
+    reason: inserted.blockReason,
+    candidatesText: inserted.candidatesText,
+    beforeLength: inserted.beforeLength,
+    focused: inserted.focused,
+    method: inserted.method,
+    initiallyEmpty: inserted.initiallyEmpty,
   };
 }
 

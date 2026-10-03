@@ -125,6 +125,119 @@ export function composerCandidatesFromSnapshot(dom: {
   }));
 }
 
+export type ActiveComposerCandidate = {
+  tag: string;
+  role: string;
+  contentEditable: boolean;
+  ariaLabel: string;
+  placeholder: string;
+  box: { x: number; y: number; width: number; height: number } | null;
+  visible: boolean;
+  hidden: boolean;
+  insideActiveConversation: boolean;
+  searchField: boolean;
+  enabled: boolean;
+};
+
+export type ClassifiedComposerCandidate = ActiveComposerCandidate & {
+  selected: boolean;
+  reason: string;
+};
+
+function composerRejection(candidate: ActiveComposerCandidate) {
+  const editable = candidate.contentEditable || candidate.tag === "textarea" || candidate.role === "textbox";
+  if (!editable) return "not a composer";
+  if (candidate.hidden || !candidate.visible) return "hidden";
+  if (!candidate.box || candidate.box.width < 1 || candidate.box.height < 1) return "zero bounding box";
+  if (!candidate.enabled) return "disabled";
+  if (candidate.searchField) return "search field";
+  if (!candidate.insideActiveConversation) return "outside active pane";
+  return null;
+}
+
+export function selectActiveMessageComposer(candidates: ActiveComposerCandidate[]) {
+  const annotated: ClassifiedComposerCandidate[] = candidates.map((candidate) => ({
+    ...candidate,
+    selected: false,
+    reason: composerRejection(candidate) ?? "",
+  }));
+  const eligible = annotated.filter((candidate) => candidate.reason === "");
+  if (eligible.length === 1) {
+    eligible[0].selected = true;
+    eligible[0].reason = "visible in active conversation";
+    return { status: "selected" as const, selected: eligible[0], candidates: annotated };
+  }
+  if (eligible.length > 1) {
+    eligible.forEach((candidate) => {
+      candidate.reason = "more than one active composer";
+    });
+    return { status: "ambiguous" as const, selected: null, candidates: annotated };
+  }
+  return { status: "missing" as const, selected: null, candidates: annotated };
+}
+
+export function sameActiveComposer(
+  before: { ariaLabel: string; role: string; box: { x: number; y: number; width: number; height: number } | null },
+  after: { ariaLabel: string; role: string; box: { x: number; y: number; width: number; height: number } | null },
+) {
+  if (!before.box || !after.box) return false;
+  return (
+    before.role === after.role &&
+    before.ariaLabel === after.ariaLabel &&
+    Math.abs(before.box.x - after.box.x) <= 48 &&
+    Math.abs(before.box.y - after.box.y) <= 80
+  );
+}
+
+export function composerReadyToSend(input: {
+  recipientConfirmed: boolean;
+  existingConversation: boolean;
+  composerSelected: boolean;
+  focusConfirmed: boolean;
+  initiallyEmpty: boolean;
+  semanticMatch: boolean;
+}) {
+  return (
+    input.recipientConfirmed &&
+    !input.existingConversation &&
+    input.composerSelected &&
+    input.focusConfirmed &&
+    input.initiallyEmpty &&
+    input.semanticMatch
+  );
+}
+
+export function inspectMaySend() {
+  return false;
+}
+
+export function draftClearKeys(platform: string) {
+  return [platform === "darwin" ? "Meta+a" : "Control+a", "Backspace"];
+}
+
+export function clearKeysIncludeEnter(keys: readonly string[]) {
+  return keys.some((key) => /^enter$/i.test(key));
+}
+
+export function formatComposerCandidates(choice: ReturnType<typeof selectActiveMessageComposer>) {
+  const lines = ["Composer candidates:"];
+  if (choice.candidates.length === 0) lines.push("none");
+  choice.candidates.forEach((candidate, index) => {
+    const box = candidate.box;
+    lines.push(`[${index}]`);
+    lines.push(`tag: ${candidate.tag}`);
+    lines.push(`role: ${candidate.role || "null"}`);
+    lines.push(`contenteditable: ${candidate.contentEditable ? "yes" : "no"}`);
+    lines.push(`aria-label: ${candidate.ariaLabel || "null"}`);
+    lines.push(box ? `bounds: x=${box.x}, y=${box.y}, width=${box.width}, height=${box.height}` : "bounds: null");
+    lines.push(`visible: ${candidate.visible ? "yes" : "no"}`);
+    lines.push(`insideActiveConversation: ${candidate.insideActiveConversation ? "yes" : "no"}`);
+    lines.push(`selected: ${candidate.selected ? "yes" : "no"}`);
+    if (!candidate.selected && candidate.reason) lines.push(`reason: ${candidate.reason}`);
+  });
+  return lines.join("\n");
+}
+
 export type RecipientCandidate = {
   text: string;
   href: string;

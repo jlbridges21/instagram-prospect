@@ -2,7 +2,9 @@ import assert from "node:assert/strict";
 import { failurePlan } from "../lib/outreach/decisions";
 import {
   classifyHeaderCandidate,
+  clearKeysIncludeEnter,
   compareComposerText,
+  composerReadyToSend,
   composerTextMatches,
   confirmConversationRecipient,
   detectComposer,
@@ -12,8 +14,12 @@ import {
   sendAllowed,
   queueSendStatusLabel,
   selectPrimaryMessageAction,
+  draftClearKeys,
+  inspectMaySend,
   readComposerSemanticText,
   sendConfirmation,
+  sameActiveComposer,
+  selectActiveMessageComposer,
   sendRecoveryDecision,
   shouldClickSend,
   sequenceOwnsFollow,
@@ -423,7 +429,94 @@ assert.equal(composerTextMatches("Hello world", spaced), false);
 const mismatch = compareComposerText("it\u2019s", "it's");
 assert.equal(mismatch.semanticMatch, false);
 assert.equal(mismatch.mismatch?.queued, `U+2019 ${JSON.stringify("\u2019")}`);
+const activeBox = { x: 400, y: 700, width: 320, height: 40 };
+const activeComposer = {
+  tag: "div",
+  role: "textbox",
+  contentEditable: true,
+  ariaLabel: "Message",
+  placeholder: "",
+  box: activeBox,
+  visible: true,
+  hidden: false,
+  insideActiveConversation: true,
+  searchField: false,
+  enabled: true,
+};
+const outsidePane = {
+  ...activeComposer,
+  ariaLabel: "Inbox",
+  box: { x: 20, y: 200, width: 220, height: 32 },
+  insideActiveConversation: false,
+};
+const chosen = selectActiveMessageComposer([outsidePane, activeComposer]);
+assert.equal(chosen.status, "selected");
+assert.equal(chosen.selected?.ariaLabel, "Message");
+assert.equal(chosen.candidates[0]?.reason, "outside active pane");
+const searchChoice = selectActiveMessageComposer([
+  { ...activeComposer, ariaLabel: "Search", searchField: true, box: { x: 20, y: 80, width: 220, height: 32 } },
+  activeComposer,
+]);
+assert.equal(searchChoice.status, "selected");
+assert.equal(searchChoice.candidates[0]?.reason, "search field");
+const hiddenChoice = selectActiveMessageComposer([
+  { ...activeComposer, hidden: true, visible: false },
+  activeComposer,
+]);
+assert.equal(hiddenChoice.status, "selected");
+assert.equal(hiddenChoice.candidates[0]?.reason, "hidden");
+const ambiguous = selectActiveMessageComposer([
+  activeComposer,
+  { ...activeComposer, box: { x: 400, y: 640, width: 320, height: 36 } },
+]);
+assert.equal(ambiguous.status, "ambiguous");
+assert.equal(ambiguous.selected, null);
+const rerendered = selectActiveMessageComposer([{ ...activeComposer, box: { x: 404, y: 706, width: 320, height: 40 } }]);
+assert.equal(rerendered.status, "selected");
+assert.equal(sameActiveComposer(chosen.selected!, rerendered.selected!), true);
+const stale = { ...activeComposer, ariaLabel: "Search", box: { x: 20, y: 80, width: 200, height: 32 } };
+assert.equal(sameActiveComposer(chosen.selected!, stale), false);
+const paragraphMessage = "Hi vsiaerial\n\nI'd love to connect";
+assert.equal(composerTextMatches(paragraphMessage, paragraphMessage), true);
+assert.equal(paragraphMessage.split("\n")[1], "");
 assert.equal(shouldClickSend(false), false);
+assert.equal(
+  composerReadyToSend({
+    recipientConfirmed: true,
+    existingConversation: false,
+    composerSelected: true,
+    focusConfirmed: true,
+    initiallyEmpty: true,
+    semanticMatch: composerTextMatches(paragraphMessage, ""),
+  }),
+  false,
+);
+assert.equal(
+  composerReadyToSend({
+    recipientConfirmed: true,
+    existingConversation: false,
+    composerSelected: true,
+    focusConfirmed: true,
+    initiallyEmpty: true,
+    semanticMatch: composerTextMatches(paragraphMessage, "Hello there"),
+  }),
+  false,
+);
+assert.equal(
+  composerReadyToSend({
+    recipientConfirmed: true,
+    existingConversation: false,
+    composerSelected: true,
+    focusConfirmed: true,
+    initiallyEmpty: true,
+    semanticMatch: composerTextMatches(paragraphMessage, paragraphMessage),
+  }),
+  true,
+);
+assert.equal(inspectMaySend(), false);
+assert.equal(clearKeysIncludeEnter(draftClearKeys("darwin")), false);
+assert.equal(clearKeysIncludeEnter(draftClearKeys("win32")), false);
+assert.equal(draftClearKeys("win32").includes("Backspace"), true);
 assert.equal(shouldClickSend(composerTextMatches(queued, "Hello\r\n\r\nWorld")), true);
 assert.equal(
   sendAllowed({

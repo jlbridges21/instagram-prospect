@@ -149,10 +149,30 @@ export async function runWorker(mode: RunMode) {
         console.log(`Recipient confirmed: ${inspection.recipientConfirmed ? "yes" : "no"}`);
         console.log(`Composer found: ${inspection.composerFound ? "yes" : "no"}`);
         console.log(`Existing conversation: ${inspection.existingConversation ? "yes" : "no"}`);
+        if ("candidatesText" in inspection && inspection.candidatesText) {
+          console.log("");
+          console.log(inspection.candidatesText);
+        }
+        if ("beforeLength" in inspection) {
+          console.log("");
+          console.log("Before insertion:");
+          console.log(`Composer semantic length: ${inspection.beforeLength ?? "not read"}`);
+          console.log("");
+          console.log("Focused:");
+          console.log(inspection.focused ? "yes" : "no");
+          console.log("");
+          console.log("Insertion method:");
+          console.log(inspection.method ?? "not inserted");
+        }
         if (inspection.reason) console.log(inspection.reason);
-        if (inspection.inserted) {
+        if (inspection.inserted || ("beforeLength" in inspection && inspection.beforeLength !== null && inspection.composerText !== undefined)) {
+          console.log("");
+          console.log("After insertion:");
+          console.log(`Composer semantic length: ${inspection.composerText.length}`);
           console.log("");
           console.log(formatComposerComparison(locked.message, inspection.composerText));
+        }
+        if (inspection.clearNote) {
           console.log("");
           console.log(inspection.clearNote);
         }
