@@ -109,6 +109,33 @@ export async function getProspectPage(
   return { ok: true, data: { rows: (data ?? []) as ProspectRow[], count: count ?? 0 } };
 }
 
+export async function listProspectIds(query: ProspectQuery) {
+  const supabase = await createClient();
+  const ids: string[] = [];
+  for (let page = 0; page < 20; page += 1) {
+    let request = supabase.from("prospects").select("id");
+    if (query.view === "active") {
+      request = request.eq("already_following", false).not("status", "in", "(disqualified,skipped,converted)");
+    } else if (query.view === "review") {
+      request = request.in("status", ["qualified", "review"]);
+    } else if (query.view === "approved") {
+      request = request.eq("status", "approved");
+    } else if (query.view === "contacted") {
+      request = request.in("status", ["contacted", "replied", "follow_up", "demo_booked", "converted"]);
+    } else if (query.view === "excluded") {
+      request = request.or("already_following.eq.true,status.eq.disqualified,status.eq.skipped");
+    }
+    if (query.status !== "all") request = request.eq("status", query.status);
+    if (query.fit !== "all") request = request.eq("fit_label", query.fit);
+    if (query.source) request = request.eq("source", query.source);
+    const { data, error } = await request.range(page * 100, page * 100 + 99);
+    if (error || !data?.length) break;
+    ids.push(...data.map((row) => row.id));
+    if (data.length < 100) break;
+  }
+  return ids;
+}
+
 export async function getProspectCategories(): Promise<string[]> {
   const supabase = await createClient();
   const { data, error } = await supabase

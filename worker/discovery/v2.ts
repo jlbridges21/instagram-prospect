@@ -81,6 +81,7 @@ export async function runDiscoveryV2(input: {
   shouldStop: () => boolean;
   maybeOutreach?: () => Promise<void>;
   metrics?: CloudEfficiency;
+  gate?: (input: { inspections: number; ai: number; emptyCycles: number }) => Promise<{ pause: boolean; reason: string | null } | null>;
 }) {
   const metrics = input.metrics ?? emptyEfficiency();
   const queue = new CandidateQueue(10);
@@ -89,10 +90,15 @@ export async function runDiscoveryV2(input: {
   restoreQueue(queue);
   const failures = new Map<string, number>(PROFILE_TABS.map((tab) => [tab, 0]));
   let stopError: unknown = null;
+  let pauseReason: string | null = null;
+  let sinceGate = 0;
+  let aiSinceGate = 0;
+  let emptyCycles = 0;
   const qualify = new QualificationQueue(3, async (prospectId) => {
       metrics.qualificationRequests += 1;
       try {
       const result = await input.cloud.qualifyProspect(prospectId);
+      if (!(result.skipped)) aiSinceGate += 1;
       if (result.ok && !result.skipped) input.stats.qualified += 1;
     } catch (error) {
       if (isAttention(error)) throw error;
@@ -189,11 +195,13 @@ export async function runDiscoveryV2(input: {
       }
       publish(config, sourceLabel);
       if (queued === 0) {
+        emptyCycles += 1;
         idleScrolls += 1;
         if (idleScrolls >= 4 && queue.pendingCount() === 0 && queue.inProgress().length === 0) {
           await sleep(config.discoveryScrollDelaySeconds * 1000);
         }
       } else {
+        emptyCycles = 0;
         idleScrolls = 0;
       }
       if (queue.needsRefill()) {
@@ -223,6 +231,8 @@ export async function runDiscoveryV2(input: {
       input.stats.seen += 1;
       input.stats.hour.push(Date.now());
       metrics.profilesOpened += 1;
+      sinceGate += 1;
+      if (sinceGate >= 5) await consultGate();
       input.live.task = "inspecting_profiles";
       input.live.username = candidate.username;
       console.log(`${tabId} → @${candidate.username}`);
@@ -303,12 +313,29 @@ export async function runDiscoveryV2(input: {
   }
 
   function sessionCap() {
-    const configured = latestConfig?.maxProfilesPerSession ?? 50;
-    return input.inspectionLimit === null ? configured : Math.min(configured, input.inspectionLimit);
+    if (input.inspectionLimit != null) return input.inspectionLimit;
+    return latestConfig?.sessionInspectionCap ?? latestConfig?.maxProfilesPerSession ?? 50;
+  }
+
+  async function consultGate() {
+    if (!input.gate) return;
+    const inspections = sinceGate;
+    const ai = aiSinceGate;
+    sinceGate = 0;
+    aiSinceGate = 0;
+    try {
+      const result = await input.gate({ inspections, ai, emptyCycles });
+      if (result?.pause) {
+        pauseReason = result.reason;
+        console.log(`Discovery paused. Reason: ${result.reason ?? "stopped"}.`);
+      }
+    } catch {
+      // A missing Discovery V3 migration must not stop the current discovery loop.
+    }
   }
 
   function finished() {
-    if (input.shouldStop() || stopError) return true;
+    if (input.shouldStop() || stopError || pauseReason) return true;
     return input.stats.seen >= sessionCap();
   }
 

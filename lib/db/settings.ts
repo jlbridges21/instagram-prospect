@@ -35,6 +35,12 @@ export const DEFAULT_DISCOVERY_SETTINGS: DiscoverySettings = {
   sourcePriority: "suggested_first",
   candidateQueueTarget: 10,
   profileInspectionConcurrency: 2,
+  reviewTarget: "unlimited",
+  sessionInspectionCap: 1000,
+  dailyInspectionCap: 500,
+  dailyAiCap: 300,
+  stopReason: null,
+  autoPaused: false,
 };
 
 function discoveryFromRow(row: SettingsRow): DiscoverySettings {
@@ -50,6 +56,12 @@ function discoveryFromRow(row: SettingsRow): DiscoverySettings {
     sourcePriority: row.discovery_source_priority === "home_first" ? "home_first" : "suggested_first",
     candidateQueueTarget: row.candidate_queue_target ?? DEFAULT_DISCOVERY_SETTINGS.candidateQueueTarget,
     profileInspectionConcurrency: 2,
+    reviewTarget: row.discovery_review_target == null ? "unlimited" : row.discovery_review_target,
+    sessionInspectionCap: row.discovery_session_inspection_cap ?? DEFAULT_DISCOVERY_SETTINGS.sessionInspectionCap,
+    dailyInspectionCap: row.discovery_daily_inspection_cap ?? DEFAULT_DISCOVERY_SETTINGS.dailyInspectionCap,
+    dailyAiCap: row.discovery_daily_ai_cap ?? DEFAULT_DISCOVERY_SETTINGS.dailyAiCap,
+    stopReason: row.discovery_stop_reason ?? null,
+    autoPaused: row.discovery_auto_paused ?? false,
   };
 }
 

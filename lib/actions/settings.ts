@@ -130,6 +130,10 @@ export async function saveDiscoverySettings(input: {
   candidateQueueTarget: number;
   maxProfilesPerSession: number;
   maxProfilesPerHour: number;
+  reviewTarget?: number | "unlimited";
+  sessionInspectionCap?: number;
+  dailyInspectionCap?: number;
+  dailyAiCap?: number;
 }): Promise<ActionResult> {
   if (!Number.isInteger(input.candidateQueueTarget) || input.candidateQueueTarget < 5 || input.candidateQueueTarget > 25) {
     return { ok: false, error: "Candidate queue target must be between 5 and 25." };
@@ -139,6 +143,12 @@ export async function saveDiscoverySettings(input: {
   }
   if (!Number.isInteger(input.maxProfilesPerSession) || input.maxProfilesPerSession < 1 || input.maxProfilesPerSession > 500) {
     return { ok: false, error: "Maximum profiles per session must be between 1 and 500." };
+  }
+  if (input.sessionInspectionCap != null && (!Number.isInteger(input.sessionInspectionCap) || input.sessionInspectionCap < 1 || input.sessionInspectionCap > 5000)) {
+    return { ok: false, error: "Session inspection maximum must be between 1 and 5000." };
+  }
+  if (input.reviewTarget != null && input.reviewTarget !== "unlimited" && (!Number.isInteger(input.reviewTarget) || input.reviewTarget < 1)) {
+    return { ok: false, error: "Review target must be a positive number or unlimited." };
   }
   const { supabase } = await requireUser();
   const { error } = await supabase
@@ -152,6 +162,11 @@ export async function saveDiscoverySettings(input: {
       profile_inspection_concurrency: 2,
       max_profiles_per_session: input.maxProfilesPerSession,
       max_profiles_per_hour: input.maxProfilesPerHour,
+      discovery_review_target: input.reviewTarget === "unlimited" || input.reviewTarget == null ? null : input.reviewTarget,
+      discovery_session_inspection_cap: input.sessionInspectionCap ?? 1000,
+      discovery_daily_inspection_cap: input.dailyInspectionCap ?? 500,
+      discovery_daily_ai_cap: input.dailyAiCap ?? 300,
+      ...(input.enabled ? { discovery_auto_paused: false, discovery_stop_reason: null } : { discovery_stop_reason: "manual_pause" }),
     })
     .eq("id", 1);
   if (error) {
@@ -166,7 +181,17 @@ export async function saveDiscoverySettings(input: {
 
 export async function setDiscoveryEnabled(enabled: boolean): Promise<ActionResult> {
   const { supabase } = await requireUser();
-  const { error } = await supabase.from("settings").update({ discovery_enabled: enabled }).eq("id", 1);
+  let { error } = await supabase
+    .from("settings")
+    .update({
+      discovery_enabled: enabled,
+      discovery_auto_paused: false,
+      discovery_stop_reason: enabled ? null : "manual_pause",
+    })
+    .eq("id", 1);
+  if (error && /discovery_auto_paused|discovery_stop_reason/i.test(error.message)) {
+    ({ error } = await supabase.from("settings").update({ discovery_enabled: enabled }).eq("id", 1));
+  }
   if (error) {
     if (/discovery_enabled/i.test(error.message)) {
       return { ok: false, error: "Run the Prompt 5 database migration, then try again." };

@@ -5,7 +5,10 @@ import { AutomationControls } from "@/components/outreach/automation-controls";
 import { RecentActivity } from "@/components/dashboard/recent-activity";
 import { RecentProspects } from "@/components/dashboard/recent-prospects";
 import { WorkerSummary } from "@/components/dashboard/worker-summary";
+import { LiveProspectSync } from "@/components/prospects/live-sync";
+import { DiscoveryProgress } from "@/components/worker/discovery-progress";
 import { DatabaseSetup } from "@/components/layout/database-setup";
+import { getDiscoveryV3Snapshot } from "@/lib/db/discovery";
 import { PageHeader } from "@/components/layout/page-header";
 import { countFollowUpsDue } from "@/lib/db/follow-ups";
 import { getOutreachSnapshot } from "@/lib/db/outreach";
@@ -63,6 +66,7 @@ export default async function OverviewPage() {
     attentionReason: workerResult.ok ? workerResult.data?.attention_reason : null,
   });
   const worker = workerResult.ok ? workerResult.data : null;
+  const progress = await getDiscoveryV3Snapshot(settings.timezone);
 
   const cards = [
     { label: "Found today", value: counts.foundToday, hint: "Since midnight", icon: Inbox },
@@ -81,6 +85,21 @@ export default async function OverviewPage() {
         title="Overview"
         description="A live read of prospect records, review work, and the local worker."
       />
+      <LiveProspectSync />
+      <div className="mb-6">
+        <DiscoveryProgress
+          running={settings.discovery.enabled}
+          currentReview={progress.currentReview}
+          target={settings.discovery.reviewTarget}
+          reason={settings.discovery.stopReason}
+          sessionInspections={progress.sessionInspections}
+          sessionCap={settings.discovery.sessionInspectionCap}
+          dailyInspections={progress.dailyInspections}
+          dailyInspectionCap={settings.discovery.dailyInspectionCap}
+          dailyAi={progress.dailyAi}
+          dailyAiCap={settings.discovery.dailyAiCap}
+        />
+      </div>
       {missing ? <div className="mb-6"><DatabaseSetup message={missing.error} /></div> : null}
       {failure ? (
         <div className="mb-6 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">

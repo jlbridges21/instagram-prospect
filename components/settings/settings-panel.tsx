@@ -76,6 +76,12 @@ export function SettingsPanel({
   const [queueTarget, setQueueTarget] = useState(String(settings.discovery.candidateQueueTarget));
   const [maxSession, setMaxSession] = useState(String(settings.discovery.maxProfilesPerSession));
   const [maxHour, setMaxHour] = useState(String(settings.discovery.maxProfilesPerHour));
+  const [reviewTarget, setReviewTarget] = useState(
+    settings.discovery.reviewTarget === "unlimited" ? "unlimited" : String(settings.discovery.reviewTarget),
+  );
+  const [sessionCap, setSessionCap] = useState(String(settings.discovery.sessionInspectionCap));
+  const [dailyInspections, setDailyInspections] = useState(String(settings.discovery.dailyInspectionCap));
+  const [dailyAi, setDailyAi] = useState(String(settings.discovery.dailyAiCap));
   const [appName, setAppName] = useState(settings.appName);
   const [timezone, setTimezone] = useState(settings.timezone);
   const [dateFormat, setDateFormat] = useState<DateFormat>(settings.dateFormat);
@@ -380,6 +386,23 @@ export function SettingsPanel({
             <Field label="Maximum profiles per session">
               <TextInput inputMode="numeric" value={maxSession} onChange={(event) => setMaxSession(event.target.value)} />
             </Field>
+            <Field label="Review target" hint="Discovery pauses at this review count and does not restart when the count later falls.">
+              <SelectInput value={reviewTarget} onChange={(event) => setReviewTarget(event.target.value)}>
+                <option value="20">20</option>
+                <option value="50">50</option>
+                <option value="100">100</option>
+                <option value="unlimited">Unlimited</option>
+              </SelectInput>
+            </Field>
+            <Field label="Session inspection maximum">
+              <TextInput inputMode="numeric" value={sessionCap} onChange={(event) => setSessionCap(event.target.value)} />
+            </Field>
+            <Field label="Daily profile inspections">
+              <TextInput inputMode="numeric" value={dailyInspections} onChange={(event) => setDailyInspections(event.target.value)} />
+            </Field>
+            <Field label="Daily AI qualifications">
+              <TextInput inputMode="numeric" value={dailyAi} onChange={(event) => setDailyAi(event.target.value)} />
+            </Field>
             <Button
               disabled={pending}
               onClick={() =>
@@ -393,6 +416,10 @@ export function SettingsPanel({
                       candidateQueueTarget: Number.parseInt(queueTarget, 10),
                       maxProfilesPerHour: Number.parseInt(maxHour, 10),
                       maxProfilesPerSession: Number.parseInt(maxSession, 10),
+                      reviewTarget: reviewTarget === "unlimited" ? "unlimited" : Number.parseInt(reviewTarget, 10),
+                      sessionInspectionCap: Number.parseInt(sessionCap, 10),
+                      dailyInspectionCap: Number.parseInt(dailyInspections, 10),
+                      dailyAiCap: Number.parseInt(dailyAi, 10),
                     }),
                   "Discovery settings saved",
                 )

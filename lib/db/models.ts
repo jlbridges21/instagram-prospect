@@ -12,6 +12,12 @@ export type DiscoverySettings = {
   sourcePriority: "suggested_first" | "home_first";
   candidateQueueTarget: number;
   profileInspectionConcurrency: number;
+  reviewTarget: number | "unlimited";
+  sessionInspectionCap: number;
+  dailyInspectionCap: number;
+  dailyAiCap: number;
+  stopReason: string | null;
+  autoPaused: boolean;
 };
 
 export type AppSettings = {

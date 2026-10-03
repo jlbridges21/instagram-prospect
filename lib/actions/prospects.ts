@@ -1,6 +1,8 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
+import { listProspectIds } from "@/lib/db/prospects";
+import type { ProspectQuery } from "@/lib/db/prospects";
 import { fallbackSettings, fallbackTargeting, getSettings, getTargetingSettings } from "@/lib/db/settings";
 import { outreachBlockReason } from "@/lib/outreach/eligibility";
 import { requeueSummary } from "@/lib/outreach/requeue";
@@ -32,6 +34,16 @@ function revalidateProspectPaths(ids: string[]) {
 
 export async function approveProspects(ids: string[]): Promise<ActionResult> {
   return approveForOutreach(ids);
+}
+
+export async function approveMatchingProspects(query: ProspectQuery): Promise<ActionResult> {
+  const ids = await listProspectIds(query);
+  return approveForOutreach(ids);
+}
+
+export async function deleteMatchingProspects(query: ProspectQuery): Promise<ActionResult> {
+  const ids = await listProspectIds(query);
+  return deleteProspects(ids);
 }
 
 export async function skipProspects(ids: string[]): Promise<ActionResult> {
@@ -202,6 +214,39 @@ export async function updateMessageOverride(id: string, message: string): Promis
   if (!result.ok) return result;
   revalidateProspectPaths([id]);
   return { ok: true };
+}
+
+export async function deleteProspects(ids: string[]): Promise<ActionResult> {
+  const unique = [...new Set(ids.filter((id) => isUuid(id)))];
+  if (unique.length === 0) return { ok: false, error: "Choose at least one prospect." };
+  const { supabase } = await requireUser();
+  let deleted = 0;
+  for (let index = 0; index < unique.length; index += 100) {
+    const chunk = unique.slice(index, index + 100);
+    const children = await Promise.all([
+      supabase.from("outreach_jobs").delete().in("prospect_id", chunk),
+      supabase.from("follow_ups").delete().in("prospect_id", chunk),
+      supabase.from("activity_log").delete().in("prospect_id", chunk),
+      supabase.from("ai_usage").delete().in("prospect_id", chunk),
+    ]);
+    const childError = children.find((result) => result.error)?.error;
+    if (childError) return { ok: false, error: childError.message };
+    const removed = await supabase.from("prospects").delete({ count: "exact" }).in("id", chunk);
+    if (removed.error) return { ok: false, error: removed.error.message };
+    deleted += removed.count ?? 0;
+  }
+  revalidateProspectPaths(unique);
+  return { ok: true, message: `${deleted} deleted. 0 failed.` };
+}
+
+export async function deleteSuppressions(usernames: string[]): Promise<ActionResult> {
+  const unique = [...new Set(usernames.map((name) => name.replace(/^@/, "").trim().toLowerCase()).filter(Boolean))];
+  if (unique.length === 0) return { ok: false, error: "Choose at least one suppression." };
+  const { supabase } = await requireUser();
+  const { error } = await supabase.from("discovery_suppressions").delete().in("instagram_username_normalized", unique);
+  if (error) return { ok: false, error: error.message };
+  revalidateProspectPaths([]);
+  return { ok: true, message: "Suppression removed. The account may be rediscovered." };
 }
 
 export async function clearMessageOverride(id: string): Promise<ActionResult> {

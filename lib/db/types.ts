@@ -96,6 +96,49 @@ export type SettingsRow = {
   discovery_source_priority?: "suggested_first" | "home_first";
   candidate_queue_target?: number;
   profile_inspection_concurrency?: number;
+  discovery_review_target?: number | null;
+  discovery_session_inspection_cap?: number;
+  discovery_daily_inspection_cap?: number;
+  discovery_daily_ai_cap?: number;
+  discovery_stop_reason?: string | null;
+  discovery_auto_paused?: boolean;
+  updated_at: string;
+};
+
+export type DiscoverySuppressionRow = {
+  id: string;
+  instagram_username_normalized: string;
+  reason: string;
+  fit_score: number | null;
+  follow_relationship: string | null;
+  source: string | null;
+  first_seen_at: string;
+  last_seen_at: string;
+  expires_at: string | null;
+  permanent: boolean;
+  created_at: string;
+  updated_at: string;
+};
+
+export type DiscoverySessionRow = {
+  id: string;
+  started_at: string;
+  starting_review_count: number;
+  target: number | null;
+  profiles_inspected: number;
+  ai_qualifications: number;
+  prospects_added_to_review: number;
+  prospects_disqualified: number;
+  suppressed_profiles: number;
+  last_candidate_at: string | null;
+  stopped_at: string | null;
+  stop_reason: string | null;
+};
+
+export type DiscoveryDailyUsageRow = {
+  usage_date: string;
+  inspections: number;
+  ai_qualifications: number;
   updated_at: string;
 };
 
@@ -247,6 +290,24 @@ export type Database = {
         Update: Insert<SettingsRow>;
         Relationships: [];
       };
+      discovery_suppressions: {
+        Row: DiscoverySuppressionRow;
+        Insert: Insert<DiscoverySuppressionRow> & { instagram_username_normalized: string; reason: string };
+        Update: Insert<DiscoverySuppressionRow>;
+        Relationships: [];
+      };
+      discovery_sessions: {
+        Row: DiscoverySessionRow;
+        Insert: Insert<DiscoverySessionRow>;
+        Update: Insert<DiscoverySessionRow>;
+        Relationships: [];
+      };
+      discovery_daily_usage: {
+        Row: DiscoveryDailyUsageRow;
+        Insert: Insert<DiscoveryDailyUsageRow> & { usage_date: string };
+        Update: Insert<DiscoveryDailyUsageRow>;
+        Relationships: [];
+      };
       targeting_settings: {
         Row: TargetingSettingsRow;
         Insert: Insert<TargetingSettingsRow> & { categories: string[] };
@@ -362,6 +423,14 @@ export type Database = {
           p_send_at: string;
         };
         Returns: Json;
+      };
+      bump_discovery_usage: {
+        Args: {
+          p_date: string;
+          p_inspections: number;
+          p_ai: number;
+        };
+        Returns: { inspections: number; ai_qualifications: number }[];
       };
     };
   };

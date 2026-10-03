@@ -4,6 +4,8 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import { logActivities } from "@/lib/activity/log";
 import type { ActivityEventType, ProspectSource, ProspectStatus } from "@/lib/constants/prospects";
 import type { Database, Json } from "@/lib/db/types";
+import { preAiStorage } from "@/lib/discovery/policy";
+import { isMissingRelation } from "@/lib/db/errors";
 import { canApprove, canSkip } from "@/lib/prospects/status";
 import { normalizeUsername, profileUrlForUsername } from "@/lib/utils/format";
 
@@ -273,6 +275,34 @@ export async function ingestWorkerProspect(supabase: Client, input: WorkerProspe
   }
 
   const following = Boolean(input.already_following);
+  const relationship = input.follow_relationship ?? (following ? "following" : "unknown");
+  const limits = await followerLimits(supabase);
+  const storage = preAiStorage({
+    relationship,
+    followers: input.follower_count ?? null,
+    minFollowers: limits.min,
+    maxFollowers: limits.max,
+  });
+  if (storage.path === "suppression") {
+    const suppressed = await rememberSuppression(supabase, {
+      username,
+      reason: storage.reason,
+      permanent: storage.permanent,
+      expiresInDays: storage.expiresInDays,
+      relationship,
+      source: input.source ?? null,
+    });
+    if (suppressed.ok) {
+      return {
+        ok: true as const,
+        created: false as const,
+        reason: "suppressed" as const,
+        prospectId: null,
+        queued: false,
+        shouldQualify: false,
+      };
+    }
+  }
   const relationshipUnknown = input.follow_relationship === "unknown" && !following;
   const status: ProspectStatus = following ? "disqualified" : "discovered";
   const qualificationReason = following
@@ -357,7 +387,6 @@ export async function ingestWorkerProspect(supabase: Client, input: WorkerProspe
 
   await logActivities(supabase, events);
 
-  const relationship = input.follow_relationship ?? (following ? "following" : "unknown");
   return {
     ok: true as const,
     created: true as const,
@@ -366,6 +395,44 @@ export async function ingestWorkerProspect(supabase: Client, input: WorkerProspe
     status,
     shouldQualify: relationship === "not_following" && !following,
   };
+}
+
+async function followerLimits(supabase: Client) {
+  const { data } = await supabase.from("targeting_settings").select("min_followers, max_followers").eq("id", 1).maybeSingle();
+  return { min: data?.min_followers ?? 500, max: data?.max_followers ?? 250000 };
+}
+
+async function rememberSuppression(
+  supabase: Client,
+  input: {
+    username: string;
+    reason: string;
+    permanent: boolean;
+    expiresInDays: number | null;
+    relationship: string;
+    source: string | null;
+  },
+) {
+  const now = new Date();
+  const expiresAt = input.permanent || input.expiresInDays == null
+    ? null
+    : new Date(now.getTime() + input.expiresInDays * 24 * 60 * 60 * 1000).toISOString();
+  const { error } = await supabase.from("discovery_suppressions").upsert(
+    {
+      instagram_username_normalized: input.username,
+      reason: input.reason,
+      follow_relationship: input.relationship,
+      source: input.source,
+      last_seen_at: now.toISOString(),
+      expires_at: expiresAt,
+      permanent: input.permanent,
+      updated_at: now.toISOString(),
+    },
+    { onConflict: "instagram_username_normalized" },
+  );
+  if (error && isMissingRelation(error)) return { ok: false as const };
+  if (error) return { ok: false as const };
+  return { ok: true as const };
 }
 
 function sourceLabel(source: ProspectSource | undefined) {

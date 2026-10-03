@@ -5,7 +5,8 @@ import { useRouter } from "next/navigation";
 import { useRef, useState, useSyncExternalStore, useTransition } from "react";
 import { ExternalLink, Inbox } from "lucide-react";
 import { toast } from "sonner";
-import { approveProspects, requeueProspects, skipProspects } from "@/lib/actions/prospects";
+import { approveMatchingProspects, approveProspects, deleteMatchingProspects, deleteProspects, requeueProspects, skipProspects } from "@/lib/actions/prospects";
+import type { ProspectQuery } from "@/lib/db/prospects";
 import { bulkProspectActions } from "@/lib/outreach/requeue";
 import { AnalyzeSelectedButton } from "@/components/prospects/qualify-controls";
 import { TableOptions } from "@/components/prospects/table-options";
@@ -98,16 +99,23 @@ export function ProspectsTable({
   rows,
   filtered,
   view = "active",
+  matchCount = 0,
+  query,
 }: {
   rows: ProspectTableRow[];
   filtered: boolean;
   view?: string;
+  matchCount?: number;
+  query?: ProspectQuery;
 }) {
   const router = useRouter();
   const [selected, setSelected] = useState<string[]>([]);
   const [confirmSkip, setConfirmSkip] = useState<string[] | null>(null);
   const [confirmApprove, setConfirmApprove] = useState<string[] | null>(null);
   const [confirmRequeue, setConfirmRequeue] = useState<string[] | null>(null);
+  const [confirmDelete, setConfirmDelete] = useState<string[] | null>(null);
+  const [allFiltered, setAllFiltered] = useState(false);
+  const [largeDeleteConfirmed, setLargeDeleteConfirmed] = useState(false);
   const [pending, startTransition] = useTransition();
   const layout = useSyncExternalStore(subscribeLayout, layoutSnapshot, () => SERVER_LAYOUT);
   const [dragging, setDragging] = useState<ColumnId | null>(null);
@@ -301,7 +309,7 @@ export function ProspectsTable({
       ) : null}
       {selected.length > 0 ? (
         <div className="mb-3 flex items-center justify-between rounded-xl border border-slate-200 bg-white px-4 py-3">
-          <p className="text-sm text-slate-700">{selected.length} selected</p>
+          <p className="text-sm text-slate-700">{allFiltered ? matchCount : selected.length} selected</p>
           <div className="flex flex-wrap gap-2">
             <AnalyzeSelectedButton
               rows={chosen.map((row) => ({ id: row.id, status: row.status }))}
@@ -319,6 +327,14 @@ export function ProspectsTable({
             {bulk.skipIds.length > 0 ? (
               <Button size="sm" variant="secondary" disabled={pending} onClick={() => setConfirmSkip(bulk.skipIds)}>
                 Skip selected
+              </Button>
+            ) : null}
+            <Button size="sm" variant="secondary" disabled={pending} onClick={() => setConfirmDelete(selected)}>
+              Delete selected
+            </Button>
+            {query && matchCount > rows.length && selected.length === rows.length && !allFiltered ? (
+              <Button size="sm" variant="secondary" disabled={pending} onClick={() => setAllFiltered(true)}>
+                Select all {matchCount} results matching this filter
               </Button>
             ) : null}
           </div>
@@ -531,8 +547,56 @@ export function ProspectsTable({
         pending={pending}
         onClose={() => setConfirmApprove(null)}
         onConfirm={() => {
+          if (allFiltered && query) {
+            startTransition(async () => {
+              const result = await approveMatchingProspects(query);
+              setConfirmApprove(null);
+              if (!result.ok) toast.error(result.error);
+              else {
+                toast.success(result.message ?? "Prospects approved.");
+                router.refresh();
+              }
+            });
+            return;
+          }
           if (confirmApprove) runBulk(confirmApprove, approveProspects, () => setConfirmApprove(null));
         }}
+      />
+      <ConfirmDialog
+        open={confirmDelete !== null && ((confirmDelete.length < 200 && !allFiltered) || largeDeleteConfirmed)}
+        title={allFiltered ? `Delete ${matchCount} prospects permanently?` : confirmDelete?.length === 1 ? `Delete @${rows.find((row) => row.id === confirmDelete[0])?.username ?? "prospect"} permanently?` : `Delete ${confirmDelete?.length ?? 0} prospects permanently?`}
+        description="This deletes the prospect and associated ShootPortal Outreach records from Supabase. This cannot be undone. No bio, photo, or message is kept."
+        confirmLabel={allFiltered ? `Delete ${matchCount} prospects` : "Delete permanently"}
+        tone="danger"
+        pending={pending}
+        onClose={() => {
+          setConfirmDelete(null);
+          setLargeDeleteConfirmed(false);
+        }}
+        onConfirm={() => {
+          startTransition(async () => {
+            const result = allFiltered && query ? await deleteMatchingProspects(query) : await deleteProspects(confirmDelete ?? []);
+            setConfirmDelete(null);
+            setLargeDeleteConfirmed(false);
+            setAllFiltered(false);
+            if (!result.ok) toast.error(result.error);
+            else {
+              toast.success(result.message ?? "Deleted.");
+              setSelected([]);
+              router.refresh();
+            }
+          });
+        }}
+      />
+      <ConfirmDialog
+        open={confirmDelete !== null && (allFiltered ? matchCount >= 200 : confirmDelete.length >= 200) && !largeDeleteConfirmed}
+        title="Delete a large set of prospects?"
+        description="This is a large permanent deletion. Confirm again before anything is removed."
+        confirmLabel="Continue"
+        tone="danger"
+        pending={pending}
+        onClose={() => setConfirmDelete(null)}
+        onConfirm={() => setLargeDeleteConfirmed(true)}
       />
       <ConfirmDialog
         open={confirmRequeue !== null}

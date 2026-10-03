@@ -32,6 +32,12 @@ export function ProspectFilters({
   return (
     <div className="mb-4">
       <div className="mb-3 flex gap-2 overflow-x-auto">
+        <Link
+          href="/prospects?view=suppressed"
+          className={buttonClasses("secondary")}
+        >
+          Suppressed before AI
+        </Link>
         {views.map((view) => (
           <Link
             key={view.id}

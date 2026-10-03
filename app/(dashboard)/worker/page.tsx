@@ -4,7 +4,9 @@ import { PageHeader } from "@/components/layout/page-header";
 import { WorkerStatusPanel } from "@/components/worker/worker-status";
 import { DiscoveryControls } from "@/components/worker/discovery-controls";
 import { AutomationControls } from "@/components/outreach/automation-controls";
-import { getDiscoveryToday } from "@/lib/db/discovery";
+import { DiscoveryProgress } from "@/components/worker/discovery-progress";
+import { LiveProspectSync } from "@/components/prospects/live-sync";
+import { getDiscoveryToday, getDiscoveryV3Snapshot } from "@/lib/db/discovery";
 import { getOutreachSnapshot } from "@/lib/db/outreach";
 import { fallbackSettings, getSettings } from "@/lib/db/settings";
 import { getLatestWorker } from "@/lib/db/workers";
@@ -17,9 +19,10 @@ export const metadata: Metadata = { title: "Worker" };
 export default async function WorkerPage() {
   const [workerResult, settingsResult] = await Promise.all([getLatestWorker(), getSettings()]);
   const settings = settingsResult.ok ? settingsResult.data : fallbackSettings();
-  const [outreach, discovery] = await Promise.all([
+  const [outreach, discovery, progress] = await Promise.all([
     getOutreachSnapshot(settings.timezone),
     getDiscoveryToday(settings.timezone),
+    getDiscoveryV3Snapshot(settings.timezone),
   ]);
   const worker = workerResult.ok ? workerResult.data : null;
   const health = getWorkerHealth({
@@ -57,6 +60,21 @@ export default async function WorkerPage() {
           {workerResult.error}
         </div>
       ) : null}
+      <LiveProspectSync />
+      <div className="mb-6">
+        <DiscoveryProgress
+          running={settings.discovery.enabled}
+          currentReview={progress.currentReview}
+          target={settings.discovery.reviewTarget}
+          reason={settings.discovery.stopReason}
+          sessionInspections={progress.sessionInspections}
+          sessionCap={settings.discovery.sessionInspectionCap}
+          dailyInspections={progress.dailyInspections}
+          dailyInspectionCap={settings.discovery.dailyInspectionCap}
+          dailyAi={progress.dailyAi}
+          dailyAiCap={settings.discovery.dailyAiCap}
+        />
+      </div>
       <DiscoveryV2Status lastEvent={worker?.last_event} task={worker?.current_task} />
       <WorkerStatusPanel
         health={health}

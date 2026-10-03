@@ -15,6 +15,11 @@ export type CloudConfig = {
   discoverySourcePriority: "suggested_first" | "home_first";
   candidateQueueTarget: number;
   profileInspectionConcurrency: number;
+  reviewTarget: number | "unlimited";
+  sessionInspectionCap: number;
+  dailyInspectionCap: number;
+  dailyAiCap: number;
+  discoveryStopReason: string | null;
 };
 
 export const CONFIG_CACHE_MS = 60_000;
@@ -87,6 +92,11 @@ export class CloudClient {
       discoverySourcePriority: json.discoverySourcePriority === "home_first" ? "home_first" : "suggested_first",
       candidateQueueTarget: numberOr(json.candidateQueueTarget, 10),
       profileInspectionConcurrency: 2,
+      reviewTarget: json.reviewTarget === "unlimited" || json.reviewTarget == null ? "unlimited" : numberOr(json.reviewTarget, 50),
+      sessionInspectionCap: numberOr(json.sessionInspectionCap, 1000),
+      dailyInspectionCap: numberOr(json.dailyInspectionCap, 500),
+      dailyAiCap: numberOr(json.dailyAiCap, 300),
+      discoveryStopReason: typeof json.discoveryStopReason === "string" ? json.discoveryStopReason : null,
     } satisfies CloudConfig;
     this.configCache = value;
     this.configCachedAt = Date.now();
@@ -122,6 +132,10 @@ export class CloudClient {
       "/api/worker/prospects",
       body,
     );
+  }
+
+  async discoveryProgress(body: { inspections?: number; ai?: number; emptyCycles?: number }) {
+    return this.request<{ pause: boolean; reason: string | null }>("/api/worker/discovery/progress", body);
   }
 
   async qualifyProspect(prospectId: string) {

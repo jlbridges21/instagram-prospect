@@ -3,7 +3,9 @@ import { AddProspectButton } from "@/components/prospects/add-prospect-dialog";
 import { DatabaseSetup } from "@/components/layout/database-setup";
 import { PageHeader } from "@/components/layout/page-header";
 import { ProspectFilters, ProspectPagination } from "@/components/prospects/prospect-filters";
+import { LiveProspectSync } from "@/components/prospects/live-sync";
 import { ProspectsTable } from "@/components/prospects/prospects-table";
+import { SuppressionList } from "@/components/prospects/suppression-list";
 import { categoryLabel } from "@/lib/ai/categories";
 import {
   pageSizeFromParam,
@@ -100,8 +102,12 @@ export default async function ProspectsPage({
           {pageResult.error}
         </div>
       ) : null}
+      <LiveProspectSync />
+      {viewValue === "suppressed" ? <SuppressionList /> : null}
       <ProspectFilters query={query} categories={categories} />
-      <ProspectsTable
+      {viewValue === "suppressed" ? null : <ProspectsTable
+        matchCount={count}
+        query={query}
         filtered={filtered}
         view={view}
         rows={pageRows.map((row) => ({
@@ -130,7 +136,7 @@ export default async function ProspectsPage({
             ? formatDateTime(outreachFlags.get(row.id)?.nextScheduled ?? null, settings.timezone, settings.dateFormat)
             : null,
         }))}
-      />
+      />}
       <ProspectPagination query={query} page={query.page} pageCount={pageCount} />
     </div>
   );

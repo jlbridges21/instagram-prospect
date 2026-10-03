@@ -1,3 +1,4 @@
+import { continuousOutreachStep } from "../lib/discovery/policy";
 import { launchBrowser } from "./browser/launch";
 import { createHeartbeatSession, mustHeartbeatBeforeClaim, safeHeartbeatError } from "./heartbeat-session";
 import { CloudClient, type CloudConfig, type JobPayload } from "./cloud/client";
@@ -39,7 +40,8 @@ const sleep = (ms: number) =>
   });
 
 export async function runWorker(mode: RunMode) {
-  const discoveryOnly = process.argv.includes("--discovery-only") || process.argv.includes("--discovery-v2-test") || mode === "smoke";
+  const discoveryV3Test = process.argv.includes("--discovery-v3-test");
+  const discoveryOnly = process.argv.includes("--discovery-only") || process.argv.includes("--discovery-v2-test") || discoveryV3Test || mode === "smoke";
   const discoveryV2Test = process.argv.includes("--discovery-v2-test");
   const noWrite = process.argv.includes("--no-write") || mode === "smoke" || mode === "login";
   const dryRun = process.argv.includes("--outreach-dry-run");
@@ -280,8 +282,28 @@ export async function runWorker(mode: RunMode) {
           continue;
         }
         if (mode !== "smoke" && !discoveryOnly && !noWrite) {
-          const worked = await runOneJob(cloud, page, identity, config, stats);
-          if (worked) continue;
+          const outcome = await runOneJob(cloud, page, identity, config, stats);
+          if (outcome.worked) {
+            if (outcome.username) console.log(`Completed outreach for @${outcome.username}.`);
+            continue;
+          }
+          if (config.automationEnabled && outcome.reason) {
+            const step = continuousOutreachStep({
+              paused: outcome.reason === "outreach_paused",
+              checkpoint: false,
+              jobReady: false,
+              nextAt: outcome.nextAt ?? null,
+              outsideHours: outcome.reason === "outside_active_hours",
+              now: new Date(),
+            });
+            if (outcome.reason === "no_queued_jobs") console.log("Outreach queue is empty.");
+            else if (outcome.message) console.log(outcome.message);
+            if (outcome.nextAt) console.log("Waiting...");
+            if (!config.discoveryEnabled) {
+              await sleep(step.waitMs);
+              continue;
+            }
+          }
         }
         if (mode === "smoke") {
           const posts = await ensureHome(page);
@@ -291,10 +313,12 @@ export async function runWorker(mode: RunMode) {
           console.log("Worker API: connected");
           return;
         }
-        if (config.discoveryEnabled && !stopping && stats.seen < (discoveryV2Test ? 10 : config.maxProfilesPerSession) && !singleOutreach) {
+        const inspectionCap = discoveryV2Test || discoveryV3Test ? 10 : config.sessionInspectionCap;
+        if (config.discoveryEnabled && !stopping && stats.seen < inspectionCap && !singleOutreach) {
           live.task = "discovering_candidates";
           live.instagramAuthenticated = true;
           if (discoveryV2Test) console.log("Discovery V2 test. Outreach stays paused. Inspecting up to 10 profiles.");
+          if (discoveryV3Test) console.log("Discovery V3 test. Outreach stays paused. Inspecting up to 10 profiles. No follow and no DM.");
           let outreachPage: import("playwright").Page | null = null;
           await runDiscoveryV2({
             context,
@@ -305,22 +329,23 @@ export async function runWorker(mode: RunMode) {
             workerId: identity.worker_id,
             noWrite,
             debug: debug || discoveryOnly,
-            inspectionLimit: discoveryV2Test ? 10 : null,
+            inspectionLimit: inspectionCap,
             shouldStop: () => stopping,
             metrics: efficiency,
+            gate: async (tick) => cloud.discoveryProgress(tick).catch(() => null),
             maybeOutreach: async () => {
-              if (discoveryOnly || noWrite || discoveryV2Test) return;
+              if (discoveryOnly || noWrite || discoveryV2Test || discoveryV3Test) return;
               const current = await cloud.config();
               if (!current.automationEnabled) return;
               outreachPage ??= await context.newPage();
               await runOneJob(cloud, outreachPage, identity, current, stats);
             },
           });
-          if (discoveryV2Test) return;
+          if (discoveryV2Test || discoveryV3Test) return;
         } else {
           live.task = "idle";
           await beat(cloud, identity, live.task, stats, true, true, live.attention, live.username, live.lastEvent);
-          if (stats.seen >= config.maxProfilesPerSession) console.log("Session profile limit reached. Waiting.");
+          if (stats.seen >= inspectionCap) console.log("Session profile limit reached. Waiting.");
           await sleep(Math.max(config.heartbeatIntervalSeconds, 20) * 1000);
         }
       } catch (error) {
@@ -368,16 +393,24 @@ async function runOneJob(
   config: CloudConfig,
   stats: { seen: number; ingested: number; excluded: number; qualified: number; errors: number },
 ) {
-  if (!config.automationEnabled) return false;
+  if (!config.automationEnabled) return { worked: false, reason: "outreach_paused" as const, nextAt: null, message: null, username: null };
   const next = await cloud.nextJob(identity.worker_id);
-  if (!next.job) return false;
+  if (!next.job) {
+    return {
+      worked: false,
+      reason: next.reason ?? "no_queued_jobs",
+      nextAt: next.nextAt ?? null,
+      message: next.message ?? null,
+      username: null,
+    };
+  }
   const job = next.job;
   await beat(cloud, identity, `executing_${job.type}`, stats, true, true, undefined, job.instagramUsername, null);
   await cloud.startJob(job.id, identity.worker_id);
   try {
     const result = await executeJob(page, job);
     await settleExecution(cloud, identity.worker_id, job, result);
-    return true;
+    return { worked: true, reason: null, nextAt: null, message: null, username: job.instagramUsername };
   } catch (error) {
     if (error instanceof AttentionError) {
       await reportFailure(cloud, identity.worker_id, job.id, error.code, error.message, false);
@@ -385,7 +418,7 @@ async function runOneJob(
     }
     if (error instanceof NavigationError) {
       await reportFailure(cloud, identity.worker_id, job.id, error.code, error.message, job.type === "verify_profile");
-      return true;
+      return { worked: true, reason: null, nextAt: null, message: null, username: job.instagramUsername };
     }
     const message = error instanceof Error ? error.message : "The browser action failed.";
     await saveErrorScreenshot(page, job.type).catch(() => undefined);
@@ -398,7 +431,7 @@ async function runOneJob(
       message,
       retryable,
     );
-    return true;
+    return { worked: true, reason: null, nextAt: null, message: null, username: job.instagramUsername };
   }
 }
 

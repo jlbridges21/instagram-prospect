@@ -10,9 +10,9 @@ export async function GET(request: Request) {
   const admin = createAdminClient();
   if (!admin) return workerError(500, "Worker API is not configured.");
 
-  const settingsColumns = "worker_enabled, heartbeat_interval_seconds, max_active_workers, preferred_browser, automation_enabled, discovery_enabled, max_profiles_per_session, max_profiles_per_hour, discovery_scroll_delay_seconds, discovery_duplicate_cooldown_days, home_feed_enabled, suggested_accounts_enabled, discovery_source_priority, candidate_queue_target, profile_inspection_concurrency";
+  const settingsColumns = "worker_enabled, heartbeat_interval_seconds, max_active_workers, preferred_browser, automation_enabled, discovery_enabled, max_profiles_per_session, max_profiles_per_hour, discovery_scroll_delay_seconds, discovery_duplicate_cooldown_days, home_feed_enabled, suggested_accounts_enabled, discovery_source_priority, candidate_queue_target, profile_inspection_concurrency, discovery_review_target, discovery_session_inspection_cap, discovery_daily_inspection_cap, discovery_daily_ai_cap, discovery_stop_reason";
   let settingsResult = await admin.from("settings").select(settingsColumns).eq("id", 1).maybeSingle();
-  if (settingsResult.error && /home_feed_enabled|discovery_source_priority|candidate_queue_target/i.test(settingsResult.error.message)) {
+  if (settingsResult.error && /home_feed_enabled|discovery_source_priority|candidate_queue_target|discovery_review_target/i.test(settingsResult.error.message)) {
     settingsResult = await admin
       .from("settings")
       .select("worker_enabled, heartbeat_interval_seconds, max_active_workers, preferred_browser, automation_enabled, discovery_enabled, max_profiles_per_session, max_profiles_per_hour, discovery_scroll_delay_seconds, discovery_duplicate_cooldown_days")
@@ -65,6 +65,11 @@ export async function GET(request: Request) {
     discoverySourcePriority: settings?.discovery_source_priority === "home_first" ? "home_first" : "suggested_first",
     candidateQueueTarget: settings?.candidate_queue_target ?? 10,
     profileInspectionConcurrency: 2,
+    reviewTarget: settings?.discovery_review_target ?? "unlimited",
+    sessionInspectionCap: settings?.discovery_session_inspection_cap ?? 1000,
+    dailyInspectionCap: settings?.discovery_daily_inspection_cap ?? 500,
+    dailyAiCap: settings?.discovery_daily_ai_cap ?? 300,
+    discoveryStopReason: settings?.discovery_stop_reason ?? null,
     workerVersion: "6",
     minSupportedWorkerVersion: "6",
   });
