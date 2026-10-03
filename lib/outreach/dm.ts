@@ -214,6 +214,46 @@ export function sendClickBudget(input: { gateOpen: boolean; sendAttempted: boole
   return 1;
 }
 
+export type SendGateInput = {
+  recipientConfirmed: boolean;
+  followOwnedBySequence: boolean;
+  existingConversation: boolean;
+  composerFound: boolean;
+  composerSemanticMatch: boolean;
+  sendAttempted: boolean;
+};
+
+export function sendGateDecision(input: SendGateInput) {
+  const checks: Array<[string, boolean]> = [
+    ["recipientConfirmed", input.recipientConfirmed],
+    ["followOwnedBySequence", input.followOwnedBySequence],
+    ["existingConversation", !input.existingConversation],
+    ["composerFound", input.composerFound],
+    ["composerSemanticMatch", input.composerSemanticMatch],
+    ["sendAttempted", !input.sendAttempted],
+  ];
+  const blockingGate = checks.find(([, passed]) => !passed)?.[0] ?? null;
+  return { allowed: blockingGate === null, blockingGate };
+}
+
+export function formatSendGate(input: SendGateInput) {
+  const decision = sendGateDecision(input);
+  const lines = [
+    "Pre-send gate:",
+    "",
+    `recipientConfirmed: ${input.recipientConfirmed ? "yes" : "no"}`,
+    `followOwnedBySequence: ${input.followOwnedBySequence ? "yes" : "no"}`,
+    `existingConversation: ${input.existingConversation ? "yes" : "no"}`,
+    `composerFound: ${input.composerFound ? "yes" : "no"}`,
+    `composerSemanticMatch: ${input.composerSemanticMatch ? "yes" : "no"}`,
+    `sendAttempted: ${input.sendAttempted ? "yes" : "no"}`,
+    "",
+    `Send allowed: ${decision.allowed ? "YES" : "NO"}`,
+  ];
+  if (decision.blockingGate) lines.push(`Blocking gate: ${decision.blockingGate}`);
+  return lines.join("\n");
+}
+
 export function composerReadyToSend(input: {
   recipientConfirmed: boolean;
   followOwnedBySequence: boolean;
@@ -222,14 +262,14 @@ export function composerReadyToSend(input: {
   semanticMatch: boolean;
   sendAttempted: boolean;
 }) {
-  return (
-    input.recipientConfirmed &&
-    input.followOwnedBySequence &&
-    !input.existingConversation &&
-    input.composerFound &&
-    input.semanticMatch &&
-    !input.sendAttempted
-  );
+  return sendGateDecision({
+    recipientConfirmed: input.recipientConfirmed,
+    followOwnedBySequence: input.followOwnedBySequence,
+    existingConversation: input.existingConversation,
+    composerFound: input.composerFound,
+    composerSemanticMatch: input.semanticMatch,
+    sendAttempted: input.sendAttempted,
+  }).allowed;
 }
 
 export function inspectMaySend() {
@@ -580,8 +620,21 @@ export function normalizeComposerForComparison(text: string) {
   return unified.replace(/^\n+|\n+$/g, "").replace(/^[ \t\f\v]+|[ \t\f\v]+$/g, "");
 }
 
+export function verifyComposerMessage(composerText: string, queuedMessage: string) {
+  const queuedNormalized = normalizeComposerForComparison(queuedMessage);
+  const composerNormalized = normalizeComposerForComparison(composerText);
+  return {
+    rawMatch: queuedMessage === composerText,
+    semanticMatch: queuedNormalized === composerNormalized,
+    queuedRaw: queuedMessage,
+    composerRaw: composerText,
+    queuedNormalized,
+    composerNormalized,
+  };
+}
+
 export function composerTextMatches(queued: string, composer: string) {
-  return normalizeComposerForComparison(queued) === normalizeComposerForComparison(composer);
+  return verifyComposerMessage(composer, queued).semanticMatch;
 }
 
 export function shouldClickSend(semanticMatch: boolean) {
@@ -611,8 +664,9 @@ export function normalizationDifferences(queued: string, composer: string) {
 }
 
 export function compareComposerText(queued: string, composer: string) {
-  const queuedNormalized = normalizeComposerForComparison(queued);
-  const composerNormalized = normalizeComposerForComparison(composer);
+  const verification = verifyComposerMessage(composer, queued);
+  const queuedNormalized = verification.queuedNormalized;
+  const composerNormalized = verification.composerNormalized;
   const left = Array.from(queuedNormalized);
   const right = Array.from(composerNormalized);
   let mismatch: { index: number; queued: string; composer: string } | null = null;
@@ -624,8 +678,8 @@ export function compareComposerText(queued: string, composer: string) {
     }
   }
   return {
-    rawMatch: queued === composer,
-    semanticMatch: queuedNormalized === composerNormalized,
+    rawMatch: verification.rawMatch,
+    semanticMatch: verification.semanticMatch,
     queuedLength: queued.length,
     composerLength: composer.length,
     queuedNormalizedLength: queuedNormalized.length,
@@ -635,31 +689,31 @@ export function compareComposerText(queued: string, composer: string) {
   };
 }
 
-export function formatComposerComparison(queued: string, composer: string) {
-  const compared = compareComposerText(queued, composer);
+export function formatVerifiedComposer(verification: ReturnType<typeof verifyComposerMessage>) {
+  const compared = compareComposerText(verification.queuedRaw, verification.composerRaw);
   const lines = [
-    `Queued raw length: ${compared.queuedLength}`,
-    `Composer raw length: ${compared.composerLength}`,
+    `Queued raw length: ${verification.queuedRaw.length}`,
+    `Composer raw length: ${verification.composerRaw.length}`,
     "",
     "Queued message:",
-    `length: ${compared.queuedLength}`,
-    `normalized length: ${compared.queuedNormalizedLength}`,
+    `length: ${verification.queuedRaw.length}`,
+    `normalized length: ${verification.queuedNormalized.length}`,
     "",
     "Composer:",
-    `length: ${compared.composerLength}`,
-    `normalized length: ${compared.composerNormalizedLength}`,
+    `length: ${verification.composerRaw.length}`,
+    `normalized length: ${verification.composerNormalized.length}`,
     "",
-    `Raw match: ${compared.rawMatch ? "yes" : "no"}`,
-    `Semantic normalized match: ${compared.semanticMatch ? "yes" : "no"}`,
-    `Raw comparison: ${compared.rawMatch ? "MATCH" : "DIFFERENT"}`,
-    `Normalized semantic comparison: ${compared.semanticMatch ? "MATCH" : "DIFFERENT"}`,
+    `Raw match: ${verification.rawMatch ? "yes" : "no"}`,
+    `Semantic normalized match: ${verification.semanticMatch ? "yes" : "no"}`,
+    `Raw comparison: ${verification.rawMatch ? "MATCH" : "DIFFERENT"}`,
+    `Normalized semantic comparison: ${verification.semanticMatch ? "MATCH" : "DIFFERENT"}`,
   ];
   if (compared.notes.length > 0) {
     lines.push("");
     lines.push("Normalization differences:");
     compared.notes.forEach((note) => lines.push(`- ${note}`));
   }
-  if (!compared.semanticMatch && compared.mismatch) {
+  if (!verification.semanticMatch && compared.mismatch) {
     lines.push("");
     lines.push(`First semantic mismatch at character ${compared.mismatch.index}:`);
     lines.push(`queued: ${compared.mismatch.queued}`);
@@ -667,11 +721,15 @@ export function formatComposerComparison(queued: string, composer: string) {
   }
   lines.push("");
   lines.push("Queued text:");
-  lines.push(queued);
+  lines.push(verification.queuedRaw);
   lines.push("");
   lines.push("Composer text:");
-  lines.push(composer);
+  lines.push(verification.composerRaw);
   return lines.join("\n");
+}
+
+export function formatComposerComparison(queued: string, composer: string) {
+  return formatVerifiedComposer(verifyComposerMessage(composer, queued));
 }
 
 export function sendAllowed(input: {

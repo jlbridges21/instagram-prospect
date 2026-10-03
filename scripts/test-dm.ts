@@ -17,15 +17,18 @@ import {
   selectPrimaryMessageAction,
   draftClearKeys,
   formatInitialComposer,
+  formatSendGate,
   inspectMaySend,
   readComposerSemanticText,
   sendConfirmation,
   sameActiveComposer,
   selectActiveMessageComposer,
   sendClickBudget,
+  sendGateDecision,
   sendRecoveryDecision,
   shouldClickSend,
   shouldInsertComposerText,
+  verifyComposerMessage,
   sequenceOwnsFollow,
   shouldMarkContacted,
   threadHasExactOutbound,
@@ -507,6 +510,50 @@ assert.equal(sendClickBudget({ gateOpen: true, sendAttempted: true, confirmation
 assert.equal(formatInitialComposer("queued-message"), "Initial composer:\nqueued message already present: YES");
 assert.equal(formatInitialComposer("empty"), "Initial composer:\nempty");
 assert.equal(formatInitialComposer("other-draft"), "Initial composer:\nnon-matching draft present");
+const lockedBody = `${"Hi vsiaerial ".repeat(20)}end`.slice(0, 321).padEnd(321, ".");
+assert.equal(lockedBody.length, 321);
+const identical = verifyComposerMessage(lockedBody, lockedBody);
+assert.equal(identical.rawMatch, true);
+assert.equal(identical.semanticMatch, true);
+const matchedGate = sendGateDecision({
+  recipientConfirmed: true,
+  followOwnedBySequence: true,
+  existingConversation: false,
+  composerFound: true,
+  composerSemanticMatch: identical.semanticMatch,
+  sendAttempted: false,
+});
+assert.equal(matchedGate.allowed, true);
+assert.equal(matchedGate.blockingGate, null);
+assert.match(formatSendGate({
+  recipientConfirmed: true,
+  followOwnedBySequence: true,
+  existingConversation: false,
+  composerFound: true,
+  composerSemanticMatch: identical.semanticMatch,
+  sendAttempted: false,
+}), /Send allowed: YES/);
+const crlf = verifyComposerMessage("Hello\r\nWorld", "Hello\nWorld");
+assert.equal(crlf.rawMatch, false);
+assert.equal(crlf.semanticMatch, true);
+assert.equal(sendGateDecision({
+  recipientConfirmed: true,
+  followOwnedBySequence: true,
+  existingConversation: false,
+  composerFound: true,
+  composerSemanticMatch: crlf.semanticMatch,
+  sendAttempted: false,
+}).allowed, true);
+assert.equal(sendGateDecision({
+  recipientConfirmed: true,
+  followOwnedBySequence: true,
+  existingConversation: false,
+  composerFound: true,
+  composerSemanticMatch: false,
+  sendAttempted: false,
+}).blockingGate, "composerSemanticMatch");
+assert.equal(shouldInsertComposerText(composerDraftDecision(lockedBody, lockedBody)), false);
+assert.equal(sendClickBudget({ gateOpen: matchedGate.allowed, sendAttempted: false, confirmationUncertain: false }), 1);
 assert.equal(sendRecoveryDecision({
   sendAttempted: true,
   exactOutboundPresent: false,

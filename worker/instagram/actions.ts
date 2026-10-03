@@ -14,17 +14,18 @@ import {
 } from "./interpret";
 import {
   type ActiveComposerCandidate,
-  compareComposerText,
   composerDraftDecision,
-  composerReadyToSend,
   confirmConversationRecipient,
   EXISTING_DRAFT_MISMATCH,
   type NavigationProvenance,
   detectComposer,
   draftClearKeys,
   formatComposerCandidates,
-  formatComposerComparison,
+  formatSendGate,
+  formatVerifiedComposer,
   normalizeComposerForComparison,
+  sendGateDecision,
+  verifyComposerMessage,
   DM_OPEN_POLL_MS,
   DM_OPEN_WINDOW_MS,
   selectPrimaryMessageAction,
@@ -352,18 +353,32 @@ export async function sendExactMessage(
     console.log(EXISTING_DRAFT_MISMATCH);
     return { sent: false, sendAttempted: false, existingDraftMismatch: true, profileExists: true };
   }
-  const comparison = compareComposerText(message, inserted.composerText);
-  const verified = composerReadyToSend({
+  const verification = verifyComposerMessage(inserted.composerText, message);
+  const gate = {
     recipientConfirmed: opened.recipient.confirmed,
     followOwnedBySequence: owned,
-    existingConversation: false,
-    composerFound: inserted.sameComposer,
-    semanticMatch: comparison.semanticMatch,
+    existingConversation: opened.existingConversation,
+    composerFound: inserted.composerSelected,
+    composerSemanticMatch: verification.semanticMatch,
     sendAttempted: prior?.sendAttempted === true,
-  });
-  if (!verified) {
-    console.log(formatComposerComparison(message, inserted.composerText));
-    return { sent: false, sendAttempted: false, composerTextMismatch: true, profileExists: true };
+  };
+  console.log(formatVerifiedComposer(verification));
+  console.log("");
+  console.log(formatSendGate(gate));
+  const decisionGate = sendGateDecision(gate);
+  if (!decisionGate.allowed) {
+    if (decisionGate.blockingGate === "composerSemanticMatch") {
+      return { sent: false, sendAttempted: false, composerTextMismatch: true, profileExists: true };
+    }
+    if (decisionGate.blockingGate === "existingConversation") return { sent: false, existingConversation: true, profileExists: true };
+    if (decisionGate.blockingGate === "sendAttempted") {
+      return { sent: false, manualReview: true, sendAttempted: true, ambiguousReason: "Send state from a previous attempt is uncertain.", profileExists: true };
+    }
+    if (decisionGate.blockingGate === "followOwnedBySequence") return { sent: false, preexistingFollow: true, profileExists: true };
+    if (decisionGate.blockingGate === "recipientConfirmed") {
+      return { sent: false, recipientUnconfirmed: true, sendAttempted: false, ambiguousReason: "Conversation recipient could not be confirmed.", profileExists: true };
+    }
+    return { sent: false, composerNotFound: true, sendAttempted: false, profileExists: true };
   }
   const send = page.getByRole("button", { name: /^Send$/ });
   await send.click({ timeout: ACTION_TIMEOUT_MS });
@@ -593,15 +608,13 @@ async function insertLockedMessage(page: Page, message: string, mode: "send" | "
     };
   }
   if (draft === "queued-message") {
-    const again = (await readActiveComposerText(page)) ?? "";
-    const after = await getActiveMessageComposer(page);
     return {
-      composerSelected: after.status === "selected",
+      composerSelected: true,
       focused: true,
       initiallyEmpty: false,
-      sameComposer: Boolean(after.selected && sameActiveComposer(before.selected, after.selected)),
+      sameComposer: true,
       method: "already-present",
-      composerText: again,
+      composerText: beforeText,
       beforeLength: beforeText.length,
       candidatesText,
       clearNote: "",
