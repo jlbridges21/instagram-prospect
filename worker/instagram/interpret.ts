@@ -9,6 +9,7 @@ import {
   selectPrimaryRelationship,
   usernameFromHref,
 } from "./parse";
+import { composerCandidatesFromSnapshot, detectComposer } from "../../lib/outreach/dm";
 import type { DomButton, DomLink, DomSnapshot, FeedCandidate, PageSignal, ProfileExtract } from "./types";
 
 export function pageSignal(dom: DomSnapshot): PageSignal {
@@ -227,11 +228,11 @@ function locationText(dom: DomSnapshot) {
 }
 
 export function hasMessageComposer(dom: DomSnapshot) {
-  return dom.textboxes.some((box) => /message/i.test(box.name));
+  return detectComposer(composerCandidatesFromSnapshot(dom)).found;
 }
 
 export function composerValue(dom: DomSnapshot) {
-  return dom.textboxes.find((box) => /message/i.test(box.name))?.value ?? "";
+  return detectComposer(composerCandidatesFromSnapshot(dom)).candidate?.value ?? "";
 }
 
 export function hasPriorConversation(dom: DomSnapshot, outgoing: string) {

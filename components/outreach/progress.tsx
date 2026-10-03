@@ -1,4 +1,6 @@
 import type { OutreachJobRow } from "@/lib/db/types";
+import { queueSendStatusLabel } from "@/lib/outreach/dm";
+import { queueFollowStatusLabel } from "@/lib/outreach/follow-confirm";
 import { latestJobsByType } from "@/lib/outreach/requeue";
 import { JOB_STATUS_LABELS, JOB_TYPE_LABELS } from "@/lib/outreach/types";
 import { cn } from "@/lib/utils/cn";
@@ -108,7 +110,7 @@ function detail(input: {
   if (input.stoppedForFollow && input.key === "send_message") return "Message was not queued to send.";
   if (input.key === "verify_profile" || input.key === "follow_profile" || input.key === "send_message") {
     if (!input.job) return input.cancelled ? "Not queued" : "Waiting";
-    return JOB_STATUS_LABELS[input.job.status];
+    return queueFollowStatusLabel(input.job) ?? queueSendStatusLabel(input.job) ?? JOB_STATUS_LABELS[input.job.status];
   }
   if (input.key === "contacted" && input.stoppedForFollow) return "Not contacted";
   if (input.state === "done") return "Done";

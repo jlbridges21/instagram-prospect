@@ -257,6 +257,58 @@ export const READ_DOM_SOURCE = `() => {
     });
     if (exactRelationshipHits.length >= 30) break;
   }
+  const exactMessage = (value) => {
+    const text = undouble(value || "");
+    if (/^message\\.\\.\\.$/i.test(text)) return "Message...";
+    if (/^message$/i.test(text)) return "Message";
+    return "";
+  };
+  const inNavigation = (el) => Boolean(el && el.closest && el.closest("nav, [role='navigation']"));
+  const messageActionHits = [];
+  for (const el of document.querySelectorAll("button, [role='button'], a, div, span")) {
+    const text = directText(el);
+    const aria = undouble(el.getAttribute("aria-label") || "");
+    const label = exactMessage(text) || exactMessage(aria);
+    if (!label) continue;
+    const nested = [...el.querySelectorAll("span, div, a, button")].some((child) => exactMessage(directText(child)) === label || exactMessage(child.getAttribute("aria-label") || "") === label);
+    if (nested) continue;
+    const box = boxOf(el);
+    if (!box) continue;
+    const ancestor = ancestorOf(el);
+    messageActionHits.push({
+      label,
+      tag: el.tagName.toLowerCase(),
+      role: (el.getAttribute("role") || "").toLowerCase(),
+      text: text.slice(0, 80),
+      ariaLabel: aria.slice(0, 80),
+      inSuggestion: inSuggested(el),
+      inNavigation: inNavigation(el),
+      inDialog: inDialog(el),
+      box,
+      ancestor: ancestor ? { tag: ancestor.tag, role: ancestor.role, box: ancestor.box } : null,
+    });
+    if (messageActionHits.length >= 30) break;
+  }
+  const composerCandidates = [...document.querySelectorAll("textarea, [role='textbox'], [contenteditable='true']")].slice(0, 15).map((box) => {
+    const rect = box.getBoundingClientRect();
+    const dialog = box.closest("[role='dialog']");
+    const inDirect = /\\/direct\\//.test(location.pathname);
+    return {
+      tag: box.tagName.toLowerCase(),
+      role: (box.getAttribute("role") || "").toLowerCase(),
+      ariaLabel: undouble(box.getAttribute("aria-label") || "").slice(0, 80),
+      placeholder: undouble(box.getAttribute("placeholder") || "").slice(0, 80),
+      contentEditable: box.getAttribute("contenteditable") === "true",
+      value: ("value" in box ? String(box.value || "") : (box.innerText || box.textContent || "")).trim().slice(0, 2000),
+      box: rect && rect.width >= 1 ? { x: Math.round(rect.x), y: Math.round(rect.y), width: Math.round(rect.width), height: Math.round(rect.height) } : null,
+      inConversation: Boolean(dialog) || inDirect || Boolean(box.closest("footer, form")),
+    };
+  });
+  const dialog = document.querySelector("[role='dialog']");
+  const directMain = /\\/direct\\//.test(location.pathname) ? document.querySelector("main") : null;
+  const headerRoot = dialog || directMain;
+  const headingNode = headerRoot ? headerRoot.querySelector("h1, h2, [role='heading']") : null;
+  const conversationHeader = headingNode ? undouble(headingNode.textContent || "").slice(0, 80) : "";
   const suggestedProfiles = suggestedProfileCards();
   return {
     url: location.href,
@@ -274,6 +326,9 @@ export const READ_DOM_SOURCE = `() => {
     headerButtons,
     relationshipCandidates,
     exactRelationshipHits,
+    messageActionHits,
+    composerCandidates,
+    conversationHeader,
     usernameBox: boxOf(heading),
     optionsBox: boxOf(options),
     metaDescription: meta ? (meta.getAttribute("content") || "").slice(0, 500) : null,

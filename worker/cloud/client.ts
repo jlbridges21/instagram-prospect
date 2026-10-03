@@ -44,6 +44,8 @@ export type JobPayload = {
   followClickAttempted?: boolean;
   executionStarted?: boolean;
   verifyNotFollowing?: boolean;
+  followCreatedBySequence?: boolean;
+  sendAttempted?: boolean;
 };
 
 export class CloudClient {
@@ -162,7 +164,7 @@ export class CloudClient {
       sequence?: {
         instagramUsername: string;
         message: string;
-        steps: Array<{ type: string; status: string; scheduledFor: string }>;
+        steps: Array<{ type: string; status: string; scheduledFor: string; result?: unknown }>;
       } | null;
     };
   }

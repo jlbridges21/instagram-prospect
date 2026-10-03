@@ -6,6 +6,7 @@ import { toast } from "sonner";
 import { cancelOutreach, rescheduleOutreachJob, retryOutreachJob } from "@/lib/actions/outreach";
 import type { FitLabel } from "@/lib/constants/prospects";
 import type { Json, OutreachJobRow } from "@/lib/db/types";
+import { queueSendStatusLabel } from "@/lib/outreach/dm";
 import { queueFollowStatusLabel } from "@/lib/outreach/follow-confirm";
 import {
   JOB_STATUS_LABELS,
@@ -415,10 +416,12 @@ function matchesTab(status: OutreachJobStatus, tab: TabId) {
 }
 
 function stepStatus(job: OutreachJobRow) {
-  return queueFollowStatusLabel(job) ?? JOB_STATUS_LABELS[job.status];
+  return queueFollowStatusLabel(job) ?? queueSendStatusLabel(job) ?? JOB_STATUS_LABELS[job.status];
 }
 
 function scheduleLabel(job: OutreachJobRow, timeZone: string, dateFormat: DateFormat) {
+  const sendLabel = queueSendStatusLabel(job);
+  if (sendLabel === "Needs recovery" || sendLabel === "Retry scheduled") return sendLabel;
   if (job.status === "running" || job.status === "claimed") return "In progress";
   return formatDateTime(job.scheduled_for, timeZone, dateFormat);
 }

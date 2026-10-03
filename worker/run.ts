@@ -3,11 +3,13 @@ import { createHeartbeatSession, mustHeartbeatBeforeClaim, safeHeartbeatError } 
 import { CloudClient, type CloudConfig, type JobPayload } from "./cloud/client";
 import { emptyEfficiency, formatEfficiency, runDiscoveryV2 } from "./discovery/v2";
 import { loadIdentity } from "./identity";
+import { sequenceOwnsFollow } from "../lib/outreach/dm";
 import { dryRunPlan, formatDryRun } from "../lib/outreach/dry-run-plan";
 import { recoverFollowDecision } from "../lib/outreach/follow-confirm";
 import {
   ensureHome,
   followProfile,
+  inspectDirectMessage,
   readProfile,
   saveErrorScreenshot,
   sendExactMessage,
@@ -82,6 +84,26 @@ export async function runWorker(mode: RunMode) {
   const { context, page } = await launchBrowser();
   console.log("✓ Chrome available");
   console.log("✓ Browser launched");
+  const inspectUsernameArg = inspectDmArgument();
+  if (inspectUsernameArg) {
+    try {
+      await ensureHome(page);
+      console.log("✓ Instagram authenticated");
+      const inspection = await inspectDirectMessage(page, inspectUsernameArg);
+      console.log(`@${inspectUsernameArg}`);
+      console.log(`Message action: ${inspection.messageAction ? "found" : "not found"}`);
+      console.log(`Conversation opened: ${inspection.conversationOpened ? "yes" : "no"}`);
+      console.log(`Conversation username: ${inspection.conversationUsername ?? "not confirmed"}`);
+      console.log(`Composer found: ${inspection.composerFound ? "yes" : "no"}`);
+      console.log(`Composer strategy: ${inspection.composerStrategy ?? "none"}`);
+      console.log("");
+      console.log("Nothing was typed or sent.");
+    } catch (error) {
+      console.log(error instanceof Error ? error.message : "The DM inspection failed.");
+    }
+    await context.close().catch(() => undefined);
+    return;
+  }
   const stats = { seen: 0, ingested: 0, excluded: 0, qualified: 0, errors: 0, hour: [] as number[] };
   const efficiency = emptyEfficiency();
   const live = {
@@ -269,19 +291,7 @@ async function runOneJob(
   await cloud.startJob(job.id, identity.worker_id);
   try {
     const result = await executeJob(page, job);
-    const outcome = result as { confirmation?: string; recoveredWithoutClick?: boolean };
-    if (outcome.confirmation === "uncertain") {
-      await reportFailure(
-        cloud,
-        identity.worker_id,
-        job.id,
-        "follow_confirmation_uncertain",
-        "Follow was clicked, but the result could not be confirmed.",
-        true,
-      );
-      return true;
-    }
-    await reportComplete(cloud, identity.worker_id, job.id, result);
+    await settleExecution(cloud, identity.worker_id, job, result);
     return true;
   } catch (error) {
     if (error instanceof AttentionError) {
@@ -325,7 +335,99 @@ async function executeJob(page: import("playwright").Page, job: JobPayload) {
     });
   }
   if (!job.message) throw new SelectorError("The send job did not include the locked message.");
-  return sendExactMessage(page, job.instagramUsername, job.message);
+  return sendExactMessage(page, job.instagramUsername, job.message, {
+    followCreatedBySequence: job.followCreatedBySequence === true,
+    sendAttempted: job.sendAttempted === true,
+  });
+}
+
+async function settleExecution(
+  cloud: CloudClient,
+  workerId: string,
+  job: JobPayload,
+  result: Record<string, unknown>,
+) {
+  const outcome = result as {
+    confirmation?: string;
+    recoveredWithoutClick?: boolean;
+    composerNotFound?: boolean;
+    manualReview?: boolean;
+  };
+  if (
+    job.type === "send_message" &&
+    result.sent === false &&
+    result.existingConversation !== true &&
+    result.dmUnavailable !== true &&
+    result.preexistingFollow !== true &&
+    result.profileExists !== false &&
+    result.composerNotFound !== true &&
+    result.manualReview !== true &&
+    result.confirmation !== "uncertain"
+  ) {
+    await reportFailure(
+      cloud,
+      workerId,
+      job.id,
+      "message_send_failed",
+      "The composer text did not match the queued message, so it was not sent.",
+      true,
+    );
+    console.log("The composer text did not match the queued message, so it was not sent.");
+    return "stop" as const;
+  }
+  if (outcome.composerNotFound) {
+    await reportFailure(
+      cloud,
+      workerId,
+      job.id,
+      "dm_composer_not_found",
+      `Could not find the message composer for @${job.instagramUsername}.`,
+      true,
+    );
+    console.log(`Could not find the message composer for @${job.instagramUsername}.`);
+    return "stop" as const;
+  }
+  if (outcome.manualReview) {
+    await reportFailure(
+      cloud,
+      workerId,
+      job.id,
+      "browser_error",
+      "Message state is ambiguous. Manual review required.",
+      false,
+    );
+    console.log("Message state is ambiguous. Manual review required.");
+    return "stop" as const;
+  }
+  if (outcome.confirmation === "uncertain" && job.type === "send_message") {
+    await reportFailure(
+      cloud,
+      workerId,
+      job.id,
+      "send_confirmation_uncertain",
+      "The send could not be confirmed. No second send was made.",
+      true,
+    );
+    console.log("Send confirmation is uncertain. No second send was made.");
+    return "stop" as const;
+  }
+  if (outcome.confirmation === "uncertain") {
+    await reportFailure(
+      cloud,
+      workerId,
+      job.id,
+      "follow_confirmation_uncertain",
+      "Follow was clicked, but the result could not be confirmed.",
+      true,
+    );
+    console.log(`Follow was clicked for @${job.instagramUsername}, but it still needs verification. No second click was made.`);
+    return "stop" as const;
+  }
+  if (outcome.recoveredWithoutClick) {
+    console.log(`Follow for @${job.instagramUsername} is already confirmed. No second click was made.`);
+  }
+  await reportComplete(cloud, workerId, job.id, result);
+  return "done" as const;
 }
 
 async function reportComplete(cloud: CloudClient, workerId: string, jobId: string, result: Record<string, unknown>) {
@@ -350,8 +452,9 @@ async function reportFailure(
   try {
     await cloud.failJob(jobId, workerId, body);
     forgetPending(jobId);
-  } catch {
+  } catch (error) {
     rememberPending({ jobId, workerId, kind: "fail", body, createdAt: new Date().toISOString() });
+    console.log(error instanceof Error ? error.message : "The job failure could not be recorded.");
   }
 }
 
@@ -423,6 +526,25 @@ async function runDryOutreach(cloud: CloudClient, page: import("playwright").Pag
     return;
   }
   const profile = await readProfile(page, sequence.instagramUsername);
+  const followStep = sequence.steps.find((step) => step.type === "follow_profile" && step.status === "completed");
+  const followCreatedBySequence = sequenceOwnsFollow(followStep?.result);
+  const base = dryRunPlan({
+    username: sequence.instagramUsername,
+    profileExists: profile.profileExists,
+    observedUsername: profile.profile.username,
+    relationship: profile.relationship,
+    message: sequence.message,
+    followCreatedBySequence,
+  });
+  let composerFound = false;
+  let existingConversation = false;
+  let composerChecked = false;
+  if (base.wouldOpenDm && followCreatedBySequence) {
+    const inspection = await inspectDirectMessage(page, sequence.instagramUsername);
+    composerFound = inspection.composerFound;
+    existingConversation = inspection.existingConversation;
+    composerChecked = true;
+  }
   console.log(
     formatDryRun({
       username: sequence.instagramUsername,
@@ -434,6 +556,10 @@ async function runDryOutreach(cloud: CloudClient, page: import("playwright").Pag
         observedUsername: profile.profile.username,
         relationship: profile.relationship,
         message: sequence.message,
+        followCreatedBySequence,
+        composerFound: composerChecked ? composerFound : undefined,
+        existingConversation,
+        composerChecked,
       }),
     }),
   );
@@ -501,23 +627,8 @@ async function runSingleOutreach(
     try {
       await cloud.startJob(current.id, identity.worker_id);
       const result = await executeJob(page, current);
-      const outcome = result as { confirmation?: string; recoveredWithoutClick?: boolean };
-      if (outcome.confirmation === "uncertain") {
-        await reportFailure(
-          cloud,
-          identity.worker_id,
-          current.id,
-          "follow_confirmation_uncertain",
-          "Follow was clicked, but the result could not be confirmed.",
-          true,
-        );
-        console.log(`Follow was clicked for @${current.instagramUsername}, but it still needs verification. No second click was made.`);
-        return;
-      }
-      if (outcome.recoveredWithoutClick) {
-        console.log(`Follow for @${current.instagramUsername} is already confirmed. No second click was made.`);
-      }
-      await reportComplete(cloud, identity.worker_id, current.id, result);
+      const settled = await settleExecution(cloud, identity.worker_id, current, result);
+      if (settled === "stop") return;
       console.log(`Completed ${current.type} for @${current.instagramUsername}.`);
       if (process.argv.includes("--recover-outreach") && current.type === "follow_profile") {
         console.log("Follow recovery finished. The message step was not started.");
@@ -541,6 +652,18 @@ async function runSingleOutreach(
   }
   console.log("Single outreach finished.");
   void stats;
+}
+
+function inspectDmArgument() {
+  const inline = process.argv.find((item) => item.startsWith("--inspect-dm="));
+  const raw = inline
+    ? inline.slice("--inspect-dm=".length)
+    : process.argv.includes("--inspect-dm")
+      ? process.argv[process.argv.indexOf("--inspect-dm") + 1]
+      : "";
+  const username = (raw || "").replace(/^@/, "").trim().toLowerCase();
+  if (!username) return null;
+  return /^[a-z0-9._]{1,30}$/.test(username) ? username : null;
 }
 
 export async function inspectUsername(rawUsername: string) {

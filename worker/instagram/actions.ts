@@ -6,13 +6,23 @@ import { AttentionError, SelectorError } from "./errors";
 import {
   composerValue,
   feedCandidates,
-  hasMessageComposer,
   hasPriorConversation,
   isAuthenticatedHome,
   messagingUnavailable,
   pageSignal,
   profileFromDom,
 } from "./interpret";
+import {
+  conversationMatchesProspect,
+  detectComposer,
+  DM_OPEN_POLL_MS,
+  DM_OPEN_WINDOW_MS,
+  selectPrimaryMessageAction,
+  SEND_CONFIRM_WINDOW_MS,
+  sendConfirmation,
+  sendRecoveryDecision,
+  threadHasExactOutbound,
+} from "../../lib/outreach/dm";
 import {
   confirmFollowAfterClick,
   isPreexistingFollow,
@@ -196,53 +206,262 @@ export async function followProfile(
   };
 }
 
-export async function sendExactMessage(page: Page, username: string, message: string) {
+export async function getPrimaryMessageAction(page: Page, username: string) {
+  await readProfile(page, username);
+  const dom = await readDom(page);
+  const choice = selectPrimaryMessageAction(dom.messageActionHits ?? [], dom.usernameBox);
+  return { ...choice, relationship: profileFromDom(dom, username).relationship, displayName: profileFromDom(dom, username).displayName };
+}
+
+export async function inspectDirectMessage(page: Page, username: string) {
   const current = await readProfile(page, username);
-  if (!current.profileExists) {
-    return { sent: false, profileExists: false };
+  const action = selectPrimaryMessageAction((await readDom(page)).messageActionHits ?? [], (await readDom(page)).usernameBox);
+  if (!action.found || !action.hit?.box) {
+    return {
+      relationship: current.relationship,
+      messageAction: false,
+      conversationOpened: false,
+      conversationUsername: null as string | null,
+      composerFound: false,
+      composerStrategy: null as string | null,
+      existingConversation: false,
+      profileExists: current.profileExists,
+    };
   }
+  const clicked = await clickMessageHit(page, action.hit.box);
+  if (!clicked) {
+    return {
+      relationship: current.relationship,
+      messageAction: false,
+      conversationOpened: false,
+      conversationUsername: null,
+      composerFound: false,
+      composerStrategy: null,
+      existingConversation: false,
+      profileExists: current.profileExists,
+    };
+  }
+  const opened = await waitForDirect(page, username, current.profile.displayName);
+  return {
+    relationship: current.relationship,
+    messageAction: true,
+    conversationOpened: opened.opened,
+    conversationUsername: opened.matches ? username : null,
+    composerFound: opened.composerFound,
+    composerStrategy: opened.composerStrategy,
+    existingConversation: opened.existingConversation,
+    profileExists: current.profileExists,
+  };
+}
+
+export async function sendExactMessage(
+  page: Page,
+  username: string,
+  message: string,
+  prior?: { followCreatedBySequence?: boolean; sendAttempted?: boolean },
+) {
+  const current = await readProfile(page, username);
+  if (!current.profileExists) return { sent: false, profileExists: false };
   if (current.profile.username && current.profile.username !== username.toLowerCase()) {
     throw new SelectorError(`The open profile is @${current.profile.username}, not @${username}.`);
   }
   if (!message.trim()) throw new SelectorError("The send job did not include the locked message.");
-  if (current.relationship === "requested") {
-    return { sent: false, dmUnavailable: true, profileExists: true };
+  const owned = prior?.followCreatedBySequence === true;
+  if ((current.relationship === "following" || current.relationship === "requested") && !owned) {
+    return { sent: false, preexistingFollow: true, profileExists: true };
   }
-  if (current.relationship !== "following") {
+  if (current.relationship !== "following" && current.relationship !== "requested") {
     throw new SelectorError(`@${username} is not followed by this outreach sequence, so the message was not sent.`);
   }
-  const messageButton = page.getByRole("button", { name: /^Message$/ });
-  if ((await messageButton.count()) === 0) {
-    const dom = await readDom(page);
-    if (messagingUnavailable(dom)) return { sent: false, dmUnavailable: true };
-    throw new SelectorError(`Could not find the message control for @${username}.`);
+  const dom = await readDom(page);
+  if (messagingUnavailable(dom)) return { sent: false, dmUnavailable: true, profileExists: true };
+  const action = selectPrimaryMessageAction(dom.messageActionHits ?? [], dom.usernameBox);
+  if (!action.found || !action.hit?.box) {
+    await saveComposerDebug(page, username, dom);
+    return { sent: false, composerNotFound: true, sendAttempted: false, profileExists: true };
   }
-  await messageButton.click({ timeout: ACTION_TIMEOUT_MS });
-  const opened = await readDom(page);
-  const openedSignal = pageSignal(opened);
-  if (openedSignal === "instagram_checkpoint" || openedSignal === "action_blocked" || openedSignal === "rate_limited" || openedSignal === "login_required") {
-    throw new AttentionError(openedSignal, attentionMessage(openedSignal));
+  const clicked = await clickMessageHit(page, action.hit.box);
+  if (!clicked) {
+    await saveComposerDebug(page, username, dom);
+    return { sent: false, composerNotFound: true, sendAttempted: false, profileExists: true };
   }
-  if (hasPriorConversation(opened, message)) {
-    return { sent: false, existingConversation: true };
+  const opened = await waitForDirect(page, username, current.profile.displayName, message);
+  if (opened.signal) throw new AttentionError(opened.signal, attentionMessage(opened.signal));
+  if (opened.exactOutbound) return { sent: true, alreadyPresent: true, profileExists: true };
+  const decision = sendRecoveryDecision({
+    sendAttempted: prior?.sendAttempted === true,
+    exactOutboundPresent: opened.exactOutbound,
+    composerFound: opened.composerFound,
+    priorConversation: opened.existingConversation,
+    conversationMatches: opened.matches,
+  });
+  if (decision.action === "review") return { sent: false, manualReview: true, sendAttempted: prior?.sendAttempted === true };
+  if (decision.action === "existing_conversation") return { sent: false, existingConversation: true };
+  if (decision.action === "retry_composer" || !opened.composerStrategy) {
+    await saveComposerDebug(page, username, opened.dom);
+    return { sent: false, composerNotFound: true, sendAttempted: false, profileExists: true };
   }
-  if (!hasMessageComposer(opened)) {
-    throw new SelectorError(`Could not find the message composer for @${username}.`);
-  }
-  const box = page.getByRole("textbox", { name: /message/i });
-  await box.fill(message, { timeout: ACTION_TIMEOUT_MS });
-  const typed = await readDom(page);
-  if (composerValue(typed) !== message) {
-    throw new SelectorError("The composer text did not match the queued message, so it was not sent.");
+  const typed = await writeComposer(page, opened.composerStrategy, message);
+  if (typed !== message) {
+    return { sent: false, sendAttempted: false, profileExists: true };
   }
   const send = page.getByRole("button", { name: /^Send$/ });
   await send.click({ timeout: ACTION_TIMEOUT_MS });
-  const confirmed = await readDom(page);
-  const inThread = confirmed.threadMessages.some((item) => item.trim() === message.trim());
-  if (!inThread || composerValue(confirmed) === message) {
-    throw new SelectorError("The message click did not show a confirmed thread entry.");
+  const confirmed = await confirmSend(page, message);
+  if (confirmed === "confirmed") return { sent: true, profileExists: true };
+  return { sent: false, sendAttempted: true, confirmation: "uncertain" as const, profileExists: true };
+}
+
+const CLICK_MESSAGE_SOURCE = `({ x, y }) => {
+  const nodes = [...document.querySelectorAll("button, [role='button'], a, span, div")];
+  let best = null;
+  let bestDistance = 48;
+  for (const el of nodes) {
+    const aria = (el.getAttribute("aria-label") || "").trim();
+    const text = (el.innerText || el.textContent || "").trim().replace(/\\s+/g, " ");
+    if (!/^message(?:\\.\\.\\.)?$/i.test(aria) && !/^message(?:\\.\\.\\.)?$/i.test(text)) continue;
+    if (el.closest("nav, [role='navigation']")) continue;
+    const rect = el.getBoundingClientRect();
+    const distance = Math.hypot((rect.x + rect.width / 2) - x, (rect.y + rect.height / 2) - y);
+    if (distance <= bestDistance) {
+      best = el;
+      bestDistance = distance;
+    }
   }
-  return { sent: true };
+  if (!best) return false;
+  let target = best;
+  for (let depth = 0; target && depth < 6; depth += 1) {
+    const tag = target.tagName.toLowerCase();
+    const role = (target.getAttribute("role") || "").toLowerCase();
+    if (tag === "button" || role === "button" || tag === "a") break;
+    target = target.parentElement;
+  }
+  (target || best).click();
+  return true;
+}`;
+
+const WRITE_COMPOSER_SOURCE = `({ strategy, text }) => {
+  const nodes = [...document.querySelectorAll("textarea, [role='textbox'], [contenteditable='true']")];
+  const node = nodes.find((box) => {
+    const tag = box.tagName.toLowerCase();
+    const role = (box.getAttribute("role") || "").toLowerCase();
+    const label = box.getAttribute("aria-label") || "";
+    const placeholder = box.getAttribute("placeholder") || "";
+    const editable = box.getAttribute("contenteditable") === "true";
+    if (strategy === "textarea-placeholder-message") return tag === "textarea" && /message/i.test(placeholder + " " + label);
+    if (strategy === "role-textbox-contenteditable") return role === "textbox" && editable;
+    if (strategy === "aria-label-message") return /message/i.test(label);
+    return editable;
+  });
+  if (!node) return "";
+  node.focus();
+  if (node.tagName.toLowerCase() === "textarea") {
+    const descriptor = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, "value");
+    if (descriptor && descriptor.set) descriptor.set.call(node, text);
+    else node.value = text;
+    node.dispatchEvent(new Event("input", { bubbles: true }));
+    return node.value;
+  }
+  node.textContent = text;
+  node.dispatchEvent(new InputEvent("input", { bubbles: true, data: text, inputType: "insertText" }));
+  return (node.innerText || node.textContent || "").trim();
+}`;
+
+async function clickMessageHit(page: Page, box: { x: number; y: number; width: number; height: number }) {
+  const click = new Function(`return (${CLICK_MESSAGE_SOURCE})`)() as (payload: { x: number; y: number }) => boolean;
+  return page.evaluate(click, { x: box.x + box.width / 2, y: box.y + box.height / 2 });
+}
+
+async function writeComposer(page: Page, strategy: string, message: string) {
+  const write = new Function(`return (${WRITE_COMPOSER_SOURCE})`)() as (payload: { strategy: string; text: string }) => string;
+  return page.evaluate(write, { strategy, text: message });
+}
+
+async function waitForDirect(page: Page, username: string, displayName: string | null, locked = "") {
+  const started = Date.now();
+  let dom = await readDom(page);
+  let composerReadyAt: number | null = null;
+  while (Date.now() - started <= DM_OPEN_WINDOW_MS) {
+    const signal = pageSignal(dom);
+    if (signal === "instagram_checkpoint" || signal === "action_blocked" || signal === "rate_limited" || signal === "login_required") {
+      return { signal, opened: false, matches: false, composerFound: false, composerStrategy: null, existingConversation: false, exactOutbound: false, dom };
+    }
+    const composer = detectComposer(dom.composerCandidates ?? []);
+    const matches = conversationMatchesProspect({
+      url: dom.url,
+      header: dom.conversationHeader ?? "",
+      username,
+      displayName,
+    });
+    const exactOutbound = threadHasExactOutbound(dom.threadMessages, locked);
+    const existingConversation = hasPriorConversation(dom, locked);
+    if (composer.found && (exactOutbound || existingConversation || (composerReadyAt !== null && Date.now() - composerReadyAt >= 2_000))) {
+      return {
+        signal: null,
+        opened: true,
+        matches,
+        composerFound: true,
+        composerStrategy: composer.strategy,
+        existingConversation,
+        exactOutbound,
+        dom,
+      };
+    }
+    if (composer.found && composerReadyAt === null) composerReadyAt = Date.now();
+    if (Date.now() - started >= DM_OPEN_WINDOW_MS) break;
+    await page.waitForTimeout(DM_OPEN_POLL_MS);
+    dom = await readDom(page);
+  }
+  const composer = detectComposer(dom.composerCandidates ?? []);
+  return {
+    signal: null,
+    opened: composer.found || dom.url.includes("/direct/"),
+    matches: conversationMatchesProspect({ url: dom.url, header: dom.conversationHeader ?? "", username, displayName }),
+    composerFound: composer.found,
+    composerStrategy: composer.strategy,
+    existingConversation: hasPriorConversation(dom, locked),
+    exactOutbound: threadHasExactOutbound(dom.threadMessages, locked),
+    dom,
+  };
+}
+
+async function confirmSend(page: Page, message: string) {
+  const started = Date.now();
+  while (Date.now() - started <= SEND_CONFIRM_WINDOW_MS) {
+    const dom = await readDom(page);
+    if (threadHasExactOutbound(dom.threadMessages, message) || sendConfirmation({ composerText: composerValue(dom), threadMessages: dom.threadMessages, locked: message }) === "confirmed") {
+      return "confirmed" as const;
+    }
+    if (Date.now() - started >= SEND_CONFIRM_WINDOW_MS) break;
+    await page.waitForTimeout(DM_OPEN_POLL_MS);
+  }
+  return "uncertain" as const;
+}
+
+async function saveComposerDebug(page: Page, username: string, dom: DomSnapshot) {
+  const url = dom.url || page.url();
+  if (url.includes("/accounts/login") || url.includes("/challenge/")) return;
+  fs.mkdirSync(debugDir(), { recursive: true });
+  const base = path.join(debugDir(), `dm-${username}-composer-missing`);
+  await page.screenshot({ path: `${base}.png`, fullPage: false }).catch(() => undefined);
+  const safe = {
+    url,
+    conversationHeader: dom.conversationHeader ?? "",
+    buttons: (dom.buttons ?? []).slice(0, 30).map((button) => ({ name: button.name.slice(0, 80) })),
+    composers: (dom.composerCandidates ?? []).map((candidate) => ({
+      tag: candidate.tag,
+      role: candidate.role,
+      ariaLabel: candidate.ariaLabel,
+      placeholder: candidate.placeholder,
+      contentEditable: candidate.contentEditable,
+      box: candidate.box,
+    })),
+    textboxes: (dom.textboxes ?? []).map((box) => ({
+      tag: "textbox",
+      ariaLabel: box.name,
+    })),
+  };
+  fs.writeFileSync(`${base}.json`, JSON.stringify(safe, null, 2));
 }
 
 export async function previewOutreach(page: Page, username: string, message: string | null) {
@@ -258,26 +477,7 @@ export async function previewOutreach(page: Page, username: string, message: str
     existingConversation: false,
     message: message ?? "",
   };
-  if (!current.profileExists || !message) return report;
-  const messageButton = page.getByRole("button", { name: /^Message$/ });
-  if ((await messageButton.count()) === 0) return report;
-  await messageButton.click({ timeout: ACTION_TIMEOUT_MS });
-  const opened = await readDom(page);
-  const openedSignal = pageSignal(opened);
-  if (openedSignal === "instagram_checkpoint" || openedSignal === "action_blocked" || openedSignal === "rate_limited" || openedSignal === "login_required") {
-    throw new AttentionError(openedSignal, attentionMessage(openedSignal));
-  }
-  if (hasPriorConversation(opened, message)) {
-    return { ...report, existingConversation: true, wouldSend: false };
-  }
-  if (!hasMessageComposer(opened)) return report;
-  const box = page.getByRole("textbox", { name: /message/i });
-  await box.fill(message, { timeout: ACTION_TIMEOUT_MS });
-  const typed = await readDom(page);
-  return {
-    ...report,
-    wouldSend: composerValue(typed) === message && current.relationship === "not_following",
-  };
+  return report;
 }
 
 export async function scrollFeed(page: Page) {

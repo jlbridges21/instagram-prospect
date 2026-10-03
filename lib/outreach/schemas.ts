@@ -24,6 +24,8 @@ export const sendResultSchema = z.object({
   existingConversation: z.boolean().optional(),
   dmUnavailable: z.boolean().optional(),
   profileExists: z.boolean().optional(),
+  preexistingFollow: z.boolean().optional(),
+  alreadyPresent: z.boolean().optional(),
 });
 
 export const failJobSchema = z.object({

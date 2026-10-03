@@ -39,6 +39,28 @@ export type ExactRelationshipHit = {
 };
 export type DomImage = { alt: string; src: string };
 export type DomTextbox = { name: string; value: string };
+export type ComposerCandidate = {
+  tag: string;
+  role: string;
+  ariaLabel: string;
+  placeholder: string;
+  contentEditable: boolean;
+  value: string;
+  box: { x: number; y: number; width: number; height: number } | null;
+  inConversation: boolean;
+};
+export type MessageActionHit = {
+  label: string;
+  tag: string;
+  role: string;
+  text: string;
+  ariaLabel: string;
+  inSuggestion: boolean;
+  inNavigation: boolean;
+  inDialog: boolean;
+  box: ElementBox | null;
+  ancestor: { tag: string; role: string; box: ElementBox | null } | null;
+};
 export type DomArticle = { text: string; links: DomLink[] };
 
 export type DomSnapshot = {
@@ -57,6 +79,9 @@ export type DomSnapshot = {
   headerButtons?: DomButton[];
   relationshipCandidates?: RelationshipCandidate[];
   exactRelationshipHits?: ExactRelationshipHit[];
+  messageActionHits?: MessageActionHit[];
+  composerCandidates?: ComposerCandidate[];
+  conversationHeader?: string;
   usernameBox?: ElementBox | null;
   optionsBox?: ElementBox | null;
   metaDescription?: string | null;

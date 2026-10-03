@@ -72,7 +72,7 @@ export async function previewProspectSequence(admin: Client) {
 
   const jobs = await admin
     .from("outreach_jobs")
-    .select("job_type, status, scheduled_for, idempotency_key, created_at")
+    .select("job_type, status, scheduled_for, idempotency_key, created_at, result")
     .eq("prospect_id", prospect.data.id);
   if (jobs.error) return { ok: false as const, error: "Could not read the prospect sequence." };
 
@@ -94,6 +94,7 @@ export async function previewProspectSequence(admin: Client) {
         type: job.job_type,
         status: job.status,
         scheduledFor: job.scheduled_for,
+        result: job.result,
       })),
     },
   };

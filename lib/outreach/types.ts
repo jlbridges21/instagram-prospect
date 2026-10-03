@@ -34,6 +34,8 @@ export const WORKER_ERROR_CODES = [
   "action_blocked",
   "preexisting_follow",
   "follow_confirmation_uncertain",
+  "dm_composer_not_found",
+  "send_confirmation_uncertain",
 ] as const;
 
 export type WorkerErrorCode = (typeof WORKER_ERROR_CODES)[number];

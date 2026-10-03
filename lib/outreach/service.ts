@@ -7,6 +7,7 @@ import type { Database, Json, OutreachJobRow, ProspectRow } from "@/lib/db/types
 import type { AppSettings, TargetingSettings } from "@/lib/db/models";
 import { isMissingRelation } from "@/lib/db/errors";
 import { outreachBlockReason } from "@/lib/outreach/eligibility";
+import { sendWasAttempted, sequenceOwnsFollow } from "@/lib/outreach/dm";
 import {
   expiredFollowNeedsStamp,
   followClickWasAttempted,
@@ -288,6 +289,18 @@ export async function claimNextJob(input: {
   if (resumed) {
     return { ok: true as const, reason: null, message: null, nextAt: null, job: resumed };
   }
+  if (!input.recoverOnly) {
+    const resumedSend = await resumeOwnedSend(
+      input.admin,
+      input.workerId,
+      now,
+      input.settings.outreach.claimLeaseSeconds,
+      input.prospectId,
+    );
+    if (resumedSend) {
+      return { ok: true as const, reason: null, message: null, nextAt: null, job: resumedSend };
+    }
+  }
   if (input.recoverOnly) {
     return {
       ok: true as const,
@@ -341,7 +354,14 @@ export async function claimNextJob(input: {
     reason: null,
     message: null,
     nextAt: null,
-    job: publicJob(jobId, jobType, prospect.data, await followContext(input.admin, prospectId, claimed.data.result, typeof claimed.data.started_at === "string" ? claimed.data.started_at : null)),
+    job: publicJob(
+      jobId,
+      jobType,
+      prospect.data,
+      jobType === "send_message"
+        ? await sendContext(input.admin, prospectId, claimed.data.result)
+        : await followContext(input.admin, prospectId, claimed.data.result, typeof claimed.data.started_at === "string" ? claimed.data.started_at : null),
+    ),
   };
 }
 
@@ -418,7 +438,13 @@ function publicJob(
     profile_url: string | null;
     queued_message_text: string | null;
   },
-  follow?: { followClickAttempted: boolean; executionStarted: boolean; verifyNotFollowing: boolean } | null,
+  follow?: {
+    followClickAttempted?: boolean;
+    executionStarted?: boolean;
+    verifyNotFollowing?: boolean;
+    followCreatedBySequence?: boolean;
+    sendAttempted?: boolean;
+  } | null,
 ) {
   const base = {
     id: jobId,
@@ -427,9 +453,21 @@ function publicJob(
     instagramUsername: prospect.instagram_username,
     profileUrl: profileUrlForUsername(prospect.instagram_username, prospect.profile_url),
   };
-  if (jobType === "follow_profile") return { ...base, ...(follow ?? {}) };
+  if (jobType === "follow_profile") {
+    return {
+      ...base,
+      followClickAttempted: follow?.followClickAttempted === true,
+      executionStarted: follow?.executionStarted === true,
+      verifyNotFollowing: follow?.verifyNotFollowing === true,
+    };
+  }
   if (jobType !== "send_message") return base;
-  return { ...base, message: prospect.queued_message_text ?? "" };
+  return {
+    ...base,
+    message: prospect.queued_message_text ?? "",
+    followCreatedBySequence: follow?.followCreatedBySequence === true,
+    sendAttempted: follow?.sendAttempted === true,
+  };
 }
 
 async function followContext(admin: Client, prospectId: string, result: unknown, startedAt: string | null) {
@@ -453,6 +491,21 @@ async function followContext(admin: Client, prospectId: string, result: unknown,
     followClickAttempted,
     executionStarted: Boolean(startedAt) || followClickAttempted,
     verifyNotFollowing,
+  };
+}
+
+async function sendContext(admin: Client, prospectId: string, result: unknown) {
+  const follow = await admin
+    .from("outreach_jobs")
+    .select("result")
+    .eq("prospect_id", prospectId)
+    .eq("job_type", "follow_profile")
+    .eq("status", "completed")
+    .order("completed_at", { ascending: false })
+    .limit(1);
+  return {
+    followCreatedBySequence: sequenceOwnsFollow(follow.data?.[0]?.result),
+    sendAttempted: sendWasAttempted(result),
   };
 }
 
@@ -528,6 +581,72 @@ async function resumeOwnedFollow(
     if (reclaimed.data) return publishFollowJob(admin, reclaimed.data);
   }
   return null;
+}
+
+async function resumeOwnedSend(
+  admin: Client,
+  workerId: string,
+  now: Date,
+  leaseSeconds: number,
+  prospectId?: string | null,
+) {
+  let request = admin
+    .from("outreach_jobs")
+    .select("*")
+    .eq("job_type", "send_message")
+    .in("status", ["running", "claimed"])
+    .order("started_at", { ascending: true })
+    .limit(20);
+  if (prospectId) request = request.eq("prospect_id", prospectId);
+  const listed = await request;
+  if (listed.error || !listed.data?.length) return null;
+  const open = listed.data.filter((job) => {
+    const decision = staleReclaimDecision(
+      {
+        id: job.id,
+        status: job.status,
+        claimedBy: job.claimed_by_worker_id,
+        claimedAt: job.claimed_at,
+        claimExpiresAt: job.claim_expires_at,
+      },
+      now,
+      workerId,
+    );
+    return decision.ok;
+  });
+  const expired = open.filter((job) => new Date(job.claim_expires_at ?? 0).getTime() <= now.getTime());
+  const current = open.find((job) => job.claimed_by_worker_id === workerId && !expired.includes(job));
+  if (current) return publishSendJob(admin, current);
+  for (const job of expired) {
+    const reclaimed = await admin
+      .from("outreach_jobs")
+      .update({
+        status: "claimed",
+        claimed_by_worker_id: workerId,
+        claimed_at: now.toISOString(),
+        claim_expires_at: new Date(now.getTime() + leaseSeconds * 1000).toISOString(),
+      })
+      .eq("id", job.id)
+      .in("status", ["running", "claimed"])
+      .lte("claim_expires_at", now.toISOString())
+      .select("*")
+      .maybeSingle();
+    if (reclaimed.data) return publishSendJob(admin, reclaimed.data);
+  }
+  return null;
+}
+
+async function publishSendJob(
+  admin: Client,
+  job: { id: string; prospect_id: string; result: unknown },
+) {
+  const prospect = await admin
+    .from("prospects")
+    .select("id, instagram_username, profile_url, queued_message_text")
+    .eq("id", job.prospect_id)
+    .maybeSingle();
+  if (prospect.error || !prospect.data) return null;
+  return publicJob(job.id, "send_message", prospect.data, await sendContext(admin, job.prospect_id, job.result));
 }
 
 async function publishFollowJob(
@@ -727,6 +846,18 @@ async function completeFollow(admin: Client, job: OutreachJobRow, result: unknow
 async function completeSend(admin: Client, job: OutreachJobRow, result: unknown, now: Date) {
   const parsed = sendResultSchema.safeParse(result);
   if (!parsed.success) return { ok: false as const, error: "Send result was invalid.", status: 400 };
+  if (parsed.data.preexistingFollow) {
+    const failed = await failOwnedJob(admin, job, {
+      workerId: job.claimed_by_worker_id ?? "",
+      errorCode: "preexisting_follow",
+      errorMessage: "This account was already followed before outreach, so the message was not sent.",
+      retryable: false,
+      now,
+    });
+    if (!failed.ok) return failed;
+    await admin.from("prospects").update({ outreach_cancelled_at: now.toISOString() }).eq("id", job.prospect_id);
+    return { ok: true as const };
+  }
   if (parsed.data.existingConversation) {
     const failed = await failOwnedJob(admin, job, {
       workerId: job.claimed_by_worker_id ?? "",
@@ -884,6 +1015,31 @@ async function failOwnedJob(
     now: Date;
   },
 ) {
+  if (input.errorCode === "send_confirmation_uncertain" && input.retryable) {
+    const prior = job.result && typeof job.result === "object" && !Array.isArray(job.result) ? job.result : {};
+    const { error } = await admin
+      .from("outreach_jobs")
+      .update({
+        status: "retry_wait",
+        last_error: "send_confirmation_uncertain",
+        result: { ...prior, sendAttempted: true, confirmation: "uncertain", error_code: input.errorCode },
+        available_at: input.now.toISOString(),
+        claimed_by_worker_id: null,
+        claimed_at: null,
+        claim_expires_at: null,
+        failed_at: null,
+      })
+      .eq("id", job.id);
+    if (error) return { ok: false as const, error: "Could not record the job failure." };
+    await logActivity(admin, {
+      prospectId: job.prospect_id,
+      eventType: "worker_job_failed",
+      description: "The message may have been sent, but it was not confirmed. It will not be sent again until the thread is checked.",
+      metadata: { jobId: job.id, errorCode: input.errorCode },
+    });
+    return { ok: true as const, status: "retry_wait" as const, attemptCount: job.attempt_count };
+  }
+
   if (input.errorCode === "follow_confirmation_uncertain") {
     const prior = job.result && typeof job.result === "object" && !Array.isArray(job.result) ? job.result : {};
     const { error } = await admin
@@ -914,7 +1070,7 @@ async function failOwnedJob(
     maxAttempts: job.max_attempts,
     retryable: input.retryable,
   });
-  const errorText = clipError(input.errorMessage);
+  const errorText = input.errorCode === "dm_composer_not_found" ? "dm_composer_not_found" : clipError(input.errorMessage);
   const availableAt =
     plan.delayMinutes === null
       ? null
@@ -932,7 +1088,7 @@ async function failOwnedJob(
       claimed_at: null,
       claim_expires_at: null,
       started_at: null,
-      result: { error_code: input.errorCode },
+      result: { error_code: input.errorCode, sendAttempted: false },
     })
     .eq("id", job.id);
   if (error) return { ok: false as const, error: "Could not record the job failure." };
