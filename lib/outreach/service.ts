@@ -7,7 +7,12 @@ import type { Database, Json, OutreachJobRow, ProspectRow } from "@/lib/db/types
 import type { AppSettings, TargetingSettings } from "@/lib/db/models";
 import { isMissingRelation } from "@/lib/db/errors";
 import { outreachBlockReason } from "@/lib/outreach/eligibility";
-import { expiredFollowNeedsStamp, followClickWasAttempted, uncertainFollowResult } from "@/lib/outreach/follow-confirm";
+import {
+  expiredFollowNeedsStamp,
+  followClickWasAttempted,
+  staleReclaimDecision,
+  uncertainFollowResult,
+} from "@/lib/outreach/follow-confirm";
 import { claimBlockMessage, explainIdleQueue } from "@/lib/outreach/idle-reason";
 import { nextPrepInstant, nextSendInstant } from "@/lib/outreach/scheduler";
 import { automationChange, requeueDecision } from "@/lib/outreach/requeue";
@@ -235,6 +240,7 @@ export async function claimNextJob(input: {
   settings: AppSettings;
   now?: Date;
   prospectId?: string | null;
+  recoverOnly?: boolean;
 }) {
   const now = input.now ?? new Date();
   const workers = await input.admin
@@ -272,9 +278,24 @@ export async function claimNextJob(input: {
   }
 
   await stampExpiredFollowAttempts(input.admin, now);
-  const resumed = await resumeOwnedFollow(input.admin, input.workerId, now, input.prospectId);
+  const resumed = await resumeOwnedFollow(
+    input.admin,
+    input.workerId,
+    now,
+    input.settings.outreach.claimLeaseSeconds,
+    input.prospectId,
+  );
   if (resumed) {
     return { ok: true as const, reason: null, message: null, nextAt: null, job: resumed };
+  }
+  if (input.recoverOnly) {
+    return {
+      ok: true as const,
+      job: null,
+      reason: "no_recoverable_job",
+      message: "No recoverable outreach job was found.",
+      nextAt: null,
+    };
   }
 
   const claimed = await input.admin.rpc("claim_next_outreach_job", {
@@ -451,35 +472,75 @@ async function stampExpiredFollowAttempts(admin: Client, now: Date) {
   }
 }
 
-async function resumeOwnedFollow(admin: Client, workerId: string, now: Date, prospectId?: string | null) {
-  void now;
+async function resumeOwnedFollow(
+  admin: Client,
+  workerId: string,
+  now: Date,
+  leaseSeconds: number,
+  prospectId?: string | null,
+) {
   let request = admin
     .from("outreach_jobs")
     .select("*")
     .eq("job_type", "follow_profile")
     .in("status", ["running", "claimed"])
-    .eq("claimed_by_worker_id", workerId)
-    .limit(1);
+    .order("started_at", { ascending: true })
+    .limit(20);
   if (prospectId) request = request.eq("prospect_id", prospectId);
-  const owned = await request.maybeSingle();
-  if (owned.error || !owned.data) return null;
-  if (owned.data.started_at && !followClickWasAttempted(owned.data.result)) {
-    const prior = owned.data.result && typeof owned.data.result === "object" && !Array.isArray(owned.data.result) ? owned.data.result : {};
-    await admin.from("outreach_jobs").update({ result: { ...prior, ...uncertainFollowResult() } }).eq("id", owned.data.id);
-    owned.data.result = { ...prior, ...uncertainFollowResult() };
+  const listed = await request;
+  if (listed.error || !listed.data?.length) return null;
+
+  const open = listed.data.filter((job) => {
+    const decision = staleReclaimDecision(
+      {
+        id: job.id,
+        status: job.status,
+        claimedBy: job.claimed_by_worker_id,
+        claimedAt: job.claimed_at,
+        claimExpiresAt: job.claim_expires_at,
+      },
+      now,
+      workerId,
+    );
+    return decision.ok;
+  });
+  const expired = open.filter((job) => new Date(job.claim_expires_at ?? 0).getTime() <= now.getTime());
+  const current = open.find((job) => job.claimed_by_worker_id === workerId && !expired.includes(job));
+  if (current) return publishFollowJob(admin, current);
+
+  for (const job of expired) {
+    const prior = job.result && typeof job.result === "object" && !Array.isArray(job.result) ? job.result : {};
+    const stamped = job.started_at && !followClickWasAttempted(job.result) ? { ...prior, ...uncertainFollowResult() } : prior;
+    const reclaimed = await admin
+      .from("outreach_jobs")
+      .update({
+        status: "claimed",
+        claimed_by_worker_id: workerId,
+        claimed_at: now.toISOString(),
+        claim_expires_at: new Date(now.getTime() + leaseSeconds * 1000).toISOString(),
+        result: stamped,
+      })
+      .eq("id", job.id)
+      .in("status", ["running", "claimed"])
+      .lte("claim_expires_at", now.toISOString())
+      .select("*")
+      .maybeSingle();
+    if (reclaimed.data) return publishFollowJob(admin, reclaimed.data);
   }
+  return null;
+}
+
+async function publishFollowJob(
+  admin: Client,
+  job: { id: string; prospect_id: string; result: unknown; started_at: string | null },
+) {
   const prospect = await admin
     .from("prospects")
     .select("id, instagram_username, profile_url, queued_message_text")
-    .eq("id", owned.data.prospect_id)
+    .eq("id", job.prospect_id)
     .maybeSingle();
   if (prospect.error || !prospect.data) return null;
-  return publicJob(
-    owned.data.id,
-    "follow_profile",
-    prospect.data,
-    await followContext(admin, owned.data.prospect_id, owned.data.result, owned.data.started_at),
-  );
+  return publicJob(job.id, "follow_profile", prospect.data, await followContext(admin, job.prospect_id, job.result, job.started_at));
 }
 
 async function ownedJob(admin: Client, jobId: string, workerId: string, now: Date) {

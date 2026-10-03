@@ -84,6 +84,54 @@ export function queueFollowStatusLabel(job: {
   return null;
 }
 
+export type LeaseJob = {
+  id: string;
+  status: string;
+  claimedBy: string | null;
+  claimedAt: string | null;
+  claimExpiresAt: string | null;
+};
+
+export function staleReclaimDecision(job: LeaseJob, now: Date, workerId: string) {
+  if (job.status === "completed" || job.status === "cancelled" || job.status === "failed") {
+    return { ok: false as const, reason: "finished" as const };
+  }
+  if (job.status !== "running" && job.status !== "claimed") {
+    return { ok: false as const, reason: "not_open" as const };
+  }
+  const expires = job.claimExpiresAt ? new Date(job.claimExpiresAt).getTime() : 0;
+  if (expires > now.getTime()) {
+    if (job.claimedBy === workerId) return { ok: true as const, action: "keep" as const };
+    return { ok: false as const, reason: "lease_active" as const };
+  }
+  return { ok: true as const, action: "reclaim" as const };
+}
+
+export function atomicReclaim(job: LeaseJob, workerId: string, now: Date, leaseSeconds: number) {
+  const decision = staleReclaimDecision(job, now, workerId);
+  if (!decision.ok || decision.action !== "reclaim") return null;
+  if (job.claimExpiresAt && new Date(job.claimExpiresAt).getTime() > now.getTime()) return null;
+  return {
+    ...job,
+    status: "claimed",
+    claimedBy: workerId,
+    claimedAt: now.toISOString(),
+    claimExpiresAt: new Date(now.getTime() + leaseSeconds * 1000).toISOString(),
+  };
+}
+
+export function recoverFollowDecision(input: {
+  relationship: string;
+  followClickAttempted: boolean;
+  verifyNotFollowing: boolean;
+  executionStarted: boolean;
+}) {
+  if (shouldCompleteFollowWithoutClick(input)) {
+    return { action: "complete" as const, clicks: 0 as const, stopBeforeSend: true as const };
+  }
+  return { action: "review" as const, clicks: 0 as const, stopBeforeSend: true as const };
+}
+
 export function expiredFollowNeedsStamp(job: {
   job_type: string;
   status: string;

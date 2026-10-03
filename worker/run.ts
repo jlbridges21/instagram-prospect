@@ -4,6 +4,7 @@ import { CloudClient, type CloudConfig, type JobPayload } from "./cloud/client";
 import { emptyEfficiency, formatEfficiency, runDiscoveryV2 } from "./discovery/v2";
 import { loadIdentity } from "./identity";
 import { dryRunPlan, formatDryRun } from "../lib/outreach/dry-run-plan";
+import { recoverFollowDecision } from "../lib/outreach/follow-confirm";
 import {
   ensureHome,
   followProfile,
@@ -445,11 +446,49 @@ async function runSingleOutreach(
   stats: { seen: number; ingested: number; excluded: number; qualified: number; errors: number },
   live: { task: string; username: string | null },
 ) {
-  const first = await cloud.nextJob(identity.worker_id);
+  const recover = process.argv.includes("--recover-outreach");
+  const first = await cloud.nextJob(identity.worker_id, undefined, recover ? { recoverOnly: true } : undefined);
   if (!first.job) {
+    if (recover) {
+      console.log("No recoverable outreach job was found.");
+      return;
+    }
     console.log("No outreach job is available.");
     if (first.message) console.log(`Reason: ${first.message}`);
     else if (first.reason) console.log(`Reason: ${first.reason}`);
+    return;
+  }
+  if (recover) {
+    console.log(`Claimed stale outreach for @${first.job.instagramUsername} with a fresh lease.`);
+    try {
+      await cloud.startJob(first.job.id, identity.worker_id);
+      const profile = await readProfile(page, first.job.instagramUsername);
+      console.log(`Current Instagram relationship: ${profile.relationship}`);
+      const decision = recoverFollowDecision({
+        relationship: profile.relationship,
+        followClickAttempted: first.job.followClickAttempted === true,
+        verifyNotFollowing: first.job.verifyNotFollowing === true,
+        executionStarted: first.job.executionStarted === true,
+      });
+      if (decision.action === "review") {
+        console.log("Previous follow action is no longer confirmed. Manual review required.");
+        return;
+      }
+      console.log("Previous follow click attempt found.");
+      console.log("No second Follow click was made.");
+      await reportComplete(cloud, identity.worker_id, first.job.id, {
+        followed: true,
+        relationshipStatus: profile.relationship,
+        profileExists: profile.profileExists,
+        recoveredWithoutClick: true,
+      });
+      console.log(`Completed follow_profile for @${first.job.instagramUsername}.`);
+      console.log("Follow recovery finished.");
+      console.log("Message step was not started.");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "The browser action failed.";
+      console.log(message);
+    }
     return;
   }
   console.log(`Claimed outreach for @${first.job.instagramUsername}`);

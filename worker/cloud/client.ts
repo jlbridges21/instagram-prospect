@@ -134,17 +134,18 @@ export class CloudClient {
     }>(`/api/worker/prospects/${prospectId}/qualify`, {});
   }
 
-  async nextJob(workerId: string, prospectId?: string) {
+  async nextJob(workerId: string, prospectId?: string, options?: { recoverOnly?: boolean }) {
     return this.request<{
       job: JobPayload | null;
       reason?: string | null;
       message?: string | null;
       nextAt?: string | null;
       nextCheckAfterSeconds?: number;
-    }>(
-      "/api/worker/jobs/next",
-      { worker_id: workerId, prospect_id: prospectId },
-    );
+    }>("/api/worker/jobs/next", {
+      worker_id: workerId,
+      prospect_id: prospectId,
+      recover_only: options?.recoverOnly,
+    });
   }
 
   async previewJob() {

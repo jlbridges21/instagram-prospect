@@ -34,6 +34,7 @@ export async function POST(request: Request) {
     workerId: parsed.data.worker_id,
     settings,
     prospectId: parsed.data.prospect_id,
+    recoverOnly: parsed.data.recover_only,
   });
   if (!claimed.ok) return workerError(500, claimed.error);
   if (!claimed.job) {
