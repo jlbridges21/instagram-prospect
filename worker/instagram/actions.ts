@@ -243,7 +243,7 @@ export async function inspectDirectMessage(page: Page, username: string) {
     };
   }
   const opened = await waitForDirect(page, username, current.profile.displayName, "", current.profile.username === username.toLowerCase());
-  if (!opened.recipient.confirmed && !opened.existingConversation) {
+  if (!opened.existingConversation) {
     await saveRecipientDebug(page, username, opened.dom, opened.recipient.ambiguousReason);
   }
   return {
@@ -255,6 +255,14 @@ export async function inspectDirectMessage(page: Page, username: string) {
     recipientStrategy: opened.recipient.strategy,
     recipientReason: opened.recipient.ambiguousReason,
     recipientCandidates: opened.recipient.evidence,
+    headerCandidates: opened.dom.recipientCandidates ?? [],
+    paneFound: opened.dom.activeConversationFound === true,
+    directPath: opened.dom.directPath ?? "",
+    displayName: current.profile.displayName,
+    sourceVerified: current.profile.username === username.toLowerCase(),
+    conflicting: opened.recipient.evidence.some(
+      (item) => item.reason === "profile href belongs to another account" || item.reason === "different participant in the active header",
+    ),
     composerFound: opened.composerFound,
     composerStrategy: opened.composerStrategy,
     existingConversation: opened.existingConversation,
@@ -499,7 +507,7 @@ async function saveRecipientDebug(page: Page, username: string, dom: DomSnapshot
   const url = dom.url || page.url();
   if (url.includes("/accounts/login") || url.includes("/challenge/")) return;
   fs.mkdirSync(debugDir(), { recursive: true });
-  const base = path.join(debugDir(), `dm-${username}-recipient-ambiguous`);
+  const base = path.join(debugDir(), `dm-${username}-header-inspect`);
   const privateHistory = dom.threadMessages.some((item) => item.trim().length > 0);
   if (!privateHistory) {
     await page.screenshot({ path: `${base}.png`, fullPage: false }).catch(() => undefined);

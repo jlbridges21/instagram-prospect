@@ -89,7 +89,13 @@ export type DomSnapshot = {
     ariaLabel: string;
     title: string;
     alt: string;
+    tag?: string;
+    clickable?: boolean;
+    scope?: "active-header" | "outside";
+    box?: { x: number; y: number; width: number; height: number } | null;
   }>;
+  activeConversationFound?: boolean;
+  directPath?: string;
   usernameBox?: ElementBox | null;
   optionsBox?: ElementBox | null;
   metaDescription?: string | null;

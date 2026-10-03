@@ -246,6 +246,52 @@ const other = confirmConversationRecipient({
   provenance: proof,
 });
 assert.equal(other.confirmed, false);
+const headerBox = { x: 480, y: 20, width: 120, height: 24 };
+const spanName = confirmConversationRecipient({
+  username: "vsiaerial",
+  displayName: "VSI Aerial",
+  candidates: [{ text: "VSI Aerial", href: "", role: "span", tag: "span", ariaLabel: "", title: "", alt: "", scope: "active-header", box: headerBox, clickable: false }],
+  provenance: proof,
+});
+assert.equal(spanName.confirmed, true);
+assert.equal(spanName.strategy, "conversation-header-display-name-plus-provenance");
+const buttonName = confirmConversationRecipient({
+  username: "vsiaerial",
+  displayName: "VSI Aerial",
+  candidates: [{ text: "VSI Aerial", href: "", role: "button", tag: "button", ariaLabel: "", title: "", alt: "", scope: "active-header", clickable: true, box: headerBox }],
+  provenance: proof,
+});
+assert.equal(buttonName.confirmed, true);
+const avatar = confirmConversationRecipient({
+  username: "vsiaerial",
+  displayName: "VSI Aerial",
+  candidates: [{ text: "", href: "", role: "img", tag: "img", ariaLabel: "", title: "", alt: "VSI Aerial's profile picture", scope: "active-header", box: headerBox }],
+  provenance: proof,
+});
+assert.equal(avatar.confirmed, true);
+assert.equal(avatar.strategy, "conversation-header-avatar-alt");
+const inboxOnly = confirmConversationRecipient({
+  username: "vsiaerial",
+  displayName: "VSI Aerial",
+  candidates: [{ text: "VSI Aerial", href: "", role: "span", tag: "span", ariaLabel: "", title: "", alt: "", scope: "outside", box: { x: 20, y: 200, width: 80, height: 20 } }],
+  provenance: proof,
+});
+assert.equal(inboxOnly.confirmed, false);
+const wrongName = confirmConversationRecipient({
+  username: "vsiaerial",
+  displayName: "VSI Aerial",
+  candidates: [{ text: "Other Shop", href: "", role: "button", tag: "button", ariaLabel: "", title: "", alt: "", scope: "active-header", box: headerBox }],
+  provenance: proof,
+});
+assert.equal(wrongName.confirmed, false);
+const noIdentity = confirmConversationRecipient({
+  username: "vsiaerial",
+  displayName: "VSI Aerial",
+  candidates: [],
+  provenance: proof,
+});
+assert.equal(noIdentity.confirmed, false);
+assert.equal(noIdentity.strategy, null);
 const unconfirmed = sendRecoveryDecision({
   sendAttempted: false,
   exactOutboundPresent: false,

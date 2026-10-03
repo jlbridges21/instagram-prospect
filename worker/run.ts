@@ -3,7 +3,7 @@ import { createHeartbeatSession, mustHeartbeatBeforeClaim, safeHeartbeatError } 
 import { CloudClient, type CloudConfig, type JobPayload } from "./cloud/client";
 import { emptyEfficiency, formatEfficiency, runDiscoveryV2 } from "./discovery/v2";
 import { loadIdentity } from "./identity";
-import { sequenceOwnsFollow } from "../lib/outreach/dm";
+import { formatHeaderInspect, sequenceOwnsFollow } from "../lib/outreach/dm";
 import { dryRunPlan, formatDryRun } from "../lib/outreach/dry-run-plan";
 import { recoverFollowDecision } from "../lib/outreach/follow-confirm";
 import {
@@ -93,15 +93,31 @@ export async function runWorker(mode: RunMode) {
       console.log(`@${inspectUsernameArg}`);
       console.log(`Message action: ${inspection.messageAction ? "found" : "not found"}`);
       console.log(`Conversation opened: ${inspection.conversationOpened ? "yes" : "no"}`);
-      const candidates = "recipientCandidates" in inspection ? inspection.recipientCandidates : [];
-      console.log("");
-      console.log("Conversation recipient candidates:");
-      if (!candidates?.length) console.log("  none");
-      candidates?.forEach((candidate, index) => {
-        console.log(`  [${index}] text="${candidate.text}" href="${candidate.href}" role=${candidate.role}`);
-        console.log(`      accepted: ${candidate.accepted ? "true" : "false"}`);
-        console.log(`      reason: ${candidate.reason}`);
-      });
+      if ("headerCandidates" in inspection && inspection.headerCandidates) {
+        const headerCandidates = inspection.headerCandidates;
+        const usernameRendered = headerCandidates.some((candidate) => {
+          const blob = `${candidate.text} ${candidate.ariaLabel} ${candidate.alt}`.toLowerCase();
+          return blob.includes(inspectUsernameArg) || blob.includes(`@${inspectUsernameArg}`);
+        });
+        console.log("");
+        console.log(
+          formatHeaderInspect({
+            paneFound: inspection.paneFound === true,
+            directPath: inspection.directPath ?? null,
+            candidates: headerCandidates,
+            displayName: inspection.displayName ?? null,
+            usernameRendered,
+            provenance: {
+              sourceProfileUsername: inspectUsernameArg,
+              sourceProfileVerified: inspection.sourceVerified === true,
+              messageActionClicked: inspection.messageAction,
+              directOpenedFromProfile: inspection.conversationOpened,
+            },
+            conflicting: inspection.conflicting === true,
+            composerFound: inspection.composerFound,
+          }),
+        );
+      }
       console.log("");
       console.log(`Conversation recipient: ${"recipientConfirmed" in inspection && inspection.recipientConfirmed ? "confirmed" : "not confirmed"}`);
       console.log(`Recipient strategy: ${"recipientStrategy" in inspection && inspection.recipientStrategy ? inspection.recipientStrategy : "none"}`);

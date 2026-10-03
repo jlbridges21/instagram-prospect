@@ -132,6 +132,10 @@ export type RecipientCandidate = {
   ariaLabel: string;
   title: string;
   alt: string;
+  tag?: string;
+  clickable?: boolean;
+  scope?: "active-header" | "outside";
+  box?: { x: number; y: number; width: number; height: number } | null;
 };
 
 export type NavigationProvenance = {
@@ -161,6 +165,27 @@ function sameDisplayName(value: string, displayName: string) {
   return text === display || text === `${display}'s profile picture`;
 }
 
+function activeHeader(candidates: RecipientCandidate[]) {
+  return candidates.filter((candidate) => !candidate.scope || candidate.scope === "active-header");
+}
+
+function isChromeLabel(value: string) {
+  return /^(message|send|like|info|details|close|back|search|audio call|video call|chat)$/i.test(value.trim());
+}
+
+function isOtherParticipant(value: string, username: string, displayName: string) {
+  const text = value.trim();
+  if (!text || isChromeLabel(text) || /message/i.test(text)) return false;
+  if (text.toLowerCase() === username || text.toLowerCase() === `@${username}`) return false;
+  if (displayName && sameDisplayName(text, displayName)) return false;
+  const mention = text.match(/^@([a-z0-9._]{1,30})$/i);
+  if (mention) return mention[1].toLowerCase() !== username;
+  if (/^[a-z0-9._]{1,30}$/i.test(text) && text.toLowerCase() !== username) return true;
+  if (/^profile picture$/i.test(text)) return false;
+  if (!displayName || displayName.length < 2) return false;
+  return text.length >= 2 && text.length <= 60 && /[a-z]/i.test(text);
+}
+
 export function confirmConversationRecipient(input: {
   username: string;
   displayName?: string | null;
@@ -168,10 +193,18 @@ export function confirmConversationRecipient(input: {
   provenance: NavigationProvenance;
 }) {
   const username = input.username.replace(/^@/, "").toLowerCase();
+  const display = input.displayName?.trim() ?? "";
+  const header = activeHeader(input.candidates);
   const evidence = input.candidates.map((candidate) => {
+    if (candidate.scope === "outside") {
+      return { ...candidate, accepted: false, reason: "outside the active conversation header" };
+    }
     const hrefUser = profileUsernameFromHref(candidate.href);
     if (hrefUser && hrefUser !== username) {
       return { ...candidate, accepted: false, reason: "profile href belongs to another account" };
+    }
+    if ([candidate.text, candidate.ariaLabel, candidate.alt, candidate.title].some((value) => isOtherParticipant(value, username, display))) {
+      return { ...candidate, accepted: false, reason: "different participant in the active header" };
     }
     if (hrefUser === username) {
       return { ...candidate, accepted: true, reason: "profile href matches target" };
@@ -183,9 +216,22 @@ export function confirmConversationRecipient(input: {
     if (new RegExp(`(^|\\s)${username}(\\s|$)`, "i").test(blob)) {
       return { ...candidate, accepted: true, reason: "visible username" };
     }
-    return { ...candidate, accepted: false, reason: "not recipient evidence" };
+    if (display && (sameDisplayName(candidate.text, display) || sameDisplayName(candidate.ariaLabel, display))) {
+      return { ...candidate, accepted: false, reason: "display name in the active header" };
+    }
+    if (display && (sameDisplayName(candidate.alt, display) || sameDisplayName(candidate.title, display))) {
+      return { ...candidate, accepted: false, reason: "avatar matches the profile display name" };
+    }
+    return { ...candidate, accepted: false, reason: "visible in active conversation header" };
   });
-  const conflict = evidence.find((item) => item.reason === "profile href belongs to another account");
+  const provenanceOk =
+    input.provenance.sourceProfileVerified &&
+    input.provenance.messageActionClicked &&
+    input.provenance.directOpenedFromProfile &&
+    input.provenance.sourceProfileUsername.replace(/^@/, "").toLowerCase() === username;
+  const conflict = evidence.find(
+    (item) => item.reason === "profile href belongs to another account" || item.reason === "different participant in the active header",
+  );
   if (conflict) {
     return {
       confirmed: false as const,
@@ -195,36 +241,16 @@ export function confirmConversationRecipient(input: {
     };
   }
   if (evidence.some((item) => item.reason === "profile href matches target")) {
-    return {
-      confirmed: true as const,
-      strategy: "conversation-header-profile-link",
-      evidence,
-      ambiguousReason: null,
-    };
+    return { confirmed: true as const, strategy: "conversation-header-profile-link", evidence, ambiguousReason: null };
   }
   if (evidence.some((item) => item.reason === "visible @username")) {
-    return {
-      confirmed: true as const,
-      strategy: "conversation-header-at-username",
-      evidence,
-      ambiguousReason: null,
-    };
+    return { confirmed: true as const, strategy: "conversation-header-at-username", evidence, ambiguousReason: null };
   }
   if (evidence.some((item) => item.reason === "visible username")) {
-    return {
-      confirmed: true as const,
-      strategy: "conversation-header-username",
-      evidence,
-      ambiguousReason: null,
-    };
+    return { confirmed: true as const, strategy: "conversation-header-username", evidence, ambiguousReason: null };
   }
-  const display = input.displayName?.trim() ?? "";
-  const displayMatched = display.length > 1 && evidence.some((item) => sameDisplayName(candidateBlob(item), display) || sameDisplayName(item.text, display) || sameDisplayName(item.alt, display));
-  const provenanceOk =
-    input.provenance.sourceProfileVerified &&
-    input.provenance.messageActionClicked &&
-    input.provenance.directOpenedFromProfile &&
-    input.provenance.sourceProfileUsername.replace(/^@/, "").toLowerCase() === username;
+  const displayMatched = evidence.some((item) => item.reason === "display name in the active header");
+  const avatarMatched = evidence.some((item) => item.reason === "avatar matches the profile display name");
   if (displayMatched && provenanceOk) {
     return {
       confirmed: true as const,
@@ -233,22 +259,64 @@ export function confirmConversationRecipient(input: {
       ambiguousReason: null,
     };
   }
-  if (provenanceOk && !conflict && input.candidates.length === 0) {
+  if (avatarMatched && provenanceOk) {
     return {
-      confirmed: false as const,
-      strategy: null,
+      confirmed: true as const,
+      strategy: "conversation-header-avatar-alt",
       evidence,
-      ambiguousReason: "Composer was found but thread identity was not confirmed.",
+      ambiguousReason: null,
     };
   }
   return {
     confirmed: false as const,
     strategy: null,
     evidence,
-    ambiguousReason: displayMatched
+    ambiguousReason: header.length === 0 || provenanceOk
       ? "Composer was found but thread identity was not confirmed."
       : "Conversation recipient could not be confirmed.",
   };
+}
+
+export function formatHeaderInspect(input: {
+  paneFound: boolean;
+  directPath: string | null;
+  candidates: RecipientCandidate[];
+  displayName: string | null;
+  usernameRendered: boolean;
+  provenance: NavigationProvenance;
+  conflicting: boolean;
+  composerFound: boolean;
+}) {
+  const lines = [
+    `Active conversation pane: ${input.paneFound ? "found" : "not found"}`,
+    `Direct URL: ${input.directPath || "not a direct thread"}`,
+    "",
+    "Header candidates:",
+  ];
+  if (input.candidates.length === 0) lines.push("none");
+  input.candidates.forEach((candidate, index) => {
+    const box = candidate.box;
+    lines.push(`[${index}]`);
+    lines.push(`tag: ${candidate.tag || candidate.role || "unknown"}`);
+    lines.push(`text: ${candidate.text ? `"${candidate.text}"` : "null"}`);
+    lines.push(`aria-label: ${candidate.ariaLabel || "null"}`);
+    lines.push(`href: ${candidate.href || "null"}`);
+    lines.push(box ? `bounds: x=${box.x}, y=${box.y}, width=${box.width}, height=${box.height}` : "bounds: null");
+    lines.push(`reason: ${candidate.scope === "outside" ? "outside the active conversation header" : "visible in active conversation header"}`);
+  });
+  lines.push("");
+  lines.push("Conversation recipient evidence:");
+  lines.push(`display name: ${input.displayName || "not found"}`);
+  lines.push(`username: ${input.usernameRendered ? "rendered" : "not directly rendered"}`);
+  lines.push("");
+  lines.push("Navigation provenance:");
+  lines.push(`source profile verified: ${input.provenance.sourceProfileVerified ? "yes" : "no"}`);
+  lines.push(`source username: ${input.provenance.sourceProfileUsername}`);
+  lines.push(`main Message action clicked: ${input.provenance.messageActionClicked ? "yes" : "no"}`);
+  lines.push(`Direct opened immediately: ${input.provenance.directOpenedFromProfile ? "yes" : "no"}`);
+  lines.push(`composer found: ${input.composerFound ? "yes" : "no"}`);
+  lines.push(`conflicting recipient evidence: ${input.conflicting ? "yes" : "none"}`);
+  return lines.join("\n");
 }
 
 export function sendAllowed(input: {

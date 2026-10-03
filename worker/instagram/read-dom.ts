@@ -306,28 +306,68 @@ export const READ_DOM_SOURCE = `() => {
   });
   const dialog = document.querySelector("[role='dialog']");
   const directMain = /\\/direct\\//.test(location.pathname) ? document.querySelector("main") : null;
-  const headerRoot = dialog || directMain;
+  const composerEl = [...document.querySelectorAll("[role='textbox'][contenteditable='true'], textarea, [contenteditable='true']")].find((el) => {
+    if (el.closest && el.closest("nav, [role='navigation']")) return false;
+    const rect = el.getBoundingClientRect();
+    return rect.width > 40 && rect.height > 8;
+  });
+  const composerBox = composerEl ? composerEl.getBoundingClientRect() : null;
+  let pane = null;
+  if (composerEl && composerBox) {
+    let node = composerEl.parentElement;
+    for (let depth = 0; node && node !== document.body && depth < 14; depth += 1) {
+      const rect = node.getBoundingClientRect();
+      const includesInbox = rect.width > composerBox.width + 280 && rect.left < composerBox.left - 180;
+      if (includesInbox) break;
+      if (rect.width >= 260 && rect.height >= 220 && rect.left <= composerBox.left && rect.right >= composerBox.right - 8) pane = node;
+      node = node.parentElement;
+    }
+  }
+  if (!pane) pane = dialog || directMain;
+  const headerRoot = pane;
   const headingNode = headerRoot ? headerRoot.querySelector("h1, h2, [role='heading']") : null;
   const conversationHeader = headingNode ? undouble(headingNode.textContent || "").slice(0, 80) : "";
   const recipientCandidates = [];
-  if (headerRoot) {
-    const rootBox = headerRoot.getBoundingClientRect();
-    const nodes = [...headerRoot.querySelectorAll("a, h1, h2, [role='link'], [role='heading'], img")].slice(0, 40);
+  const activeConversationFound = Boolean(pane && composerEl);
+  if (pane) {
+    const paneBox = pane.getBoundingClientRect();
+    const headerLimit = composerBox ? Math.min(composerBox.top - 4, paneBox.top + 240) : paneBox.top + 220;
+    const nodes = [...pane.querySelectorAll("a, button, [role='button'], [role='link'], [role='heading'], h1, h2, h3, img, span, div, svg")].slice(0, 250);
     for (const el of nodes) {
-      if (el.closest && el.closest("[role='row'], [data-message]")) continue;
+      if (el.closest && el.closest("nav, [role='navigation']")) continue;
+      if (composerEl && (el === composerEl || (el.contains && el.contains(composerEl)))) continue;
       const rect = el.getBoundingClientRect();
-      if (!rect || rect.width < 1 || rect.height < 1) continue;
-      if (rect.top - rootBox.top > 220) continue;
+      if (!rect || rect.width < 1 || rect.height < 1 || rect.height > 160) continue;
+      if (rect.top < paneBox.top - 2 || rect.bottom > headerLimit) continue;
+      const tag = el.tagName.toLowerCase();
+      const role = (el.getAttribute("role") || "").toLowerCase();
+      const ownText = directText(el).slice(0, 80);
+      const controlText = undouble(el.innerText || el.textContent || "").slice(0, 80);
+      const shown = ownText || (tag === "button" || tag === "a" || role === "button" || role === "link" ? controlText : "");
+      if (shown.includes("\\n") || shown.length > 80) continue;
       const href = (el.getAttribute("href") || "").split("?")[0].split("#")[0].slice(0, 160);
-      const text = undouble(el.innerText || el.textContent || "").slice(0, 80);
       const ariaLabel = undouble(el.getAttribute("aria-label") || "").slice(0, 80);
       const title = undouble(el.getAttribute("title") || "").slice(0, 80);
       const alt = undouble(el.getAttribute("alt") || "").slice(0, 80);
-      if (!href && !text && !ariaLabel && !title && !alt) continue;
-      recipientCandidates.push({ text, href, role: String(el.getAttribute("role") || el.tagName || "").toLowerCase(), ariaLabel, title, alt });
-      if (recipientCandidates.length >= 8) break;
+      if (!shown && !href && !ariaLabel && !title && !alt) continue;
+      const tab = el.getAttribute("tabindex");
+      const clickable = tag === "button" || tag === "a" || role === "button" || role === "link" || (tab !== null && Number(tab) >= 0);
+      recipientCandidates.push({
+        tag,
+        text: shown,
+        href,
+        role: role || tag,
+        ariaLabel,
+        title,
+        alt,
+        clickable,
+        box: { x: Math.round(rect.x), y: Math.round(rect.y), width: Math.round(rect.width), height: Math.round(rect.height) },
+        scope: "active-header",
+      });
+      if (recipientCandidates.length >= 12) break;
     }
   }
+  const directPath = /\\/direct\\//.test(location.pathname) ? location.pathname.split("?")[0] : "";
   const suggestedProfiles = suggestedProfileCards();
   return {
     url: location.href,
@@ -349,6 +389,8 @@ export const READ_DOM_SOURCE = `() => {
     composerCandidates,
     conversationHeader,
     recipientCandidates,
+    activeConversationFound,
+    directPath,
     usernameBox: boxOf(heading),
     optionsBox: boxOf(options),
     metaDescription: meta ? (meta.getAttribute("content") || "").slice(0, 500) : null,
