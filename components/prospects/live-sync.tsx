@@ -9,6 +9,7 @@ export function LiveProspectSync() {
 
   useEffect(() => {
     let cursor = new Date().toISOString();
+    let workerKey = "";
     let timer = 0;
     let stopped = false;
 
@@ -19,9 +20,12 @@ export function LiveProspectSync() {
         if (visible) {
           const response = await fetch(`/api/prospects/changes?since=${encodeURIComponent(cursor)}`, { cache: "no-store" });
           if (response.ok) {
-            const body = (await response.json()) as { changed?: boolean; cursor?: string };
+            const body = (await response.json()) as { changed?: boolean; cursor?: string; workerTask?: string | null; workerEvent?: string | null };
             if (body.cursor) cursor = body.cursor;
-            if (pageRefreshNeeded(body.changed === true)) router.refresh();
+            const nextKey = `${body.workerTask ?? ""}|${body.workerEvent ?? ""}`;
+            const statusChanged = workerKey !== "" && nextKey !== workerKey;
+            workerKey = nextKey;
+            if (pageRefreshNeeded(body.changed === true) || statusChanged) router.refresh();
           }
         }
       } catch {

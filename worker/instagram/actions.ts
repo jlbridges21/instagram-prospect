@@ -47,6 +47,15 @@ import type { DomSnapshot } from "./types";
 
 const ACTION_TIMEOUT_MS = 8_000;
 
+export async function pageNeedsAttention(page: Page) {
+  const dom = await readDom(page);
+  const signal = pageSignal(dom);
+  if (signal === "login_required" || signal === "instagram_checkpoint" || signal === "action_blocked" || signal === "rate_limited") {
+    return signal;
+  }
+  return null;
+}
+
 export async function ensureHome(page: Page) {
   await openUrl(page, "https://www.instagram.com/");
   const dom = await readDom(page);

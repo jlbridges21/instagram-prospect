@@ -1,4 +1,6 @@
 import { continuousOutreachStep } from "../lib/discovery/policy";
+import { checkpointHoldDecision, formatWorkerModes } from "../lib/discovery/pacing";
+import { prospectCompletionLine } from "../lib/outreach/completion-log";
 import { launchBrowser } from "./browser/launch";
 import { createHeartbeatSession, mustHeartbeatBeforeClaim, safeHeartbeatError } from "./heartbeat-session";
 import { CloudClient, type CloudConfig, type JobPayload } from "./cloud/client";
@@ -10,6 +12,7 @@ import { recoverFollowDecision } from "../lib/outreach/follow-confirm";
 import {
   ensureHome,
   followProfile,
+  pageNeedsAttention,
   inspectComposerMessage,
   inspectDirectMessage,
   readProfile,
@@ -225,7 +228,9 @@ export async function runWorker(mode: RunMode) {
   let outreachReady = false;
   let backoff = 5_000;
   let announced = false;
-  let statusAnnounced = false;
+  let modeLine = "";
+  let attentionHold: AttentionError | null = null;
+  let attentionLogged = false;
 
   try {
     await flushPending(cloud, identity.worker_id);
@@ -242,10 +247,37 @@ export async function runWorker(mode: RunMode) {
         const config = await cloud.config();
         backoff = 5_000;
         if (!announced) {
-          console.log("✓ Automation configuration loaded");
-          console.log(config.discoveryEnabled ? "✓ Discovery ON" : "Discovery: OFF");
+          console.log("Automation configuration loaded");
           if (debug) console.log("Debug logging is on.");
           announced = true;
+        }
+        const nextMode = formatWorkerModes({
+          discovery: config.discoveryEnabled ? "RUNNING" : "PAUSED",
+          outreach: config.automationEnabled ? "RUNNING" : "PAUSED",
+        });
+        if (nextMode !== modeLine) {
+          console.log(nextMode);
+          modeLine = nextMode;
+        }
+        if (attentionHold) {
+          const still = await pageNeedsAttention(page).catch(() => attentionHold?.code ?? "instagram_checkpoint");
+          if (still) {
+            if (!attentionLogged) {
+              console.log(attentionHold.message);
+              console.log(checkpointHoldDecision().log);
+              attentionLogged = true;
+            }
+            live.task = "attention_required";
+            live.attention = attentionHold.message;
+            await beat(cloud, identity, live.task, stats, true, false, live.attention, live.username, live.lastEvent);
+            await sleep(30_000);
+            continue;
+          }
+          attentionHold = null;
+          attentionLogged = false;
+          live.attention = undefined;
+          console.log("Checkpoint cleared. Browser automation can continue.");
+          modeLine = "";
         }
         if (claimsOutreach && !outreachReady) {
           await ensureHome(page);
@@ -259,12 +291,8 @@ export async function runWorker(mode: RunMode) {
             console.log(`Reason: ${safeHeartbeatError(error)}`);
             return;
           }
-          console.log("✓ Worker heartbeat registered");
+          console.log("Worker heartbeat registered");
           outreachReady = true;
-        }
-        if (!statusAnnounced) {
-          console.log(config.automationEnabled ? "Outreach: RUNNING" : "✓ Outreach PAUSED");
-          statusAnnounced = true;
         }
         if (dryRun) {
           await runDryOutreach(cloud, page);
@@ -284,7 +312,12 @@ export async function runWorker(mode: RunMode) {
         if (mode !== "smoke" && !discoveryOnly && !noWrite) {
           const outcome = await runOneJob(cloud, page, identity, config, stats);
           if (outcome.worked) {
-            if (outcome.username) console.log(`Completed outreach for @${outcome.username}.`);
+            const line = prospectCompletionLine({
+              username: outcome.username,
+              jobType: outcome.jobType,
+              sequenceComplete: outcome.sequenceComplete,
+            });
+            if (line) console.log(line);
             continue;
           }
           if (config.automationEnabled && outcome.reason) {
@@ -351,7 +384,11 @@ export async function runWorker(mode: RunMode) {
       } catch (error) {
         if (isAuthFailure(error)) return;
         if (error instanceof AttentionError) {
+          attentionHold = error;
+          attentionLogged = false;
           console.log(error.message);
+          console.log(checkpointHoldDecision().log);
+          attentionLogged = true;
           live.task = error.code === "login_required" ? "auth_required" : "attention_required";
           live.attention = error.message;
           live.instagramAuthenticated = false;
@@ -393,7 +430,9 @@ async function runOneJob(
   config: CloudConfig,
   stats: { seen: number; ingested: number; excluded: number; qualified: number; errors: number },
 ) {
-  if (!config.automationEnabled) return { worked: false, reason: "outreach_paused" as const, nextAt: null, message: null, username: null };
+  if (!config.automationEnabled) {
+    return { worked: false, reason: "outreach_paused" as const, nextAt: null, message: null, username: null, jobType: "", sequenceComplete: false };
+  }
   const next = await cloud.nextJob(identity.worker_id);
   if (!next.job) {
     return {
@@ -402,6 +441,8 @@ async function runOneJob(
       nextAt: next.nextAt ?? null,
       message: next.message ?? null,
       username: null,
+      jobType: "",
+      sequenceComplete: false,
     };
   }
   const job = next.job;
@@ -409,8 +450,16 @@ async function runOneJob(
   await cloud.startJob(job.id, identity.worker_id);
   try {
     const result = await executeJob(page, job);
-    await settleExecution(cloud, identity.worker_id, job, result);
-    return { worked: true, reason: null, nextAt: null, message: null, username: job.instagramUsername };
+    const settlement = await settleExecution(cloud, identity.worker_id, job, result);
+    return {
+      worked: true,
+      reason: null,
+      nextAt: null,
+      message: null,
+      username: job.instagramUsername,
+      jobType: job.type,
+      sequenceComplete: settlement === "done" && job.type === "send_message" && "sent" in result && result.sent === true,
+    };
   } catch (error) {
     if (error instanceof AttentionError) {
       await reportFailure(cloud, identity.worker_id, job.id, error.code, error.message, false);
@@ -418,7 +467,7 @@ async function runOneJob(
     }
     if (error instanceof NavigationError) {
       await reportFailure(cloud, identity.worker_id, job.id, error.code, error.message, job.type === "verify_profile");
-      return { worked: true, reason: null, nextAt: null, message: null, username: job.instagramUsername };
+      return { worked: true, reason: null, nextAt: null, message: null, username: job.instagramUsername, jobType: job.type, sequenceComplete: false };
     }
     const message = error instanceof Error ? error.message : "The browser action failed.";
     await saveErrorScreenshot(page, job.type).catch(() => undefined);
@@ -431,7 +480,7 @@ async function runOneJob(
       message,
       retryable,
     );
-    return { worked: true, reason: null, nextAt: null, message: null, username: job.instagramUsername };
+    return { worked: true, reason: null, nextAt: null, message: null, username: job.instagramUsername, jobType: job.type, sequenceComplete: false };
   }
 }
 

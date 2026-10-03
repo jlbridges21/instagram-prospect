@@ -3,6 +3,7 @@ export type DiscoveryStatusView = {
   pending: string;
   tab1: string;
   tab2: string;
+  hour: string | null;
 };
 
 export function parseDiscoveryStatus(lastEvent: string | null | undefined): DiscoveryStatusView | null {
@@ -21,6 +22,7 @@ export function parseDiscoveryStatus(lastEvent: string | null | undefined): Disc
     pending: parts.pending ?? "0",
     tab1: parts.tab1 ?? "idle",
     tab2: parts.tab2 ?? "idle",
+    hour: parts.hour ?? null,
   };
 }
 
@@ -29,7 +31,9 @@ export function formatDiscoveryStatus(input: {
   pending: number;
   tab1: string | null;
   tab2: string | null;
+  hour?: string | null;
 }) {
   const tab = (username: string | null) => (username ? `@${username}` : "idle");
-  return `Discovery V2 | source=${input.source} | pending=${input.pending} | tab1=${tab(input.tab1)} | tab2=${tab(input.tab2)}`;
+  const hour = input.hour ? ` | hour=${input.hour}` : "";
+  return `Discovery V2 | source=${input.source} | pending=${input.pending} | tab1=${tab(input.tab1)} | tab2=${tab(input.tab2)}${hour}`;
 }

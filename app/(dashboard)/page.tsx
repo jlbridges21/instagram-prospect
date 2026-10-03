@@ -98,6 +98,10 @@ export default async function OverviewPage() {
           dailyInspectionCap={settings.discovery.dailyInspectionCap}
           dailyAi={progress.dailyAi}
           dailyAiCap={settings.discovery.dailyAiCap}
+          lastEvent={worker?.last_event}
+          workerTask={worker?.current_task}
+          attentionReason={worker?.attention_reason}
+          timeZone={settings.timezone}
         />
       </div>
       {missing ? <div className="mb-6"><DatabaseSetup message={missing.error} /></div> : null}

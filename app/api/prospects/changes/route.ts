@@ -11,10 +11,18 @@ export async function GET(request: Request) {
   let query = supabase.from("prospects").select("id").order("updated_at", { ascending: false }).limit(1);
   if (since) query = query.gt("updated_at", since);
   const { data, error } = await query;
-  if (error) return Response.json({ changed: false });
+  const worker = await supabase
+    .from("worker_instances")
+    .select("current_task, last_event")
+    .order("last_heartbeat_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (error) return Response.json({ changed: false, workerTask: worker.data?.current_task ?? null, workerEvent: worker.data?.last_event ?? null });
   const changed = since ? (data?.length ?? 0) > 0 : false;
   return Response.json({
     changed,
     cursor: new Date().toISOString(),
+    workerTask: worker.data?.current_task ?? null,
+    workerEvent: worker.data?.last_event ?? null,
   });
 }

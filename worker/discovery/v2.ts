@@ -12,6 +12,15 @@ import { isExcludedRelationship } from "../instagram/parse";
 import { readDom } from "../instagram/read-dom";
 import { log } from "../logger";
 import { discoveryQueuePath } from "../paths";
+import {
+  acquisitionDecision,
+  formatHourlyWait,
+  formatHourlyWaitEvent,
+  formatWorkerModes,
+  hourlyInspectionPace,
+  hourlyWaitMs,
+  queueThresholds,
+} from "../../lib/discovery/pacing";
 import { formatDiscoveryStatus } from "../../lib/worker/discovery-status";
 
 export type DiscoveryStats = {
@@ -94,6 +103,8 @@ export async function runDiscoveryV2(input: {
   let sinceGate = 0;
   let aiSinceGate = 0;
   let emptyCycles = 0;
+  let acquisitionHeld = false;
+  let hourlyNoticeAt = 0;
   const qualify = new QualificationQueue(3, async (prospectId) => {
       metrics.qualificationRequests += 1;
       try {
@@ -136,8 +147,30 @@ export async function runDiscoveryV2(input: {
         continue;
       }
       queue.setTarget(config.candidateQueueTarget);
+      const pace = hourPace();
+      if (pace.full) {
+        announceHourly(pace, config.automationEnabled);
+        await sleep(hourlyWaitMs(pace.resumesAt, Date.now()));
+        continue;
+      }
+      if (hourlyNoticeAt !== 0) {
+        hourlyNoticeAt = 0;
+        console.log(formatWorkerModes({
+          discovery: "RUNNING",
+          outreach: config.automationEnabled ? "RUNNING" : "PAUSED",
+        }));
+      }
+      const thresholds = queueThresholds(config.candidateQueueTarget);
+      const acquisition = acquisitionDecision({
+        pending: queue.pendingCount(),
+        highWater: thresholds.highWater,
+        lowWater: thresholds.lowWater,
+        holding: acquisitionHeld,
+        hourlyFull: false,
+      });
+      acquisitionHeld = acquisition.holding;
       publish(config, null);
-      if (!queue.needsRefill()) {
+      if (!acquisition.acquire) {
         input.live.task = qualify.activeCount > 0 ? "qualifying_profiles" : "inspecting_profiles";
         await input.maybeOutreach?.().catch(() => undefined);
         await sleep(500);
@@ -168,7 +201,9 @@ export async function runDiscoveryV2(input: {
       const byUsername = new Map(ordered.map((item) => [item.username, item]));
       let queued = 0;
       if (!input.noWrite) {
+        let filled = false;
         for (const chunk of chunkUsernames(fresh, 15)) {
+          if (filled) break;
           metrics.duplicateBatches += 1;
           const checked = await input.cloud.checkProspects(chunk);
           for (const row of checked.results) {
@@ -180,6 +215,10 @@ export async function runDiscoveryV2(input: {
             }
             const candidate = byUsername.get(username);
             if (!candidate) continue;
+            if (queue.pendingCount() >= queueThresholds(config.candidateQueueTarget).highWater) {
+              filled = true;
+              break;
+            }
             if (queue.enqueue(candidate) === "queued") {
               queued += 1;
               console.log(`Queued @${candidate.username}`);
@@ -189,6 +228,7 @@ export async function runDiscoveryV2(input: {
         }
       } else {
         for (const username of fresh) {
+          if (queue.pendingCount() >= queueThresholds(config.candidateQueueTarget).highWater) break;
           const candidate = byUsername.get(username);
           if (candidate && queue.enqueue(candidate) === "queued") queued += 1;
         }
@@ -204,7 +244,7 @@ export async function runDiscoveryV2(input: {
         emptyCycles = 0;
         idleScrolls = 0;
       }
-      if (queue.needsRefill()) {
+      if (queue.pendingCount() < queueThresholds(config.candidateQueueTarget).highWater) {
         await scrollFeed(input.homePage);
         await sleep(config.discoveryScrollDelaySeconds * 1000);
       }
@@ -214,6 +254,12 @@ export async function runDiscoveryV2(input: {
 
   async function inspectLoop(tabId: (typeof PROFILE_TABS)[number], page: Page) {
     while (!finished()) {
+      const pace = hourPace();
+      if (pace.full) {
+        announceHourly(pace, latestConfig?.automationEnabled === true);
+        await sleep(hourlyWaitMs(pace.resumesAt, Date.now()));
+        continue;
+      }
       const candidate = queue.claim(tabId);
       if (!candidate) {
         await sleep(300);
@@ -222,11 +268,6 @@ export async function runDiscoveryV2(input: {
       if (finished()) {
         queue.release(candidate.username);
         return;
-      }
-      if (hourFull()) {
-        queue.release(candidate.username);
-        await sleep(15_000);
-        continue;
       }
       input.stats.seen += 1;
       input.stats.hour.push(Date.now());
@@ -304,12 +345,37 @@ export async function runDiscoveryV2(input: {
   function publish(config: CloudConfig, sourceLabel: string | null) {
     const active = new Map(queue.inProgress().map((item) => [item.tab, item.username]));
     const source = sourceLabel ?? (config.discoverySourcePriority === "home_first" ? "Home Feed" : "Suggested Accounts");
+    const pace = hourPace();
     input.live.lastEvent = formatDiscoveryStatus({
       source,
       pending: queue.pendingCount(),
       tab1: active.get("profile-tab-1") ?? null,
       tab2: active.get("profile-tab-2") ?? null,
+      hour: `${pace.count}/${pace.limit}`,
     });
+  }
+
+  function hourPace() {
+    const pace = hourlyInspectionPace({
+      stamps: input.stats.hour,
+      now: Date.now(),
+      limit: latestConfig?.maxProfilesPerHour ?? 30,
+    });
+    input.stats.hour = pace.active;
+    return pace;
+  }
+
+  function announceHourly(pace: ReturnType<typeof hourPace>, outreachEnabled: boolean) {
+    input.live.task = "discovery_hourly_wait";
+    if (pace.resumesAt == null || hourlyNoticeAt === pace.resumesAt) return;
+    const resumesAt = pace.resumesAt;
+    hourlyNoticeAt = resumesAt;
+    input.live.lastEvent = formatHourlyWaitEvent({ count: pace.count, limit: pace.limit, resumesAt });
+    console.log(formatHourlyWait({ count: pace.count, limit: pace.limit, resumesAt }));
+    console.log(formatWorkerModes({
+      discovery: "WAITING",
+      outreach: outreachEnabled ? "RUNNING" : "PAUSED",
+    }));
   }
 
   function sessionCap() {
@@ -339,11 +405,6 @@ export async function runDiscoveryV2(input: {
     return input.stats.seen >= sessionCap();
   }
 
-  function hourFull() {
-    const hourAgo = Date.now() - 60 * 60 * 1000;
-    input.stats.hour = input.stats.hour.filter((stamp) => stamp >= hourAgo);
-    return input.stats.hour.length >= (latestConfig?.maxProfilesPerHour ?? 30);
-  }
 }
 
 async function readDiscoveryPage(page: Page) {

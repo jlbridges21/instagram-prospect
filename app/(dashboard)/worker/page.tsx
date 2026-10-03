@@ -73,6 +73,10 @@ export default async function WorkerPage() {
           dailyInspectionCap={settings.discovery.dailyInspectionCap}
           dailyAi={progress.dailyAi}
           dailyAiCap={settings.discovery.dailyAiCap}
+          lastEvent={worker?.last_event}
+          workerTask={worker?.current_task}
+          attentionReason={worker?.attention_reason}
+          timeZone={settings.timezone}
         />
       </div>
       <DiscoveryV2Status lastEvent={worker?.last_event} task={worker?.current_task} />
@@ -183,6 +187,7 @@ function modeLabel(task: string | null | undefined) {
   if (task === "discovering_candidates") return "Collecting candidates";
   if (task === "inspecting_profiles") return "Inspecting profiles";
   if (task === "qualifying_profiles" || task.startsWith("qualifying")) return "Qualifying";
+  if (task === "discovery_hourly_wait") return "Waiting — hourly pace";
   if (task.startsWith("discovering")) return "Discovering";
   if (task.startsWith("executing_")) return "Outreach";
   return task;
