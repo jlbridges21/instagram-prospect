@@ -39,7 +39,7 @@ export async function runWorker(mode: RunMode) {
   const discoveryV2Test = process.argv.includes("--discovery-v2-test");
   const noWrite = process.argv.includes("--no-write") || mode === "smoke" || mode === "login";
   const dryRun = process.argv.includes("--outreach-dry-run");
-  const singleOutreach = process.argv.includes("--single-outreach");
+  const singleOutreach = process.argv.includes("--single-outreach") || process.argv.includes("--recover-outreach");
   const debug = process.argv.includes("--debug");
   const baseUrl = process.env.OUTREACH_APP_URL?.trim().replace(/\/$/, "");
   const secret = process.env.WORKER_API_SECRET?.trim();
@@ -268,6 +268,18 @@ async function runOneJob(
   await cloud.startJob(job.id, identity.worker_id);
   try {
     const result = await executeJob(page, job);
+    const outcome = result as { confirmation?: string; recoveredWithoutClick?: boolean };
+    if (outcome.confirmation === "uncertain") {
+      await reportFailure(
+        cloud,
+        identity.worker_id,
+        job.id,
+        "follow_confirmation_uncertain",
+        "Follow was clicked, but the result could not be confirmed.",
+        true,
+      );
+      return true;
+    }
     await reportComplete(cloud, identity.worker_id, job.id, result);
     return true;
   } catch (error) {
@@ -304,7 +316,13 @@ async function executeJob(page: import("playwright").Page, job: JobPayload) {
       observedUsername: profile.profile.username,
     };
   }
-  if (job.type === "follow_profile") return followProfile(page, job.instagramUsername);
+  if (job.type === "follow_profile") {
+    return followProfile(page, job.instagramUsername, {
+      followClickAttempted: job.followClickAttempted,
+      executionStarted: job.executionStarted,
+      verifyNotFollowing: job.verifyNotFollowing,
+    });
+  }
   if (!job.message) throw new SelectorError("The send job did not include the locked message.");
   return sendExactMessage(page, job.instagramUsername, job.message);
 }
@@ -440,12 +458,47 @@ async function runSingleOutreach(
   while (job) {
     live.task = `executing_${job.type}`;
     live.username = job.instagramUsername;
-    await cloud.startJob(job.id, identity.worker_id);
-    const result = await executeJob(page, job);
-    await reportComplete(cloud, identity.worker_id, job.id, result);
-    console.log(`Completed ${job.type} for @${job.instagramUsername}.`);
+    const current = job;
+    try {
+      await cloud.startJob(current.id, identity.worker_id);
+      const result = await executeJob(page, current);
+      const outcome = result as { confirmation?: string; recoveredWithoutClick?: boolean };
+      if (outcome.confirmation === "uncertain") {
+        await reportFailure(
+          cloud,
+          identity.worker_id,
+          current.id,
+          "follow_confirmation_uncertain",
+          "Follow was clicked, but the result could not be confirmed.",
+          true,
+        );
+        console.log(`Follow was clicked for @${current.instagramUsername}, but it still needs verification. No second click was made.`);
+        return;
+      }
+      if (outcome.recoveredWithoutClick) {
+        console.log(`Follow for @${current.instagramUsername} is already confirmed. No second click was made.`);
+      }
+      await reportComplete(cloud, identity.worker_id, current.id, result);
+      console.log(`Completed ${current.type} for @${current.instagramUsername}.`);
+      if (process.argv.includes("--recover-outreach") && current.type === "follow_profile") {
+        console.log("Follow recovery finished. The message step was not started.");
+        return;
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "The browser action failed.";
+      await reportFailure(cloud, identity.worker_id, current.id, "browser_error", message, false);
+      console.log(message);
+      return;
+    }
     const next = await cloud.nextJob(identity.worker_id, prospectId);
-    job = next.job && next.job.prospectId === prospectId ? next.job : null;
+    if (!next.job || next.job.prospectId !== prospectId) {
+      console.log("No outreach job is available.");
+      if (next.message) console.log(`Reason: ${next.message}`);
+      else if (next.reason) console.log(`Reason: ${next.reason}`);
+      if (current.type === "follow_profile") console.log("Worker stopping.");
+      return;
+    }
+    job = next.job;
   }
   console.log("Single outreach finished.");
   void stats;

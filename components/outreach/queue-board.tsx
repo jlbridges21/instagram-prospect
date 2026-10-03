@@ -6,6 +6,7 @@ import { toast } from "sonner";
 import { cancelOutreach, rescheduleOutreachJob, retryOutreachJob } from "@/lib/actions/outreach";
 import type { FitLabel } from "@/lib/constants/prospects";
 import type { Json, OutreachJobRow } from "@/lib/db/types";
+import { queueFollowStatusLabel } from "@/lib/outreach/follow-confirm";
 import {
   JOB_STATUS_LABELS,
   JOB_TYPE_LABELS,
@@ -216,10 +217,8 @@ export function QueueBoard({
                         ) : null}
                       </div>
                     </td>
-                    <td className="px-4 py-3 text-slate-600">
-                      {formatDateTime(row.job.scheduled_for, timeZone, dateFormat)}
-                    </td>
-                    <td className="px-4 py-3">{JOB_STATUS_LABELS[row.job.status]}</td>
+                    <td className="px-4 py-3 text-slate-600">{scheduleLabel(row.job, timeZone, dateFormat)}</td>
+                    <td className="px-4 py-3">{stepStatus(row.job)}</td>
                     <td className="px-4 py-3 tabular-nums">
                       {row.job.attempt_count}/{row.job.max_attempts}
                     </td>
@@ -255,7 +254,7 @@ export function QueueBoard({
             </div>
             <dl className="mt-4 space-y-2 text-sm">
               <Detail label="Step" value={JOB_TYPE_LABELS[selected.job.job_type]} />
-              <Detail label="Status" value={JOB_STATUS_LABELS[selected.job.status]} />
+              <Detail label="Status" value={stepStatus(selected.job)} />
               <Detail label="Created" value={formatDateTime(selected.job.created_at, timeZone, dateFormat)} />
               <Detail label="Scheduled" value={formatDateTime(selected.job.scheduled_for, timeZone, dateFormat)} />
               <Detail label="Available" value={formatDateTime(selected.job.available_at, timeZone, dateFormat)} />
@@ -321,9 +320,9 @@ function RowBody({
       </Link>
       <p className="text-xs text-slate-500">@{row.prospect.instagram_username}</p>
       <p className="mt-2 text-sm text-slate-700">
-        {JOB_TYPE_LABELS[row.job.job_type]} · {JOB_STATUS_LABELS[row.job.status]}
+        {JOB_TYPE_LABELS[row.job.job_type]} · {stepStatus(row.job)}
       </p>
-      <p className="text-xs text-slate-500">{formatDateTime(row.job.scheduled_for, timeZone, dateFormat)}</p>
+      <p className="text-xs text-slate-500">{scheduleLabel(row.job, timeZone, dateFormat)}</p>
       <div className="mt-3">
         <RowActions row={row} pending={pending} onDetails={onDetails} onRetry={onRetry} onCancel={onCancel} />
       </div>
@@ -413,6 +412,15 @@ function matchesTab(status: OutreachJobStatus, tab: TabId) {
   if (tab === "failed") return status === "failed";
   if (tab === "cancelled") return status === "cancelled";
   return status === "completed";
+}
+
+function stepStatus(job: OutreachJobRow) {
+  return queueFollowStatusLabel(job) ?? JOB_STATUS_LABELS[job.status];
+}
+
+function scheduleLabel(job: OutreachJobRow, timeZone: string, dateFormat: DateFormat) {
+  if (job.status === "running" || job.status === "claimed") return "In progress";
+  return formatDateTime(job.scheduled_for, timeZone, dateFormat);
 }
 
 function nameOf(prospect: QueueProspect) {

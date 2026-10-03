@@ -41,6 +41,9 @@ export type JobPayload = {
   instagramUsername: string;
   profileUrl: string;
   message?: string;
+  followClickAttempted?: boolean;
+  executionStarted?: boolean;
+  verifyNotFollowing?: boolean;
 };
 
 export class CloudClient {

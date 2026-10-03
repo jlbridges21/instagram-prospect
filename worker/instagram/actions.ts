@@ -13,6 +13,11 @@ import {
   pageSignal,
   profileFromDom,
 } from "./interpret";
+import {
+  confirmFollowAfterClick,
+  isPreexistingFollow,
+  shouldCompleteFollowWithoutClick,
+} from "../../lib/outreach/follow-confirm";
 import { isExcludedRelationship, profileUrlFor, selectPrimaryRelationship, type FollowRelationship } from "./parse";
 import { openUrl, readDom } from "./read-dom";
 import type { DomSnapshot } from "./types";
@@ -137,10 +142,28 @@ function saveDebugSnapshot(username: string, dom: DomSnapshot) {
   fs.writeFileSync(file, JSON.stringify(safe, null, 2));
 }
 
-export async function followProfile(page: Page, username: string) {
+export async function followProfile(
+  page: Page,
+  username: string,
+  prior?: { followClickAttempted?: boolean; executionStarted?: boolean; verifyNotFollowing?: boolean },
+) {
   const current = await readProfile(page, username);
+  const context = {
+    relationship: current.relationship,
+    followClickAttempted: prior?.followClickAttempted === true,
+    verifyNotFollowing: prior?.verifyNotFollowing === true,
+    executionStarted: prior?.executionStarted === true,
+  };
   if (!current.profileExists) return { followed: false, relationshipStatus: "unknown" as const, profileExists: false };
-  if (isExcludedRelationship(current.relationship)) {
+  if (shouldCompleteFollowWithoutClick(context)) {
+    return {
+      followed: true,
+      relationshipStatus: current.relationship,
+      profileExists: true,
+      recoveredWithoutClick: true,
+    };
+  }
+  if (isPreexistingFollow(context) || (isExcludedRelationship(current.relationship) && !context.followClickAttempted && !context.executionStarted)) {
     return {
       followed: false,
       relationshipStatus: current.relationship,
@@ -153,11 +176,24 @@ export async function followProfile(page: Page, username: string) {
   }
   const button = page.getByRole("button", { name: /^Follow$/ });
   await button.click({ timeout: ACTION_TIMEOUT_MS });
-  const after = await inspectCurrent(page, username);
-  if (after.relationship === "following" || after.relationship === "requested") {
-    return { followed: true, relationshipStatus: after.relationship, profileExists: true };
+  const confirmation = await confirmFollowAfterClick({
+    now: () => Date.now(),
+    sleep: (ms) => page.waitForTimeout(ms),
+    readRelationship: async () => (await inspectCurrent(page, username)).relationship,
+    refresh: async () => {
+      await page.reload({ waitUntil: "domcontentloaded" });
+    },
+  });
+  if (confirmation.confirmed) {
+    return { followed: true, relationshipStatus: confirmation.relationship, profileExists: true };
   }
-  throw new SelectorError(`Follow was clicked for @${username}, but the result could not be confirmed.`);
+  return {
+    followed: false,
+    followClickAttempted: true,
+    confirmation: "uncertain" as const,
+    relationshipStatus: confirmation.relationship,
+    profileExists: true,
+  };
 }
 
 export async function sendExactMessage(page: Page, username: string, message: string) {

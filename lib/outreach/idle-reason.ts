@@ -15,16 +15,42 @@ export type IdleQueueReason =
   | "outside_active_hours"
   | "hourly_limit_reached"
   | "daily_limit_reached"
-  | "next_job_scheduled_for";
+  | "next_job_scheduled_for"
+  | "dependency_not_complete"
+  | "job_in_progress"
+  | "retry_wait";
+
+export type IdleJob = {
+  status: string;
+  jobType: string;
+  scheduledFor: string;
+  availableAt?: string | null;
+  dependsOnStatus?: string | null;
+  dependsOnType?: string | null;
+  username?: string | null;
+  claimExpiresAt?: string | null;
+};
 
 export function explainIdleQueue(input: {
   now: Date;
   timeZone: string;
   settings: OutreachSettings;
-  pendingScheduledFor: string[];
+  pendingScheduledFor?: string[];
+  jobs?: IdleJob[];
   completedSendTimes: Date[];
 }) {
-  if (input.pendingScheduledFor.length === 0) {
+  const jobs: IdleJob[] =
+    input.jobs ??
+    (input.pendingScheduledFor ?? []).map((scheduledFor) => ({
+      status: "pending",
+      jobType: "send_message",
+      scheduledFor,
+      dependsOnStatus: "completed",
+    }));
+  const open = jobs.filter((job) =>
+    job.status === "pending" || job.status === "retry_wait" || job.status === "running" || job.status === "claimed",
+  );
+  if (open.length === 0) {
     return {
       reason: "no_queued_jobs" as const,
       message: "No approved outreach jobs are currently queued.",
@@ -32,14 +58,70 @@ export function explainIdleQueue(input: {
     };
   }
 
-  const nextAt = [...input.pendingScheduledFor].sort()[0] ?? null;
+  const nowMs = input.now.getTime();
+  const inProgress = open.find((job) => {
+    if (job.status !== "running" && job.status !== "claimed") return false;
+    if (!job.claimExpiresAt) return true;
+    return new Date(job.claimExpiresAt).getTime() > nowMs;
+  });
+  if (inProgress) {
+    const who = inProgress.username ? ` for @${inProgress.username}` : "";
+    return {
+      reason: "job_in_progress" as const,
+      message: `${stepName(inProgress.jobType)} is still in progress${who}.`,
+      nextAt: null,
+    };
+  }
+
+  const blocked = open.filter(
+    (job) =>
+      (job.status === "pending" || job.status === "retry_wait") &&
+      job.dependsOnStatus != null &&
+      job.dependsOnStatus !== "completed",
+  );
+  const ready = open.filter(
+    (job) =>
+      (job.status === "pending" || job.status === "retry_wait") &&
+      (job.dependsOnStatus == null || job.dependsOnStatus === "completed"),
+  );
+  if (ready.length === 0 && blocked.length > 0) {
+    const blocker = blocked[0];
+    const who = blocker?.username ? ` for @${blocker.username}` : "";
+    return {
+      reason: "dependency_not_complete" as const,
+      message: `Waiting for ${stepName(blocker?.dependsOnType)} to complete${who}.`,
+      nextAt: null,
+    };
+  }
+
+  const futureReady = ready
+    .map((job) => job.scheduledFor)
+    .filter((iso) => new Date(iso).getTime() > nowMs)
+    .sort();
+  const retryAt = ready
+    .filter((job) => job.status === "retry_wait" && job.availableAt && new Date(job.availableAt).getTime() > nowMs)
+    .map((job) => job.availableAt as string)
+    .sort()[0] ?? null;
+  const due = ready.some((job) => {
+    const scheduled = new Date(job.scheduledFor).getTime();
+    const available = job.availableAt ? new Date(job.availableAt).getTime() : scheduled;
+    return scheduled <= nowMs && available <= nowMs;
+  });
+  if (due) {
+    return {
+      reason: "job_in_progress" as const,
+      message: "An outreach step is still open and is not ready to claim.",
+      nextAt: null,
+    };
+  }
+
   const windowOpens = nextOpenInstant(input.now, input.timeZone, input.settings);
   const insideWindow = Math.abs(windowOpens.getTime() - input.now.getTime()) < 1000;
   if (!insideWindow) {
     return {
       reason: "outside_active_hours" as const,
       message: "Outside active outreach hours.",
-      nextAt: windowOpens.toISOString(),
+      nextAt: futureStamp(windowOpens.toISOString(), nowMs),
     };
   }
 
@@ -51,20 +133,55 @@ export function explainIdleQueue(input: {
     return {
       reason: "daily_limit_reached" as const,
       message: "The daily outreach limit has been reached.",
-      nextAt,
+      nextAt: futureStamp(futureReady[0] ?? null, nowMs),
     };
   }
   if (sendsThisHour >= input.settings.hourlyMaximum) {
     return {
       reason: "hourly_limit_reached" as const,
       message: "The hourly outreach limit has been reached.",
+      nextAt: futureStamp(futureReady[0] ?? null, nowMs),
+    };
+  }
+  if (retryAt) {
+    return {
+      reason: "retry_wait" as const,
+      message: "The next outreach step is waiting to retry.",
+      nextAt: futureStamp(retryAt, nowMs),
+    };
+  }
+  const nextAt = futureStamp(futureReady[0] ?? null, nowMs);
+  if (nextAt) {
+    return {
+      reason: "next_job_scheduled_for" as const,
+      message: "The next outreach job is not due yet.",
       nextAt,
     };
   }
-
+  if (blocked.length > 0) {
+    const blocker = blocked[0];
+    const who = blocker?.username ? ` for @${blocker.username}` : "";
+    return {
+      reason: "dependency_not_complete" as const,
+      message: `Waiting for ${stepName(blocker?.dependsOnType)} to complete${who}.`,
+      nextAt: null,
+    };
+  }
   return {
-    reason: "next_job_scheduled_for" as const,
-    message: "The next outreach job is not due yet.",
-    nextAt,
+    reason: "no_queued_jobs" as const,
+    message: "No approved outreach jobs are currently queued.",
+    nextAt: null,
   };
+}
+
+function futureStamp(iso: string | null, nowMs: number) {
+  if (!iso) return null;
+  return new Date(iso).getTime() > nowMs ? iso : null;
+}
+
+function stepName(type: string | null | undefined) {
+  if (type === "follow_profile") return "Follow account";
+  if (type === "verify_profile") return "Verify profile";
+  if (type === "send_message") return "Send message";
+  return "the previous step";
 }

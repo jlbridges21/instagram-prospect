@@ -7,6 +7,7 @@ import type { Database, Json, OutreachJobRow, ProspectRow } from "@/lib/db/types
 import type { AppSettings, TargetingSettings } from "@/lib/db/models";
 import { isMissingRelation } from "@/lib/db/errors";
 import { outreachBlockReason } from "@/lib/outreach/eligibility";
+import { expiredFollowNeedsStamp, followClickWasAttempted, uncertainFollowResult } from "@/lib/outreach/follow-confirm";
 import { claimBlockMessage, explainIdleQueue } from "@/lib/outreach/idle-reason";
 import { nextPrepInstant, nextSendInstant } from "@/lib/outreach/scheduler";
 import { automationChange, requeueDecision } from "@/lib/outreach/requeue";
@@ -270,6 +271,12 @@ export async function claimNextJob(input: {
     };
   }
 
+  await stampExpiredFollowAttempts(input.admin, now);
+  const resumed = await resumeOwnedFollow(input.admin, input.workerId, now, input.prospectId);
+  if (resumed) {
+    return { ok: true as const, reason: null, message: null, nextAt: null, job: resumed };
+  }
+
   const claimed = await input.admin.rpc("claim_next_outreach_job", {
     p_worker_id: input.workerId,
     p_lease_seconds: input.settings.outreach.claimLeaseSeconds,
@@ -313,17 +320,17 @@ export async function claimNextJob(input: {
     reason: null,
     message: null,
     nextAt: null,
-    job: publicJob(jobId, jobType, prospect.data),
+    job: publicJob(jobId, jobType, prospect.data, await followContext(input.admin, prospectId, claimed.data.result, typeof claimed.data.started_at === "string" ? claimed.data.started_at : null)),
   };
 }
 
 async function explainWhyNoJob(admin: Client, settings: AppSettings, now: Date, prospectId?: string | null) {
   const pending = await admin
     .from("outreach_jobs")
-    .select("scheduled_for, status, prospect_id")
-    .in("status", ["pending", "retry_wait"])
+    .select("id, job_type, status, scheduled_for, available_at, depends_on_job_id, claim_expires_at, prospect_id")
+    .in("status", ["pending", "retry_wait", "claimed", "running"])
     .order("scheduled_for", { ascending: true })
-    .limit(40);
+    .limit(80);
   const sends = await admin
     .from("outreach_jobs")
     .select("completed_at")
@@ -332,19 +339,42 @@ async function explainWhyNoJob(admin: Client, settings: AppSettings, now: Date, 
     .not("completed_at", "is", null)
     .order("completed_at", { ascending: false })
     .limit(200);
-  const pendingRows = (pending.data ?? []).filter((job) => !prospectId || job.prospect_id === prospectId);
+  const rows = (pending.data ?? []).filter((job) => !prospectId || job.prospect_id === prospectId);
+  const parentIds = [...new Set(rows.map((job) => job.depends_on_job_id).filter((id): id is string => Boolean(id)))];
+  const parents = parentIds.length
+    ? await admin.from("outreach_jobs").select("id, status, job_type").in("id", parentIds)
+    : { data: [] };
+  const parentById = new Map((parents.data ?? []).map((job) => [job.id, job]));
+  const prospectIds = [...new Set(rows.map((job) => job.prospect_id))];
+  const people = prospectIds.length
+    ? await admin.from("prospects").select("id, instagram_username").in("id", prospectIds)
+    : { data: [] };
+  const usernameById = new Map((people.data ?? []).map((person) => [person.id, person.instagram_username]));
   const idle = explainIdleQueue({
     now,
     timeZone: settings.timezone,
     settings: settings.outreach,
-    pendingScheduledFor: pendingRows.map((job) => job.scheduled_for),
+    jobs: rows.map((job) => {
+      const parent = job.depends_on_job_id ? parentById.get(job.depends_on_job_id) : undefined;
+      return {
+        status: job.status,
+        jobType: job.job_type,
+        scheduledFor: job.scheduled_for,
+        availableAt: job.available_at,
+        dependsOnStatus: parent?.status ?? null,
+        dependsOnType: parent?.job_type ?? null,
+        username: usernameById.get(job.prospect_id) ?? null,
+        claimExpiresAt: job.claim_expires_at,
+      };
+    }),
     completedSendTimes: (sends.data ?? [])
       .map((job) => (job.completed_at ? new Date(job.completed_at) : null))
       .filter((value): value is Date => value !== null),
   });
-  const when = idle.nextAt ? formatOutreachWhen(idle.nextAt, settings.timezone) : null;
+  const nextIsFuture = idle.nextAt != null && new Date(idle.nextAt).getTime() > now.getTime();
+  const when = nextIsFuture && idle.nextAt ? formatOutreachWhen(idle.nextAt, settings.timezone) : null;
   const message = when ? `${idle.message} Next time: ${when}.` : idle.message;
-  return { reason: idle.reason, message, nextAt: idle.nextAt };
+  return { reason: idle.reason, message, nextAt: nextIsFuture ? idle.nextAt : null };
 }
 
 function formatOutreachWhen(iso: string, timeZone: string) {
@@ -367,6 +397,7 @@ function publicJob(
     profile_url: string | null;
     queued_message_text: string | null;
   },
+  follow?: { followClickAttempted: boolean; executionStarted: boolean; verifyNotFollowing: boolean } | null,
 ) {
   const base = {
     id: jobId,
@@ -375,8 +406,80 @@ function publicJob(
     instagramUsername: prospect.instagram_username,
     profileUrl: profileUrlForUsername(prospect.instagram_username, prospect.profile_url),
   };
+  if (jobType === "follow_profile") return { ...base, ...(follow ?? {}) };
   if (jobType !== "send_message") return base;
   return { ...base, message: prospect.queued_message_text ?? "" };
+}
+
+async function followContext(admin: Client, prospectId: string, result: unknown, startedAt: string | null) {
+  const verify = await admin
+    .from("outreach_jobs")
+    .select("result")
+    .eq("prospect_id", prospectId)
+    .eq("job_type", "verify_profile")
+    .eq("status", "completed")
+    .order("completed_at", { ascending: false })
+    .limit(1);
+  const verifyResult = verify.data?.[0]?.result;
+  const verifyRecord =
+    verifyResult && typeof verifyResult === "object" && !Array.isArray(verifyResult)
+      ? (verifyResult as { alreadyFollowing?: boolean; relationshipStatus?: string })
+      : null;
+  const verifyNotFollowing =
+    verifyRecord?.alreadyFollowing === false || verifyRecord?.relationshipStatus === "not_following";
+  const followClickAttempted = followClickWasAttempted(result);
+  return {
+    followClickAttempted,
+    executionStarted: Boolean(startedAt) || followClickAttempted,
+    verifyNotFollowing,
+  };
+}
+
+async function stampExpiredFollowAttempts(admin: Client, now: Date) {
+  const expired = await admin
+    .from("outreach_jobs")
+    .select("id, result, started_at, status, job_type, claim_expires_at")
+    .eq("job_type", "follow_profile")
+    .in("status", ["claimed", "running"])
+    .not("started_at", "is", null)
+    .lt("claim_expires_at", now.toISOString());
+  if (expired.error || !expired.data) return;
+  for (const job of expired.data) {
+    if (!expiredFollowNeedsStamp({ ...job, now })) continue;
+    const prior = job.result && typeof job.result === "object" && !Array.isArray(job.result) ? job.result : {};
+    await admin.from("outreach_jobs").update({ result: { ...prior, ...uncertainFollowResult() } }).eq("id", job.id);
+  }
+}
+
+async function resumeOwnedFollow(admin: Client, workerId: string, now: Date, prospectId?: string | null) {
+  void now;
+  let request = admin
+    .from("outreach_jobs")
+    .select("*")
+    .eq("job_type", "follow_profile")
+    .in("status", ["running", "claimed"])
+    .eq("claimed_by_worker_id", workerId)
+    .limit(1);
+  if (prospectId) request = request.eq("prospect_id", prospectId);
+  const owned = await request.maybeSingle();
+  if (owned.error || !owned.data) return null;
+  if (owned.data.started_at && !followClickWasAttempted(owned.data.result)) {
+    const prior = owned.data.result && typeof owned.data.result === "object" && !Array.isArray(owned.data.result) ? owned.data.result : {};
+    await admin.from("outreach_jobs").update({ result: { ...prior, ...uncertainFollowResult() } }).eq("id", owned.data.id);
+    owned.data.result = { ...prior, ...uncertainFollowResult() };
+  }
+  const prospect = await admin
+    .from("prospects")
+    .select("id, instagram_username, profile_url, queued_message_text")
+    .eq("id", owned.data.prospect_id)
+    .maybeSingle();
+  if (prospect.error || !prospect.data) return null;
+  return publicJob(
+    owned.data.id,
+    "follow_profile",
+    prospect.data,
+    await followContext(admin, owned.data.prospect_id, owned.data.result, owned.data.started_at),
+  );
 }
 
 async function ownedJob(admin: Client, jobId: string, workerId: string, now: Date) {
@@ -720,6 +823,31 @@ async function failOwnedJob(
     now: Date;
   },
 ) {
+  if (input.errorCode === "follow_confirmation_uncertain") {
+    const prior = job.result && typeof job.result === "object" && !Array.isArray(job.result) ? job.result : {};
+    const { error } = await admin
+      .from("outreach_jobs")
+      .update({
+        status: "retry_wait",
+        last_error: clipError(input.errorMessage),
+        result: { ...prior, ...uncertainFollowResult() },
+        available_at: input.now.toISOString(),
+        claimed_by_worker_id: null,
+        claimed_at: null,
+        claim_expires_at: null,
+        failed_at: null,
+      })
+      .eq("id", job.id);
+    if (error) return { ok: false as const, error: "Could not record the job failure." };
+    await logActivity(admin, {
+      prospectId: job.prospect_id,
+      eventType: "worker_job_failed",
+      description: "Follow was clicked, but it still needs verification.",
+      metadata: { jobId: job.id, errorCode: input.errorCode },
+    });
+    return { ok: true as const, status: "retry_wait" as const, attemptCount: job.attempt_count };
+  }
+
   const plan = failurePlan({
     attemptCount: job.attempt_count,
     maxAttempts: job.max_attempts,
