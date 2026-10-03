@@ -309,6 +309,25 @@ export const READ_DOM_SOURCE = `() => {
   const headerRoot = dialog || directMain;
   const headingNode = headerRoot ? headerRoot.querySelector("h1, h2, [role='heading']") : null;
   const conversationHeader = headingNode ? undouble(headingNode.textContent || "").slice(0, 80) : "";
+  const recipientCandidates = [];
+  if (headerRoot) {
+    const rootBox = headerRoot.getBoundingClientRect();
+    const nodes = [...headerRoot.querySelectorAll("a, h1, h2, [role='link'], [role='heading'], img")].slice(0, 40);
+    for (const el of nodes) {
+      if (el.closest && el.closest("[role='row'], [data-message]")) continue;
+      const rect = el.getBoundingClientRect();
+      if (!rect || rect.width < 1 || rect.height < 1) continue;
+      if (rect.top - rootBox.top > 220) continue;
+      const href = (el.getAttribute("href") || "").split("?")[0].split("#")[0].slice(0, 160);
+      const text = undouble(el.innerText || el.textContent || "").slice(0, 80);
+      const ariaLabel = undouble(el.getAttribute("aria-label") || "").slice(0, 80);
+      const title = undouble(el.getAttribute("title") || "").slice(0, 80);
+      const alt = undouble(el.getAttribute("alt") || "").slice(0, 80);
+      if (!href && !text && !ariaLabel && !title && !alt) continue;
+      recipientCandidates.push({ text, href, role: String(el.getAttribute("role") || el.tagName || "").toLowerCase(), ariaLabel, title, alt });
+      if (recipientCandidates.length >= 8) break;
+    }
+  }
   const suggestedProfiles = suggestedProfileCards();
   return {
     url: location.href,
@@ -329,6 +348,7 @@ export const READ_DOM_SOURCE = `() => {
     messageActionHits,
     composerCandidates,
     conversationHeader,
+    recipientCandidates,
     usernameBox: boxOf(heading),
     optionsBox: boxOf(options),
     metaDescription: meta ? (meta.getAttribute("content") || "").slice(0, 500) : null,

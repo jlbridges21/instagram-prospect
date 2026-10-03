@@ -93,9 +93,22 @@ export async function runWorker(mode: RunMode) {
       console.log(`@${inspectUsernameArg}`);
       console.log(`Message action: ${inspection.messageAction ? "found" : "not found"}`);
       console.log(`Conversation opened: ${inspection.conversationOpened ? "yes" : "no"}`);
-      console.log(`Conversation username: ${inspection.conversationUsername ?? "not confirmed"}`);
+      const candidates = "recipientCandidates" in inspection ? inspection.recipientCandidates : [];
+      console.log("");
+      console.log("Conversation recipient candidates:");
+      if (!candidates?.length) console.log("  none");
+      candidates?.forEach((candidate, index) => {
+        console.log(`  [${index}] text="${candidate.text}" href="${candidate.href}" role=${candidate.role}`);
+        console.log(`      accepted: ${candidate.accepted ? "true" : "false"}`);
+        console.log(`      reason: ${candidate.reason}`);
+      });
+      console.log("");
+      console.log(`Conversation recipient: ${"recipientConfirmed" in inspection && inspection.recipientConfirmed ? "confirmed" : "not confirmed"}`);
+      console.log(`Recipient strategy: ${"recipientStrategy" in inspection && inspection.recipientStrategy ? inspection.recipientStrategy : "none"}`);
+      if ("recipientReason" in inspection && inspection.recipientReason) console.log(inspection.recipientReason);
       console.log(`Composer found: ${inspection.composerFound ? "yes" : "no"}`);
       console.log(`Composer strategy: ${inspection.composerStrategy ?? "none"}`);
+      console.log(`Existing conversation: ${inspection.existingConversation ? "yes" : "no"}`);
       console.log("");
       console.log("Nothing was typed or sent.");
     } catch (error) {
@@ -352,6 +365,8 @@ async function settleExecution(
     recoveredWithoutClick?: boolean;
     composerNotFound?: boolean;
     manualReview?: boolean;
+    recipientUnconfirmed?: boolean;
+    ambiguousReason?: string;
   };
   if (
     job.type === "send_message" &&
@@ -362,6 +377,7 @@ async function settleExecution(
     result.profileExists !== false &&
     result.composerNotFound !== true &&
     result.manualReview !== true &&
+    result.recipientUnconfirmed !== true &&
     result.confirmation !== "uncertain"
   ) {
     await reportFailure(
@@ -387,16 +403,16 @@ async function settleExecution(
     console.log(`Could not find the message composer for @${job.instagramUsername}.`);
     return "stop" as const;
   }
+  if (outcome.recipientUnconfirmed) {
+    const reason = outcome.ambiguousReason || "Conversation recipient could not be confirmed.";
+    await reportFailure(cloud, workerId, job.id, "recipient_confirmation_failed", reason, true);
+    console.log(reason);
+    return "stop" as const;
+  }
   if (outcome.manualReview) {
-    await reportFailure(
-      cloud,
-      workerId,
-      job.id,
-      "browser_error",
-      "Message state is ambiguous. Manual review required.",
-      false,
-    );
-    console.log("Message state is ambiguous. Manual review required.");
+    const reason = outcome.ambiguousReason || "Send state from a previous attempt is uncertain.";
+    await reportFailure(cloud, workerId, job.id, "send_confirmation_uncertain", reason, true);
+    console.log(reason);
     return "stop" as const;
   }
   if (outcome.confirmation === "uncertain" && job.type === "send_message") {

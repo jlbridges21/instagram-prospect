@@ -35,6 +35,7 @@ export const WORKER_ERROR_CODES = [
   "preexisting_follow",
   "follow_confirmation_uncertain",
   "dm_composer_not_found",
+  "recipient_confirmation_failed",
   "send_confirmation_uncertain",
 ] as const;
 

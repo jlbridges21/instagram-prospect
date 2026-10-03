@@ -82,6 +82,14 @@ export type DomSnapshot = {
   messageActionHits?: MessageActionHit[];
   composerCandidates?: ComposerCandidate[];
   conversationHeader?: string;
+  recipientCandidates?: Array<{
+    text: string;
+    href: string;
+    role: string;
+    ariaLabel: string;
+    title: string;
+    alt: string;
+  }>;
   usernameBox?: ElementBox | null;
   optionsBox?: ElementBox | null;
   metaDescription?: string | null;

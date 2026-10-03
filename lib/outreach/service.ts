@@ -290,6 +290,7 @@ export async function claimNextJob(input: {
     return { ok: true as const, reason: null, message: null, nextAt: null, job: resumed };
   }
   if (!input.recoverOnly) {
+    await releaseUnsentRecipientFailures(input.admin, now);
     const resumedSend = await resumeOwnedSend(
       input.admin,
       input.workerId,
@@ -581,6 +582,36 @@ async function resumeOwnedFollow(
     if (reclaimed.data) return publishFollowJob(admin, reclaimed.data);
   }
   return null;
+}
+
+async function releaseUnsentRecipientFailures(admin: Client, now: Date) {
+  const failed = await admin
+    .from("outreach_jobs")
+    .select("id, last_error, result")
+    .eq("job_type", "send_message")
+    .eq("status", "failed")
+    .limit(20);
+  if (failed.error || !failed.data) return;
+  for (const job of failed.data) {
+    if (sendWasAttempted(job.result)) continue;
+    const text = job.last_error ?? "";
+    const recoverable =
+      text === "Message state is ambiguous. Manual review required." ||
+      /recipient|thread identity/i.test(text);
+    if (!recoverable) continue;
+    await admin
+      .from("outreach_jobs")
+      .update({
+        status: "retry_wait",
+        available_at: now.toISOString(),
+        failed_at: null,
+        claimed_by_worker_id: null,
+        claimed_at: null,
+        claim_expires_at: null,
+      })
+      .eq("id", job.id)
+      .eq("status", "failed");
+  }
 }
 
 async function resumeOwnedSend(
@@ -1021,7 +1052,7 @@ async function failOwnedJob(
       .from("outreach_jobs")
       .update({
         status: "retry_wait",
-        last_error: "send_confirmation_uncertain",
+        last_error: clipError(input.errorMessage),
         result: { ...prior, sendAttempted: true, confirmation: "uncertain", error_code: input.errorCode },
         available_at: input.now.toISOString(),
         claimed_by_worker_id: null,

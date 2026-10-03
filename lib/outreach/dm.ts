@@ -125,17 +125,146 @@ export function composerCandidatesFromSnapshot(dom: {
   }));
 }
 
-export function conversationMatchesProspect(input: {
-  url: string;
-  header: string;
+export type RecipientCandidate = {
+  text: string;
+  href: string;
+  role: string;
+  ariaLabel: string;
+  title: string;
+  alt: string;
+};
+
+export type NavigationProvenance = {
+  sourceProfileUsername: string;
+  sourceProfileVerified: boolean;
+  messageActionClicked: boolean;
+  directOpenedFromProfile: boolean;
+};
+
+export function profileUsernameFromHref(href: string) {
+  const path = href.split("?")[0].split("#")[0].replace(/^https?:\/\/(www\.)?instagram\.com/i, "");
+  const match = path.match(/^\/([A-Za-z0-9._]{1,30})\/?$/i);
+  if (!match) return null;
+  const name = match[1].toLowerCase();
+  if (["direct", "explore", "accounts", "reels", "stories", "p"].includes(name)) return null;
+  return name;
+}
+
+function candidateBlob(candidate: RecipientCandidate) {
+  return [candidate.text, candidate.ariaLabel, candidate.title, candidate.alt].join(" ").replace(/\s+/g, " ").trim();
+}
+
+function sameDisplayName(value: string, displayName: string) {
+  const display = displayName.trim().toLowerCase();
+  const text = value.trim().toLowerCase();
+  if (display.length < 2 || !text) return false;
+  return text === display || text === `${display}'s profile picture`;
+}
+
+export function confirmConversationRecipient(input: {
   username: string;
   displayName?: string | null;
+  candidates: RecipientCandidate[];
+  provenance: NavigationProvenance;
 }) {
-  const header = input.header.toLowerCase();
   const username = input.username.replace(/^@/, "").toLowerCase();
-  if (username && header.includes(username)) return true;
-  const display = input.displayName?.trim().toLowerCase() ?? "";
-  return display.length > 1 && header.includes(display);
+  const evidence = input.candidates.map((candidate) => {
+    const hrefUser = profileUsernameFromHref(candidate.href);
+    if (hrefUser && hrefUser !== username) {
+      return { ...candidate, accepted: false, reason: "profile href belongs to another account" };
+    }
+    if (hrefUser === username) {
+      return { ...candidate, accepted: true, reason: "profile href matches target" };
+    }
+    const blob = candidateBlob(candidate);
+    if (new RegExp(`(^|\\s)@${username}(\\s|$)`, "i").test(blob)) {
+      return { ...candidate, accepted: true, reason: "visible @username" };
+    }
+    if (new RegExp(`(^|\\s)${username}(\\s|$)`, "i").test(blob)) {
+      return { ...candidate, accepted: true, reason: "visible username" };
+    }
+    return { ...candidate, accepted: false, reason: "not recipient evidence" };
+  });
+  const conflict = evidence.find((item) => item.reason === "profile href belongs to another account");
+  if (conflict) {
+    return {
+      confirmed: false as const,
+      strategy: null,
+      evidence,
+      ambiguousReason: "Conversation recipient could not be confirmed.",
+    };
+  }
+  if (evidence.some((item) => item.reason === "profile href matches target")) {
+    return {
+      confirmed: true as const,
+      strategy: "conversation-header-profile-link",
+      evidence,
+      ambiguousReason: null,
+    };
+  }
+  if (evidence.some((item) => item.reason === "visible @username")) {
+    return {
+      confirmed: true as const,
+      strategy: "conversation-header-at-username",
+      evidence,
+      ambiguousReason: null,
+    };
+  }
+  if (evidence.some((item) => item.reason === "visible username")) {
+    return {
+      confirmed: true as const,
+      strategy: "conversation-header-username",
+      evidence,
+      ambiguousReason: null,
+    };
+  }
+  const display = input.displayName?.trim() ?? "";
+  const displayMatched = display.length > 1 && evidence.some((item) => sameDisplayName(candidateBlob(item), display) || sameDisplayName(item.text, display) || sameDisplayName(item.alt, display));
+  const provenanceOk =
+    input.provenance.sourceProfileVerified &&
+    input.provenance.messageActionClicked &&
+    input.provenance.directOpenedFromProfile &&
+    input.provenance.sourceProfileUsername.replace(/^@/, "").toLowerCase() === username;
+  if (displayMatched && provenanceOk) {
+    return {
+      confirmed: true as const,
+      strategy: "conversation-header-display-name-plus-provenance",
+      evidence,
+      ambiguousReason: null,
+    };
+  }
+  if (provenanceOk && !conflict && input.candidates.length === 0) {
+    return {
+      confirmed: false as const,
+      strategy: null,
+      evidence,
+      ambiguousReason: "Composer was found but thread identity was not confirmed.",
+    };
+  }
+  return {
+    confirmed: false as const,
+    strategy: null,
+    evidence,
+    ambiguousReason: displayMatched
+      ? "Composer was found but thread identity was not confirmed."
+      : "Conversation recipient could not be confirmed.",
+  };
+}
+
+export function sendAllowed(input: {
+  recipientConfirmed: boolean;
+  existingConversation: boolean;
+  composerFound: boolean;
+  lockedMessageMatches: boolean;
+  followOwnedBySequence: boolean;
+}) {
+  return (
+    input.recipientConfirmed &&
+    !input.existingConversation &&
+    input.composerFound &&
+    input.lockedMessageMatches &&
+    input.followOwnedBySequence
+  );
 }
 
 export function threadHasExactOutbound(messages: string[], locked: string) {
@@ -151,12 +280,20 @@ export function sendRecoveryDecision(input: {
   priorConversation: boolean;
   conversationMatches: boolean;
 }) {
-  if (input.exactOutboundPresent) return { action: "complete" as const, send: false as const };
-  if (input.sendAttempted) return { action: "review" as const, send: false as const };
-  if (input.priorConversation) return { action: "existing_conversation" as const, send: false as const };
-  if (!input.composerFound) return { action: "retry_composer" as const, send: false as const };
-  if (!input.conversationMatches) return { action: "review" as const, send: false as const };
-  return { action: "send" as const, send: true as const };
+  if (input.exactOutboundPresent) return { action: "complete" as const, send: false as const, reason: null };
+  if (input.sendAttempted) {
+    return { action: "review" as const, send: false as const, reason: "Send state from a previous attempt is uncertain." };
+  }
+  if (input.priorConversation) return { action: "existing_conversation" as const, send: false as const, reason: null };
+  if (!input.composerFound) return { action: "retry_composer" as const, send: false as const, reason: null };
+  if (!input.conversationMatches) {
+    return {
+      action: "review" as const,
+      send: false as const,
+      reason: "Composer was found but thread identity was not confirmed.",
+    };
+  }
+  return { action: "send" as const, send: true as const, reason: null };
 }
 
 export function sendConfirmation(input: { composerText: string; threadMessages: string[]; locked: string }) {
@@ -192,10 +329,14 @@ export function queueSendStatusLabel(job: {
   job_type: string;
   status: string;
   claim_expires_at?: string | null;
+  last_error?: string | null;
   now?: Date;
 }) {
   if (job.job_type !== "send_message") return null;
-  if (job.status === "retry_wait") return "Retry scheduled";
+  if (job.status === "retry_wait") {
+    if (job.last_error && /recipient|thread identity|previous attempt is uncertain/i.test(job.last_error)) return job.last_error;
+    return "Retry scheduled";
+  }
   if (job.status === "failed") return "Failed";
   if (job.status === "running" || job.status === "claimed") {
     const now = job.now ?? new Date();

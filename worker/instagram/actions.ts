@@ -13,7 +13,8 @@ import {
   profileFromDom,
 } from "./interpret";
 import {
-  conversationMatchesProspect,
+  confirmConversationRecipient,
+  type NavigationProvenance,
   detectComposer,
   DM_OPEN_POLL_MS,
   DM_OPEN_WINDOW_MS,
@@ -241,12 +242,19 @@ export async function inspectDirectMessage(page: Page, username: string) {
       profileExists: current.profileExists,
     };
   }
-  const opened = await waitForDirect(page, username, current.profile.displayName);
+  const opened = await waitForDirect(page, username, current.profile.displayName, "", current.profile.username === username.toLowerCase());
+  if (!opened.recipient.confirmed && !opened.existingConversation) {
+    await saveRecipientDebug(page, username, opened.dom, opened.recipient.ambiguousReason);
+  }
   return {
     relationship: current.relationship,
     messageAction: true,
     conversationOpened: opened.opened,
-    conversationUsername: opened.matches ? username : null,
+    conversationUsername: opened.recipient.confirmed ? username : null,
+    recipientConfirmed: opened.recipient.confirmed,
+    recipientStrategy: opened.recipient.strategy,
+    recipientReason: opened.recipient.ambiguousReason,
+    recipientCandidates: opened.recipient.evidence,
     composerFound: opened.composerFound,
     composerStrategy: opened.composerStrategy,
     existingConversation: opened.existingConversation,
@@ -285,17 +293,33 @@ export async function sendExactMessage(
     await saveComposerDebug(page, username, dom);
     return { sent: false, composerNotFound: true, sendAttempted: false, profileExists: true };
   }
-  const opened = await waitForDirect(page, username, current.profile.displayName, message);
-  if (opened.signal) throw new AttentionError(opened.signal, attentionMessage(opened.signal));
+  const opened = await waitForDirect(page, username, current.profile.displayName, message, current.profile.username === username.toLowerCase());
+  if (
+    opened.signal === "login_required" ||
+    opened.signal === "instagram_checkpoint" ||
+    opened.signal === "action_blocked" ||
+    opened.signal === "rate_limited"
+  ) {
+    throw new AttentionError(opened.signal, attentionMessage(opened.signal));
+  }
   if (opened.exactOutbound) return { sent: true, alreadyPresent: true, profileExists: true };
   const decision = sendRecoveryDecision({
     sendAttempted: prior?.sendAttempted === true,
     exactOutboundPresent: opened.exactOutbound,
     composerFound: opened.composerFound,
     priorConversation: opened.existingConversation,
-    conversationMatches: opened.matches,
+    conversationMatches: opened.recipient.confirmed,
   });
-  if (decision.action === "review") return { sent: false, manualReview: true, sendAttempted: prior?.sendAttempted === true };
+  if (decision.action === "review") {
+    return {
+      sent: false,
+      manualReview: prior?.sendAttempted === true,
+      recipientUnconfirmed: prior?.sendAttempted !== true,
+      ambiguousReason: decision.reason,
+      sendAttempted: prior?.sendAttempted === true,
+      profileExists: true,
+    };
+  }
   if (decision.action === "existing_conversation") return { sent: false, existingConversation: true };
   if (decision.action === "retry_composer" || !opened.composerStrategy) {
     await saveComposerDebug(page, username, opened.dom);
@@ -377,52 +401,59 @@ async function writeComposer(page: Page, strategy: string, message: string) {
   return page.evaluate(write, { strategy, text: message });
 }
 
-async function waitForDirect(page: Page, username: string, displayName: string | null, locked = "") {
-  const started = Date.now();
-  let dom = await readDom(page);
-  let composerReadyAt: number | null = null;
-  while (Date.now() - started <= DM_OPEN_WINDOW_MS) {
-    const signal = pageSignal(dom);
-    if (signal === "instagram_checkpoint" || signal === "action_blocked" || signal === "rate_limited" || signal === "login_required") {
-      return { signal, opened: false, matches: false, composerFound: false, composerStrategy: null, existingConversation: false, exactOutbound: false, dom };
-    }
-    const composer = detectComposer(dom.composerCandidates ?? []);
-    const matches = conversationMatchesProspect({
-      url: dom.url,
-      header: dom.conversationHeader ?? "",
-      username,
-      displayName,
-    });
-    const exactOutbound = threadHasExactOutbound(dom.threadMessages, locked);
-    const existingConversation = hasPriorConversation(dom, locked);
-    if (composer.found && (exactOutbound || existingConversation || (composerReadyAt !== null && Date.now() - composerReadyAt >= 2_000))) {
-      return {
-        signal: null,
-        opened: true,
-        matches,
-        composerFound: true,
-        composerStrategy: composer.strategy,
-        existingConversation,
-        exactOutbound,
-        dom,
-      };
-    }
-    if (composer.found && composerReadyAt === null) composerReadyAt = Date.now();
-    if (Date.now() - started >= DM_OPEN_WINDOW_MS) break;
-    await page.waitForTimeout(DM_OPEN_POLL_MS);
-    dom = await readDom(page);
-  }
+function directSnapshot(
+  dom: DomSnapshot,
+  username: string,
+  displayName: string | null,
+  locked: string,
+  sourceVerified: boolean,
+  signal: ReturnType<typeof pageSignal>,
+) {
   const composer = detectComposer(dom.composerCandidates ?? []);
+  const opened = composer.found || dom.url.includes("/direct/") || (dom.recipientCandidates ?? []).length > 0;
+  const provenance: NavigationProvenance = {
+    sourceProfileUsername: username,
+    sourceProfileVerified: sourceVerified,
+    messageActionClicked: true,
+    directOpenedFromProfile: opened,
+  };
+  const recipient = confirmConversationRecipient({
+    username,
+    displayName,
+    candidates: dom.recipientCandidates ?? [],
+    provenance,
+  });
   return {
-    signal: null,
-    opened: composer.found || dom.url.includes("/direct/"),
-    matches: conversationMatchesProspect({ url: dom.url, header: dom.conversationHeader ?? "", username, displayName }),
+    signal,
+    opened,
+    recipient,
     composerFound: composer.found,
     composerStrategy: composer.strategy,
     existingConversation: hasPriorConversation(dom, locked),
     exactOutbound: threadHasExactOutbound(dom.threadMessages, locked),
     dom,
   };
+}
+
+async function waitForDirect(page: Page, username: string, displayName: string | null, locked = "", sourceVerified = false) {
+  const started = Date.now();
+  let dom = await readDom(page);
+  let composerReadyAt: number | null = null;
+  while (Date.now() - started <= DM_OPEN_WINDOW_MS) {
+    const signal = pageSignal(dom);
+    if (signal === "instagram_checkpoint" || signal === "action_blocked" || signal === "rate_limited" || signal === "login_required") {
+      return directSnapshot(dom, username, displayName, locked, sourceVerified, signal);
+    }
+    const snapshot = directSnapshot(dom, username, displayName, locked, sourceVerified, null);
+    if (snapshot.composerFound && (snapshot.exactOutbound || snapshot.existingConversation || snapshot.recipient.confirmed || (composerReadyAt !== null && Date.now() - composerReadyAt >= 2_000))) {
+      return snapshot;
+    }
+    if (snapshot.composerFound && composerReadyAt === null) composerReadyAt = Date.now();
+    if (Date.now() - started >= DM_OPEN_WINDOW_MS) break;
+    await page.waitForTimeout(DM_OPEN_POLL_MS);
+    dom = await readDom(page);
+  }
+  return directSnapshot(dom, username, displayName, locked, sourceVerified, null);
 }
 
 async function confirmSend(page: Page, message: string) {
@@ -462,6 +493,37 @@ async function saveComposerDebug(page: Page, username: string, dom: DomSnapshot)
     })),
   };
   fs.writeFileSync(`${base}.json`, JSON.stringify(safe, null, 2));
+}
+
+async function saveRecipientDebug(page: Page, username: string, dom: DomSnapshot, reason: string | null) {
+  const url = dom.url || page.url();
+  if (url.includes("/accounts/login") || url.includes("/challenge/")) return;
+  fs.mkdirSync(debugDir(), { recursive: true });
+  const base = path.join(debugDir(), `dm-${username}-recipient-ambiguous`);
+  const privateHistory = dom.threadMessages.some((item) => item.trim().length > 0);
+  if (!privateHistory) {
+    await page.screenshot({ path: `${base}.png`, fullPage: false }).catch(() => undefined);
+  }
+  fs.writeFileSync(
+    `${base}.json`,
+    JSON.stringify(
+      {
+        url,
+        reason,
+        conversationHeader: dom.conversationHeader ?? "",
+        recipients: (dom.recipientCandidates ?? []).map((candidate) => ({
+          text: candidate.text,
+          href: candidate.href,
+          role: candidate.role,
+          ariaLabel: candidate.ariaLabel,
+          title: candidate.title,
+          alt: candidate.alt,
+        })),
+      },
+      null,
+      2,
+    ),
+  );
 }
 
 export async function previewOutreach(page: Page, username: string, message: string | null) {

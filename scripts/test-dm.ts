@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
 import { failurePlan } from "../lib/outreach/decisions";
 import {
+  confirmConversationRecipient,
   detectComposer,
   messageAllowedForSequence,
+  sendAllowed,
   queueSendStatusLabel,
   selectPrimaryMessageAction,
   sendConfirmation,
@@ -186,7 +188,95 @@ assert.equal(sendRecoveryDecision({
   conversationMatches: true,
 }).action, "complete");
 
+const blank = { ariaLabel: "", title: "", alt: "" };
+const noProof = {
+  sourceProfileUsername: "vsiaerial",
+  sourceProfileVerified: false,
+  messageActionClicked: false,
+  directOpenedFromProfile: false,
+};
+const proof = {
+  sourceProfileUsername: "vsiaerial",
+  sourceProfileVerified: true,
+  messageActionClicked: true,
+  directOpenedFromProfile: true,
+};
+const href = confirmConversationRecipient({
+  username: "vsiaerial",
+  displayName: "VSI Aerial",
+  candidates: [{ text: "VSI Aerial", href: "/vsiaerial/", role: "link", ...blank }],
+  provenance: noProof,
+});
+assert.equal(href.confirmed, true);
+assert.equal(href.strategy, "conversation-header-profile-link");
+assert.equal(href.evidence[0]?.reason, "profile href matches target");
+const atName = confirmConversationRecipient({
+  username: "vsiaerial",
+  candidates: [{ text: "@vsiaerial", href: "", role: "link", ...blank }],
+  provenance: noProof,
+});
+assert.equal(atName.confirmed, true);
+assert.equal(atName.strategy, "conversation-header-at-username");
+const plainName = confirmConversationRecipient({
+  username: "vsiaerial",
+  candidates: [{ text: "vsiaerial", href: "", role: "link", ...blank }],
+  provenance: noProof,
+});
+assert.equal(plainName.confirmed, true);
+assert.equal(plainName.strategy, "conversation-header-username");
+const displayOnly = confirmConversationRecipient({
+  username: "vsiaerial",
+  displayName: "VSI Aerial",
+  candidates: [{ text: "VSI Aerial", href: "", role: "link", ...blank }],
+  provenance: noProof,
+});
+assert.equal(displayOnly.confirmed, false);
+const displayWithProof = confirmConversationRecipient({
+  username: "vsiaerial",
+  displayName: "VSI Aerial",
+  candidates: [{ text: "VSI Aerial", href: "", role: "link", ...blank }],
+  provenance: proof,
+});
+assert.equal(displayWithProof.confirmed, true);
+assert.equal(displayWithProof.strategy, "conversation-header-display-name-plus-provenance");
+const other = confirmConversationRecipient({
+  username: "vsiaerial",
+  displayName: "VSI Aerial",
+  candidates: [{ text: "Someone", href: "/someone/", role: "link", ...blank }],
+  provenance: proof,
+});
+assert.equal(other.confirmed, false);
+const unconfirmed = sendRecoveryDecision({
+  sendAttempted: false,
+  exactOutboundPresent: false,
+  composerFound: true,
+  priorConversation: false,
+  conversationMatches: false,
+});
+assert.equal(unconfirmed.action, "review");
+assert.equal(unconfirmed.send, false);
+assert.equal(unconfirmed.reason, "Composer was found but thread identity was not confirmed.");
+assert.equal(
+  sendAllowed({
+    recipientConfirmed: true,
+    existingConversation: false,
+    composerFound: true,
+    lockedMessageMatches: true,
+    followOwnedBySequence: true,
+  }),
+  true,
+);
+assert.equal(shouldMarkContacted({ sent: false }), false);
+
 assert.equal(queueSendStatusLabel({ job_type: "send_message", status: "retry_wait" }), "Retry scheduled");
+assert.equal(
+  queueSendStatusLabel({
+    job_type: "send_message",
+    status: "retry_wait",
+    last_error: "Composer was found but thread identity was not confirmed.",
+  }),
+  "Composer was found but thread identity was not confirmed.",
+);
 assert.equal(
   queueSendStatusLabel({
     job_type: "send_message",
