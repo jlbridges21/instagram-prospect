@@ -132,7 +132,13 @@ export class CloudClient {
   }
 
   async nextJob(workerId: string, prospectId?: string) {
-    return this.request<{ job: JobPayload | null; reason?: string | null; nextCheckAfterSeconds?: number }>(
+    return this.request<{
+      job: JobPayload | null;
+      reason?: string | null;
+      message?: string | null;
+      nextAt?: string | null;
+      nextCheckAfterSeconds?: number;
+    }>(
       "/api/worker/jobs/next",
       { worker_id: workerId, prospect_id: prospectId },
     );
@@ -149,6 +155,11 @@ export class CloudClient {
       job: JobPayload | null;
       reason?: string | null;
       outreachPaused?: boolean;
+      sequence?: {
+        instagramUsername: string;
+        message: string;
+        steps: Array<{ type: string; status: string; scheduledFor: string }>;
+      } | null;
     };
   }
 

@@ -40,6 +40,8 @@ export async function POST(request: Request) {
     return Response.json({
       job: null,
       reason: claimed.reason,
+      message: claimed.message ?? null,
+      nextAt: claimed.nextAt ?? null,
       nextCheckAfterSeconds,
     });
   }

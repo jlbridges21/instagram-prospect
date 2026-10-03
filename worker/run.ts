@@ -2,10 +2,10 @@ import { launchBrowser } from "./browser/launch";
 import { CloudClient, type CloudConfig, type JobPayload } from "./cloud/client";
 import { emptyEfficiency, formatEfficiency, runDiscoveryV2 } from "./discovery/v2";
 import { loadIdentity } from "./identity";
+import { dryRunPlan, formatDryRun } from "../lib/outreach/dry-run-plan";
 import {
   ensureHome,
   followProfile,
-  previewOutreach,
   readProfile,
   saveErrorScreenshot,
   sendExactMessage,
@@ -358,21 +358,27 @@ function isAuthFailure(error: unknown) {
 
 async function runDryOutreach(cloud: CloudClient, page: import("playwright").Page) {
   const preview = await cloud.previewJob();
-  if (!preview.job) {
-    console.log(preview.outreachPaused ? "Outreach is paused. No queued job was available to preview." : "No outreach job is waiting.");
+  const sequence = preview.sequence;
+  if (!sequence) {
+    console.log("No outreach job is available.");
+    console.log("Reason: No approved outreach jobs are currently queued.");
     return;
   }
-  console.log(`Preview @${preview.job.instagramUsername} (${preview.job.type})`);
-  const result = await previewOutreach(page, preview.job.instagramUsername, preview.job.message ?? null);
-  console.log(`Would follow: ${result.wouldFollow ? "yes" : "no"}`);
-  console.log(`Would send: ${result.wouldSend ? "yes" : "no"}`);
-  console.log(`Relationship: ${result.relationship}`);
-  if (result.existingConversation) console.log("Existing Instagram conversation. A cold message would not be sent.");
-  if (preview.job.message) {
-    console.log("Message:");
-    console.log(preview.job.message);
-  }
-  console.log("Dry run finished. Nothing was followed or sent, and no job was completed.");
+  const profile = await readProfile(page, sequence.instagramUsername);
+  console.log(
+    formatDryRun({
+      username: sequence.instagramUsername,
+      relationship: profile.relationship,
+      profileExists: profile.profileExists,
+      plan: dryRunPlan({
+        username: sequence.instagramUsername,
+        profileExists: profile.profileExists,
+        observedUsername: profile.profile.username,
+        relationship: profile.relationship,
+        message: sequence.message,
+      }),
+    }),
+  );
 }
 
 async function runSingleOutreach(
@@ -385,6 +391,8 @@ async function runSingleOutreach(
   const first = await cloud.nextJob(identity.worker_id);
   if (!first.job) {
     console.log("No outreach job is available.");
+    if (first.message) console.log(`Reason: ${first.message}`);
+    else if (first.reason) console.log(`Reason: ${first.reason}`);
     return;
   }
   const prospectId = first.job.prospectId;

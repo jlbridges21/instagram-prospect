@@ -353,6 +353,16 @@ export type Database = {
         };
         Returns: Json;
       };
+      requeue_outreach_sequence: {
+        Args: {
+          p_prospect_id: string;
+          p_message: string;
+          p_verify_at: string;
+          p_follow_at: string;
+          p_send_at: string;
+        };
+        Returns: Json;
+      };
     };
   };
 };

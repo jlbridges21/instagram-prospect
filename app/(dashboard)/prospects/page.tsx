@@ -14,9 +14,10 @@ import {
   isProspectStatus,
   type ProspectSource,
 } from "@/lib/constants/prospects";
+import { getProspectOutreachFlags } from "@/lib/db/outreach";
 import { getProspectCategories, getProspectPage, type ProspectQuery, type ProspectView } from "@/lib/db/prospects";
 import { fallbackSettings, getSettings } from "@/lib/db/settings";
-import { formatDate, formatFollowerCount, parsePositiveInt, readParam } from "@/lib/utils/format";
+import { formatDate, formatDateTime, formatFollowerCount, parsePositiveInt, readParam } from "@/lib/utils/format";
 import { followingBadge } from "@/lib/prospects/following";
 import { prospectReason } from "@/lib/prospects/reason";
 import { prospectMessage } from "@/lib/utils/message";
@@ -75,6 +76,8 @@ export default async function ProspectsPage({
       query.maxFollowers,
   );
 
+  const pageRows = pageResult.ok ? pageResult.data.rows : [];
+  const outreachFlags = await getProspectOutreachFlags(pageRows.map((row) => row.id));
   const count = pageResult.ok ? pageResult.data.count : 0;
   const pageCount = Math.max(1, Math.ceil(count / query.pageSize));
 
@@ -100,7 +103,8 @@ export default async function ProspectsPage({
       <ProspectFilters query={query} categories={categories} />
       <ProspectsTable
         filtered={filtered}
-        rows={(pageResult.ok ? pageResult.data.rows : []).map((row) => ({
+        view={view}
+        rows={pageRows.map((row) => ({
           id: row.id,
           name: row.display_name || row.first_name || row.instagram_username,
           username: row.instagram_username,
@@ -121,6 +125,10 @@ export default async function ProspectsPage({
             firstName: row.first_name,
             username: row.instagram_username,
           }),
+          canRequeue: row.status === "approved" && !row.already_contacted && Boolean(outreachFlags.get(row.id)?.canRequeue),
+          nextScheduled: outreachFlags.get(row.id)?.nextScheduled
+            ? formatDateTime(outreachFlags.get(row.id)?.nextScheduled ?? null, settings.timezone, settings.dateFormat)
+            : null,
         }))}
       />
       <ProspectPagination query={query} page={query.page} pageCount={pageCount} />

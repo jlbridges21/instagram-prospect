@@ -3,6 +3,7 @@ import "server-only";
 import { isMissingRelation } from "@/lib/db/errors";
 import type { DataResult } from "@/lib/db/models";
 import type { OutreachJobRow, ProspectRow } from "@/lib/db/types";
+import { prospectOutreachFlags } from "@/lib/outreach/requeue";
 import { createClient } from "@/lib/supabase/server";
 import { startOfTodayIso } from "@/lib/utils/format";
 
@@ -77,6 +78,30 @@ export async function getProspectOutreach(prospectId: string): Promise<DataResul
     return { ok: false, error: error.message, missingTable: isMissingRelation(error) };
   }
   return { ok: true, data: data ?? [] };
+}
+
+export async function getProspectOutreachFlags(ids: string[]) {
+  const flags = new Map<string, ReturnType<typeof prospectOutreachFlags>>();
+  if (ids.length === 0) return flags;
+  const supabase = await createClient();
+  const { data, error } = await supabase
+    .from("outreach_jobs")
+    .select("prospect_id, status, scheduled_for, idempotency_key")
+    .in("prospect_id", ids);
+  if (error || !data) return flags;
+
+  const grouped = new Map<string, Array<{ status: string; scheduledFor: string; idempotencyKey: string }>>();
+  for (const job of data) {
+    const list = grouped.get(job.prospect_id) ?? [];
+    list.push({
+      status: job.status,
+      scheduledFor: job.scheduled_for,
+      idempotencyKey: job.idempotency_key,
+    });
+    grouped.set(job.prospect_id, list);
+  }
+  for (const [id, jobs] of grouped) flags.set(id, prospectOutreachFlags(jobs));
+  return flags;
 }
 
 export type QueueProspect = Pick<

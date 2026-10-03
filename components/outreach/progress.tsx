@@ -1,4 +1,5 @@
 import type { OutreachJobRow } from "@/lib/db/types";
+import { latestJobsByType } from "@/lib/outreach/requeue";
 import { JOB_STATUS_LABELS, JOB_TYPE_LABELS } from "@/lib/outreach/types";
 import { cn } from "@/lib/utils/cn";
 
@@ -26,13 +27,14 @@ export function OutreachProgress({
   cancelled: boolean;
   jobs: OutreachJobRow[];
 }) {
-  const verify = jobs.find((job) => job.job_type === "verify_profile");
+  const currentJobs = latestJobsByType(jobs);
+  const verify = currentJobs.find((job) => job.job_type === "verify_profile");
   const stoppedForFollow = alreadyFollowing && verify?.status === "completed";
 
   return (
     <ol className="space-y-3">
       {STEPS.map((step) => {
-        const job = jobs.find((item) => item.job_type === step.key);
+        const job = currentJobs.find((item) => item.job_type === step.key);
         const state = stepState({
           key: step.key,
           approved,

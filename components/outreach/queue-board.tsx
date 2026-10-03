@@ -38,6 +38,7 @@ const TABS = [
   { id: "progress", label: "In progress" },
   { id: "failed", label: "Failed" },
   { id: "completed", label: "Completed" },
+  { id: "cancelled", label: "Cancelled" },
   { id: "all", label: "All" },
 ] as const;
 
@@ -159,8 +160,12 @@ export function QueueBoard({
         <div className="mt-4 rounded-xl border border-slate-200 bg-white">
           <EmptyState
             icon={Inbox}
-            title="Nothing in this view"
-            description="Approved prospects appear here after their outreach jobs are created. Nothing is sent until a worker completes a send job."
+            title={tab === "upcoming" ? "No outreach is currently queued." : "Nothing in this view"}
+            description={
+              tab === "upcoming" && rows.some((row) => row.job.status === "cancelled" || row.jobs.some((job) => job.status === "cancelled"))
+                ? "Some approved prospects have cancelled outreach and can be requeued from the Approved prospects view."
+                : "Approved prospects appear here after their outreach jobs are created. Nothing is sent until a worker completes a send job."
+            }
           />
         </div>
       ) : (
@@ -392,6 +397,11 @@ function buildRows(jobs: OutreachJobRow[], prospects: QueueProspect[]): Row[] {
       ordered[ordered.length - 1];
     if (!current) continue;
     rows.push({ prospect, job: current, jobs: ordered });
+    for (const job of ordered) {
+      if (job.status === "cancelled" && job.id !== current.id) {
+        rows.push({ prospect, job, jobs: ordered });
+      }
+    }
   }
   return rows.sort((left, right) => left.job.scheduled_for.localeCompare(right.job.scheduled_for));
 }
@@ -401,6 +411,7 @@ function matchesTab(status: OutreachJobStatus, tab: TabId) {
   if (tab === "upcoming") return status === "pending" || status === "retry_wait";
   if (tab === "progress") return status === "claimed" || status === "running";
   if (tab === "failed") return status === "failed";
+  if (tab === "cancelled") return status === "cancelled";
   return status === "completed";
 }
 

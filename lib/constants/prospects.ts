@@ -48,6 +48,7 @@ export const ACTIVITY_EVENTS = [
   "worker_error",
   "outreach_queued",
   "outreach_cancelled",
+  "outreach_requeued",
   "prospect_verified",
   "prospect_followed",
   "prospect_excluded_existing_follow",

@@ -3,7 +3,7 @@
 import { useState, useTransition } from "react";
 import { ExternalLink } from "lucide-react";
 import { toast } from "sonner";
-import { approveProspects, saveProspectNotes, skipProspects } from "@/lib/actions/prospects";
+import { approveProspects, requeueProspects, saveProspectNotes, skipProspects } from "@/lib/actions/prospects";
 import { canApprove, canSkip } from "@/lib/prospects/status";
 import type { ProspectStatus } from "@/lib/constants/prospects";
 import { Button, buttonClasses } from "@/components/ui/button";
@@ -16,11 +16,15 @@ export function ProspectActions({
   status,
   profileUrl,
   message,
+  canRequeue = false,
+  requeueOnly = false,
 }: {
   id: string;
   status: ProspectStatus;
   profileUrl: string;
   message: string;
+  canRequeue?: boolean;
+  requeueOnly?: boolean;
 }) {
   const [pending, startTransition] = useTransition();
   const [confirmSkip, setConfirmSkip] = useState(false);
@@ -29,6 +33,14 @@ export function ProspectActions({
     startTransition(async () => {
       const result = await approveProspects([id]);
       if (result.ok) toast.success("Prospect approved");
+      else toast.error(result.error);
+    });
+  }
+
+  function requeue() {
+    startTransition(async () => {
+      const result = await requeueProspects([id]);
+      if (result.ok) toast.success(result.message ?? "Outreach was requeued.");
       else toast.error(result.error);
     });
   }
@@ -45,11 +57,25 @@ export function ProspectActions({
     });
   }
 
+  if (requeueOnly) {
+    if (!canRequeue) return null;
+    return (
+      <Button onClick={requeue} disabled={pending}>
+        Requeue outreach
+      </Button>
+    );
+  }
+
   return (
     <div className="flex flex-wrap gap-2">
       <Button onClick={approve} disabled={pending || !canApprove(status)}>
         Approve
       </Button>
+      {canRequeue ? (
+        <Button onClick={requeue} disabled={pending}>
+          Requeue outreach
+        </Button>
+      ) : null}
       <Button variant="secondary" onClick={() => setConfirmSkip(true)} disabled={pending || !canSkip(status)}>
         Skip
       </Button>

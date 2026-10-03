@@ -5,7 +5,8 @@ import { useRouter } from "next/navigation";
 import { useRef, useState, useSyncExternalStore, useTransition } from "react";
 import { ExternalLink, Inbox } from "lucide-react";
 import { toast } from "sonner";
-import { approveProspects, skipProspects } from "@/lib/actions/prospects";
+import { approveProspects, requeueProspects, skipProspects } from "@/lib/actions/prospects";
+import { bulkProspectActions } from "@/lib/outreach/requeue";
 import { AnalyzeSelectedButton } from "@/components/prospects/qualify-controls";
 import { TableOptions } from "@/components/prospects/table-options";
 import { canApprove, canSkip } from "@/lib/prospects/status";
@@ -89,18 +90,24 @@ export type ProspectTableRow = {
   pictureUrl: string | null;
   reason: string;
   message: string;
+  canRequeue?: boolean;
+  nextScheduled?: string | null;
 };
 
 export function ProspectsTable({
   rows,
   filtered,
+  view = "active",
 }: {
   rows: ProspectTableRow[];
   filtered: boolean;
+  view?: string;
 }) {
   const router = useRouter();
   const [selected, setSelected] = useState<string[]>([]);
   const [confirmSkip, setConfirmSkip] = useState<string[] | null>(null);
+  const [confirmApprove, setConfirmApprove] = useState<string[] | null>(null);
+  const [confirmRequeue, setConfirmRequeue] = useState<string[] | null>(null);
   const [pending, startTransition] = useTransition();
   const layout = useSyncExternalStore(subscribeLayout, layoutSnapshot, () => SERVER_LAYOUT);
   const [dragging, setDragging] = useState<ColumnId | null>(null);
@@ -137,6 +144,24 @@ export function ProspectsTable({
     setSelected((current) =>
       current.includes(id) ? current.filter((value) => value !== id) : [...current, id],
     );
+  }
+
+  function runBulk(
+    ids: string[],
+    action: (ids: string[]) => Promise<{ ok: boolean; error?: string; message?: string }>,
+    close: () => void,
+  ) {
+    startTransition(async () => {
+      const result = await action(ids);
+      if (!result.ok) {
+        toast.error(result.error ?? "That action failed.");
+        return;
+      }
+      toast.success(result.message ?? "Updated");
+      setSelected([]);
+      close();
+      router.refresh();
+    });
   }
 
   function skip(ids: string[]) {
@@ -253,20 +278,49 @@ export function ProspectsTable({
     handle.addEventListener("pointercancel", end);
   }
 
+  const chosen = rows.filter((row) => selected.includes(row.id));
+  const bulk = bulkProspectActions(
+    chosen.map((row) => ({
+      id: row.id,
+      status: row.status,
+      canRequeue: Boolean(row.canRequeue),
+      canSkip: canSkip(row.status),
+      canApprove: canApprove(row.status),
+    })),
+  );
+  const visibleReviewIds = rows.filter((row) => canApprove(row.status)).map((row) => row.id);
+
   return (
     <div>
+      {view === "review" && visibleReviewIds.length > 0 ? (
+        <div className="mb-3 flex justify-end">
+          <Button size="sm" disabled={pending} onClick={() => setConfirmApprove(visibleReviewIds)}>
+            Approve all visible
+          </Button>
+        </div>
+      ) : null}
       {selected.length > 0 ? (
         <div className="mb-3 flex items-center justify-between rounded-xl border border-slate-200 bg-white px-4 py-3">
           <p className="text-sm text-slate-700">{selected.length} selected</p>
           <div className="flex flex-wrap gap-2">
             <AnalyzeSelectedButton
-              rows={rows
-                .filter((row) => selected.includes(row.id))
-                .map((row) => ({ id: row.id, status: row.status }))}
+              rows={chosen.map((row) => ({ id: row.id, status: row.status }))}
             />
-            <Button size="sm" variant="secondary" disabled={pending} onClick={() => setConfirmSkip(selected)}>
-              Skip selected
-            </Button>
+            {bulk.approveIds.length > 0 ? (
+              <Button size="sm" disabled={pending} onClick={() => setConfirmApprove(bulk.approveIds)}>
+                Approve selected
+              </Button>
+            ) : null}
+            {bulk.requeueIds.length > 0 ? (
+              <Button size="sm" disabled={pending} onClick={() => setConfirmRequeue(bulk.requeueIds)}>
+                Requeue selected
+              </Button>
+            ) : null}
+            {bulk.skipIds.length > 0 ? (
+              <Button size="sm" variant="secondary" disabled={pending} onClick={() => setConfirmSkip(bulk.skipIds)}>
+                Skip selected
+              </Button>
+            ) : null}
           </div>
         </div>
       ) : null}
@@ -458,13 +512,37 @@ export function ProspectsTable({
       <ConfirmDialog
         open={confirmSkip !== null}
         title="Skip prospects?"
-        description="Skipped prospects leave the review queue. This does not contact Instagram."
+        description="Skipped prospects leave the review queue. This does not contact Instagram. Prospects that cannot be skipped are left unchanged."
         confirmLabel="Skip"
         tone="danger"
         pending={pending}
         onClose={() => setConfirmSkip(null)}
         onConfirm={() => {
           if (confirmSkip) skip(confirmSkip);
+        }}
+      />
+      <ConfirmDialog
+        open={confirmApprove !== null}
+        title={confirmApprove && confirmApprove.length === visibleReviewIds.length && view === "review" && selected.length === 0
+          ? `Approve ${confirmApprove.length} visible prospects?`
+          : `Approve ${confirmApprove?.length ?? 0} eligible prospects?`}
+        description="This uses the same approval as Review Queue. Each eligible prospect is approved, the message is locked, and outreach is scheduled. Prospects that are not in review are left unchanged."
+        confirmLabel="Approve"
+        pending={pending}
+        onClose={() => setConfirmApprove(null)}
+        onConfirm={() => {
+          if (confirmApprove) runBulk(confirmApprove, approveProspects, () => setConfirmApprove(null));
+        }}
+      />
+      <ConfirmDialog
+        open={confirmRequeue !== null}
+        title={`Requeue outreach for ${confirmRequeue?.length ?? 0} prospects?`}
+        description="A new outreach sequence is created from the locked message. Cancelled history stays. Prospects that are already queued are left unchanged."
+        confirmLabel="Requeue"
+        pending={pending}
+        onClose={() => setConfirmRequeue(null)}
+        onConfirm={() => {
+          if (confirmRequeue) runBulk(confirmRequeue, requeueProspects, () => setConfirmRequeue(null));
         }}
       />
     </div>
@@ -514,8 +592,13 @@ function ColumnCell({
   if (column === "reason") return <span title={row.reason} className={cn(TRUNCATE_CLASS, "text-slate-600")}>{row.reason}</span>;
   if (column === "status") {
     return (
-      <span title={STATUS_LABELS[row.status]} className="min-w-0 truncate">
-        <StatusBadge status={row.status} />
+      <span title={row.nextScheduled ? `Scheduled outreach: ${row.nextScheduled}` : STATUS_LABELS[row.status]} className="block min-w-0">
+        <span className="block truncate">
+          <StatusBadge status={row.status} />
+        </span>
+        {row.nextScheduled ? (
+          <span className="mt-1 block truncate text-xs text-slate-500">Scheduled {row.nextScheduled}</span>
+        ) : null}
       </span>
     );
   }
@@ -556,6 +639,22 @@ function RowActions({
           className="shrink-0 rounded-lg px-2 py-1 text-sm font-medium text-indigo-700 hover:bg-indigo-50 disabled:opacity-40"
         >
           Approve
+        </button>
+      ) : null}
+      {row.canRequeue ? (
+        <button
+          type="button"
+          onClick={() => {
+            startTransition(async () => {
+              const result = await requeueProspects([row.id]);
+              if (result.ok) toast.success(result.message ?? "Outreach was requeued.");
+              else toast.error(result.error);
+            });
+          }}
+          disabled={pending}
+          className="shrink-0 rounded-lg px-2 py-1 text-sm font-medium text-indigo-700 hover:bg-indigo-50 disabled:opacity-40"
+        >
+          Requeue
         </button>
       ) : null}
       <a

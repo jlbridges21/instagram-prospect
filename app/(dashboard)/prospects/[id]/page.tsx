@@ -24,6 +24,7 @@ import { getProspectOutreach } from "@/lib/db/outreach";
 import { getProspectActivity } from "@/lib/db/stats";
 import { getProspectById } from "@/lib/db/prospects";
 import { fallbackSettings, getSettings } from "@/lib/db/settings";
+import { prospectOutreachFlags } from "@/lib/outreach/requeue";
 import { prospectReason, relationshipLabel } from "@/lib/prospects/reason";
 import { STATUS_MEANING } from "@/lib/prospects/status";
 import { formatDateTime, formatFollowerCount, isUuid } from "@/lib/utils/format";
@@ -78,6 +79,21 @@ export default async function ProspectDetailPage({
   const profileUrl = prospect.profile_url || `https://www.instagram.com/${prospect.instagram_username}/`;
   const analysis = qualificationSchema.safeParse(prospect.ai_analysis);
   const when = (value: string | null) => formatDateTime(value, settings.timezone, settings.dateFormat);
+  const outreachJobs = outreachResult.ok ? outreachResult.data : [];
+  const outreachFlags = prospectOutreachFlags(
+    outreachJobs.map((job) => ({
+      status: job.status,
+      scheduledFor: job.scheduled_for,
+      idempotencyKey: job.idempotency_key,
+    })),
+  );
+  const canRequeue =
+    prospect.status === "approved" && !prospect.already_contacted && outreachFlags.canRequeue;
+  const outreachLabel = outreachFlags.active
+    ? "Queued"
+    : canRequeue || prospect.outreach_cancelled_at
+      ? "Cancelled"
+      : "Not queued";
 
   return (
     <div>
@@ -208,6 +224,14 @@ export default async function ProspectDetailPage({
           </Panel>
 
           <Panel title="Outreach">
+            <p className="mb-3 text-sm text-slate-700">
+              Outreach: <span className="font-medium text-slate-900">{outreachLabel}</span>
+            </p>
+            {outreachFlags.nextScheduled ? (
+              <p className="mb-3 text-sm text-slate-600">
+                Scheduled outreach: {when(outreachFlags.nextScheduled)}. The worker claims this only when that time is inside the active outreach window.
+              </p>
+            ) : null}
             {outreachResult.ok ? (
               <OutreachProgress
                 approved={Boolean(prospect.approved_at) || prospect.status === "approved" || prospect.status === "contacted"}
@@ -224,6 +248,18 @@ export default async function ProspectDetailPage({
                   : "Outreach progress could not be loaded."}
               </p>
             )}
+            {canRequeue ? (
+              <div className="mt-4">
+                <ProspectActions
+                  id={prospect.id}
+                  status={prospect.status}
+                  profileUrl={profileUrl}
+                  message={message}
+                  canRequeue
+                  requeueOnly
+                />
+              </div>
+            ) : null}
           </Panel>
 
           <Panel title="Message preview">
@@ -296,6 +332,7 @@ export default async function ProspectDetailPage({
               status={prospect.status}
               profileUrl={profileUrl}
               message={message}
+              canRequeue={canRequeue}
             />
           </Panel>
 

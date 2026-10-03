@@ -3,7 +3,8 @@
 import { revalidatePath } from "next/cache";
 import { fallbackSettings, fallbackTargeting, getSettings, getTargetingSettings } from "@/lib/db/settings";
 import { outreachBlockReason } from "@/lib/outreach/eligibility";
-import { approvalSummary, loadSendOccupancy, queueProspect } from "@/lib/outreach/service";
+import { requeueSummary } from "@/lib/outreach/requeue";
+import { approvalSummary, loadSendOccupancy, queueProspect, requeueProspect } from "@/lib/outreach/service";
 import {
   changeProspectStatus,
   createManualProspect,
@@ -39,6 +40,48 @@ export async function skipProspects(ids: string[]): Promise<ActionResult> {
 
 export async function approveVisibleQueue(ids: string[]): Promise<ActionResult> {
   return approveForOutreach(ids);
+}
+
+export async function requeueProspects(ids: string[]): Promise<ActionResult> {
+  if (ids.length === 0) return { ok: false, error: "Select at least one prospect." };
+  if (ids.some((id) => !isUuid(id))) {
+    return { ok: false, error: "One of the selected prospects is invalid." };
+  }
+
+  const { supabase, user } = await requireUser();
+  const actor = user.email ?? "authenticated user";
+  const settingsResult = await getSettings();
+  const settings = settingsResult.ok ? settingsResult.data : fallbackSettings();
+  const occupancy = await loadSendOccupancy(supabase);
+  if (!occupancy.ok) return { ok: false, error: occupancy.error };
+
+  const { data, error } = await supabase.from("prospects").select("*").in("id", [...new Set(ids)]);
+  if (error) return { ok: false, error: "Those prospects could not be loaded." };
+
+  let requeued = 0;
+  let skipped = 0;
+  const updated: string[] = [];
+  for (const prospect of data ?? []) {
+    const result = await requeueProspect({
+      supabase,
+      prospect,
+      settings,
+      occupied: occupancy.occupied,
+      actor,
+    });
+    if (!result.ok) {
+      revalidateProspectPaths(updated);
+      return { ok: false, error: result.error };
+    }
+    updated.push(prospect.id);
+    if (result.created) requeued += 1;
+    else skipped += 1;
+  }
+  const missing = [...new Set(ids)].length - (data?.length ?? 0);
+  skipped += missing;
+
+  revalidateProspectPaths(updated);
+  return { ok: true, message: requeueSummary({ requeued, skipped }) };
 }
 
 async function approveForOutreach(ids: string[]): Promise<ActionResult> {

@@ -26,6 +26,16 @@ function revalidateOutreach(ids: string[] = []) {
   ids.forEach((id) => revalidatePath(`/prospects/${id}`));
 }
 
+export async function pendingOutreachCount(): Promise<{ ok: true; prospects: number } | { ok: false; error: string }> {
+  const { supabase } = await requireUser();
+  const { data, error } = await supabase
+    .from("outreach_jobs")
+    .select("prospect_id")
+    .in("status", ["pending", "retry_wait"]);
+  if (error) return { ok: false, error: "Pending outreach could not be counted." };
+  return { ok: true, prospects: new Set((data ?? []).map((job) => job.prospect_id)).size };
+}
+
 export async function pauseAutomation(cancelPending: boolean): Promise<ActionResult> {
   const { supabase, user } = await requireUser();
   const result = await setAutomation(supabase, false, user.email ?? "authenticated user", cancelPending);
