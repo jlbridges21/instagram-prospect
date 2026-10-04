@@ -137,50 +137,15 @@ export function formatLocalTime(date: Date, timeZone: string) {
   }).format(date);
 }
 
-export function nextOpenInstant(now: Date, timeZone: string, settings: OutreachSettings) {
-  const startClock = parseClock(settings.activeStart) ?? { hour: 9, minute: 0 };
-  const endClock = parseClock(settings.activeEnd) ?? { hour: 19, minute: 0 };
-  const today = zonedParts(now, timeZone);
-  let cursor = { year: today.year, month: today.month, day: today.day };
+/** @deprecated Operating hours were removed. This returns the same instant and does not block overnight work. */
+export function nextOpenInstant(now: Date, _timeZone?: string, _settings?: OutreachSettings) {
+  return new Date(now.getTime());
+}
 
-  for (let offset = 0; offset < 21; offset += 1) {
-    const probe = zonedTimeToUtc(
-      { year: cursor.year, month: cursor.month, day: cursor.day, hour: 12, minute: 0 },
-      timeZone,
-    );
-    const weekday = zonedParts(probe, timeZone).weekday;
-    if (settings.activeDays.includes(weekday)) {
-      const start = zonedTimeToUtc(
-        {
-          year: cursor.year,
-          month: cursor.month,
-          day: cursor.day,
-          hour: startClock.hour,
-          minute: startClock.minute,
-        },
-        timeZone,
-      );
-      const end = zonedTimeToUtc(
-        {
-          year: cursor.year,
-          month: cursor.month,
-          day: cursor.day,
-          hour: endClock.hour,
-          minute: endClock.minute,
-        },
-        timeZone,
-      );
-      if (now.getTime() < start.getTime()) return start;
-      if (now.getTime() < end.getTime()) return new Date(now.getTime());
-    }
-    cursor = addLocalDays(cursor, 1);
-    now = zonedTimeToUtc(
-      { year: cursor.year, month: cursor.month, day: cursor.day, hour: 0, minute: 0 },
-      timeZone,
-    );
-  }
-
-  throw new Error("No open outreach window was found.");
+export function startOfNextLocalDay(date: Date, timeZone: string) {
+  const parts = zonedParts(date, timeZone);
+  const next = addLocalDays(parts, 1);
+  return zonedTimeToUtc({ year: next.year, month: next.month, day: next.day, hour: 0, minute: 0 }, timeZone);
 }
 
 export function startOfNextLocalHour(date: Date, timeZone: string) {

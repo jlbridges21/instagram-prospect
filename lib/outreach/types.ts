@@ -45,8 +45,11 @@ export type WorkerErrorCode = (typeof WORKER_ERROR_CODES)[number];
 
 export type OutreachSettings = {
   automationEnabled: boolean;
+  /** @deprecated Ignored. Outreach is not limited to days of the week. */
   activeDays: Weekday[];
+  /** @deprecated Ignored. Outreach is not limited to a start time. */
   activeStart: string;
+  /** @deprecated Ignored. Outreach is not limited to an end time. */
   activeEnd: string;
   hourlyMinimum: number;
   hourlyMaximum: number;

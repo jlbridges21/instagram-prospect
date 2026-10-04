@@ -5,7 +5,19 @@ import { useState, useTransition } from "react";
 import { toast } from "sonner";
 import { requestWorkerCommand } from "@/lib/actions/worker-commands";
 
-export function StartOutreachButton({ disabled, ready = 0 }: { disabled?: boolean; ready?: number }) {
+export function StartOutreachButton({
+  disabled,
+  ready = 0,
+  hourlyMaximum,
+  dailyMaximum,
+  minimumSpacingSeconds,
+}: {
+  disabled?: boolean;
+  ready?: number;
+  hourlyMaximum?: number;
+  dailyMaximum?: number;
+  minimumSpacingSeconds?: number;
+}) {
   const [open, setOpen] = useState(false);
   const [pending, startTransition] = useTransition();
 
@@ -41,7 +53,13 @@ export function StartOutreachButton({ disabled, ready = 0 }: { disabled?: boolea
               <li>Send once</li>
               <li>Continue through the queue</li>
             </ol>
-            <p className="mt-3 text-xs text-slate-500">Active hours, hourly maximum, and daily maximum stay on the saved outreach settings. <Link href="/settings" className="text-indigo-700">Edit Outreach Settings</Link></p>
+            <ul className="mt-3 space-y-1 text-slate-700">
+              <li>Hourly maximum: {hourlyMaximum ?? "—"}</li>
+              <li>Daily maximum: {dailyMaximum ?? "—"}</li>
+              <li>Minimum spacing: {minimumSpacingSeconds != null ? `${minimumSpacingSeconds} seconds` : "—"}</li>
+              <li>Queue size: {ready}</li>
+            </ul>
+            <p className="mt-3 text-xs text-slate-500">Outreach can run at any time while enabled. Pacing and daily/hourly limits still apply. <Link href="/settings" className="text-indigo-700">Edit Outreach Settings</Link></p>
             <div className="mt-4 flex justify-end gap-2">
               <button type="button" className="rounded-lg px-3 py-2" onClick={() => setOpen(false)}>Cancel</button>
               <button type="button" className="rounded-lg bg-indigo-600 px-3 py-2 text-white disabled:opacity-50" disabled={pending} onClick={start}>Start Outreach</button>

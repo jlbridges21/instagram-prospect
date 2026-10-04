@@ -362,7 +362,7 @@ export function SettingsPanel({
             <div className="border-t border-slate-100 pt-4">
               <h2 className="text-sm font-semibold text-slate-900">Discovery</h2>
               <p className="mt-1 text-sm text-slate-500">
-                Suggested Accounts is preferred. Home Feed fills the queue when suggestions are thin. Profile inspection stays at 2 tabs.
+                Discovery can run at any time while enabled. Inspection and AI limits still apply. Suggested Accounts is preferred. Home Feed fills the queue when suggestions are thin. Profile inspection stays at 2 tabs.
               </p>
             </div>
             <Toggle checked={discoveryEnabled} onChange={setDiscoveryEnabled} label="Discovery enabled" />

@@ -132,13 +132,11 @@ export function continuousOutreachStep(input: {
   checkpoint: boolean;
   jobReady: boolean;
   nextAt: string | null;
-  outsideHours: boolean;
   now: Date;
 }) {
   if (input.checkpoint) return { action: "stop" as const, waitMs: 0, reason: "instagram_checkpoint" };
   if (input.paused) return { action: "idle" as const, waitMs: 60_000, reason: "outreach_paused" };
   if (input.jobReady) return { action: "run" as const, waitMs: 0, reason: null };
-  if (input.outsideHours) return { action: "wait" as const, waitMs: 60_000, reason: "outside_active_hours" };
   if (input.nextAt) {
     const waitMs = Math.max(1_000, Math.min(new Date(input.nextAt).getTime() - input.now.getTime(), 60_000));
     return { action: "wait" as const, waitMs, reason: "next_job_scheduled_for" };

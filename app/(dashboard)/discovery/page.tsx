@@ -45,7 +45,7 @@ export default async function DiscoveryPage() {
     <div>
       <PageHeader
         title="Discovery"
-        description="Choose a Review goal, watch progress, and pause or stop the current run."
+        description="Discovery can run at any time while enabled. Inspection and AI limits still apply."
         action={<StartDiscoveryButton disabled={!online} reviewCount={progress.currentReview} />}
       />
       <section className="rounded-xl border border-slate-200 bg-white p-4 text-sm">

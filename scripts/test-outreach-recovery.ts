@@ -67,15 +67,34 @@ assert.equal(pause.changesProspectStatus, false);
 assert.equal(automationChange(false, true).changesProspectStatus, false);
 assert.equal(automationChange(true, true).cancelPendingJobs, false);
 
-const outside = explainIdleQueue({
-  now: new Date("2026-10-03T01:25:00.000Z"),
+const scheduled = explainIdleQueue({
+  now: new Date("2026-10-03T07:00:00.000Z"),
   timeZone: "America/Chicago",
   settings: DEFAULT_OUTREACH_SETTINGS,
   pendingScheduledFor: ["2026-10-03T14:14:00.000Z"],
   completedSendTimes: [],
 });
-assert.equal(outside.reason, "outside_active_hours");
-assert.ok(outside.nextAt);
+assert.equal(scheduled.reason, "next_job_scheduled_for");
+assert.notEqual(scheduled.reason, "outside_active_hours");
+assert.ok(scheduled.nextAt);
+
+const dueOvernight = explainIdleQueue({
+  now: new Date("2026-10-03T07:00:00.000Z"),
+  timeZone: "America/Chicago",
+  settings: DEFAULT_OUTREACH_SETTINGS,
+  pendingScheduledFor: ["2026-10-03T07:00:00.000Z"],
+  completedSendTimes: [],
+});
+assert.notEqual(dueOvernight.reason, "outside_active_hours");
+
+const dueAfternoon = explainIdleQueue({
+  now: new Date("2026-10-03T20:00:00.000Z"),
+  timeZone: "America/Chicago",
+  settings: DEFAULT_OUTREACH_SETTINGS,
+  pendingScheduledFor: ["2026-10-03T20:00:00.000Z"],
+  completedSendTimes: [],
+});
+assert.equal(dueOvernight.reason, dueAfternoon.reason);
 
 const none = explainIdleQueue({
   now: new Date("2026-10-03T15:00:00.000Z"),
@@ -85,7 +104,16 @@ const none = explainIdleQueue({
   completedSendTimes: [],
 });
 assert.equal(none.reason, "no_queued_jobs");
-assert.notEqual(none.reason, outside.reason);
+assert.notEqual(none.reason, scheduled.reason);
+
+const daily = explainIdleQueue({
+  now: new Date("2026-10-03T07:00:00.000Z"),
+  timeZone: "America/Chicago",
+  settings: { ...DEFAULT_OUTREACH_SETTINGS, dailyMaximum: 1 },
+  pendingScheduledFor: ["2026-10-03T08:00:00.000Z"],
+  completedSendTimes: [new Date("2026-10-03T06:30:00.000Z")],
+});
+assert.equal(daily.reason, "daily_limit_reached");
 
 const hourly = explainIdleQueue({
   now: new Date("2026-10-03T15:00:00.000Z"),

@@ -65,12 +65,12 @@ assert.equal(PROSPECT_DELETE_TABLES.includes("prospects"), true);
 assert.equal(deleteTouchesSharedConfig("prospects"), false);
 
 const now = new Date("2026-10-03T15:00:00.000Z");
-assert.equal(continuousOutreachStep({ paused: false, checkpoint: false, jobReady: true, nextAt: null, outsideHours: false, now }).action, "run");
-assert.equal(continuousOutreachStep({ paused: false, checkpoint: false, jobReady: false, nextAt: new Date(now.getTime() + 222000).toISOString(), outsideHours: false, now }).action, "wait");
-assert.equal(continuousOutreachStep({ paused: false, checkpoint: false, jobReady: false, nextAt: null, outsideHours: true, now }).reason, "outside_active_hours");
-assert.equal(continuousOutreachStep({ paused: true, checkpoint: false, jobReady: true, nextAt: null, outsideHours: false, now }).action, "idle");
-assert.equal(continuousOutreachStep({ paused: false, checkpoint: true, jobReady: true, nextAt: null, outsideHours: false, now }).action, "stop");
-assert.equal(continuousOutreachStep({ paused: false, checkpoint: false, jobReady: false, nextAt: null, outsideHours: false, now }).reason, "no_queued_jobs");
+assert.equal(continuousOutreachStep({ paused: false, checkpoint: false, jobReady: true, nextAt: null, now }).action, "run");
+assert.equal(continuousOutreachStep({ paused: false, checkpoint: false, jobReady: true, nextAt: null, now: new Date("2026-10-03T07:00:00.000Z") }).action, "run");
+assert.equal(continuousOutreachStep({ paused: false, checkpoint: false, jobReady: false, nextAt: new Date(now.getTime() + 222000).toISOString(), now }).action, "wait");
+assert.equal(continuousOutreachStep({ paused: true, checkpoint: false, jobReady: true, nextAt: null, now }).action, "idle");
+assert.equal(continuousOutreachStep({ paused: false, checkpoint: true, jobReady: true, nextAt: null, now }).action, "stop");
+assert.equal(continuousOutreachStep({ paused: false, checkpoint: false, jobReady: false, nextAt: null, now }).reason, "no_queued_jobs");
 assert.equal(singleOutreachMayContinue(0), true);
 assert.equal(singleOutreachMayContinue(1), false);
 assert.match(discoveryProgressLabel({ running: false, currentReview: 52, target: 50, reason: "review_target_reached" }), /paused automatically/);

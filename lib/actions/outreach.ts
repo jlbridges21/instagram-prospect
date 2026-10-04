@@ -2,7 +2,6 @@
 
 import { revalidatePath } from "next/cache";
 import type { ActionResult } from "@/lib/actions/prospects";
-import { WEEKDAYS, isWeekday } from "@/lib/outreach/types";
 import {
   cancelProspectOutreach,
   rescheduleJob,
@@ -100,9 +99,6 @@ export async function saveQueuedMessage(prospectId: string, message: string): Pr
 
 export async function saveOutreachSettings(input: {
   automationEnabled: boolean;
-  activeDays: string[];
-  activeStart: string;
-  activeEnd: string;
   hourlyMinimum: number;
   hourlyMaximum: number;
   dailyMaximum: number;
@@ -110,14 +106,6 @@ export async function saveOutreachSettings(input: {
   schedulingSpreadSeconds: number;
   claimLeaseSeconds: number;
 }): Promise<ActionResult> {
-  const activeDays = input.activeDays.filter(isWeekday);
-  if (activeDays.length === 0) return { ok: false, error: "Choose at least one active day." };
-  if (!/^\d{2}:\d{2}$/.test(input.activeStart) || !/^\d{2}:\d{2}$/.test(input.activeEnd)) {
-    return { ok: false, error: "Active hours must use 24-hour HH:MM times." };
-  }
-  if (input.activeEnd <= input.activeStart) {
-    return { ok: false, error: "The active window must end after it starts." };
-  }
   if (!Number.isInteger(input.hourlyMinimum) || input.hourlyMinimum < 1 || input.hourlyMinimum > 100) {
     return { ok: false, error: "Hourly minimum must be a whole number from 1 to 100." };
   }
@@ -153,15 +141,11 @@ export async function saveOutreachSettings(input: {
     return { ok: false, error: "Claim lease must be between 60 and 3600 seconds." };
   }
 
-  const orderedDays = WEEKDAYS.filter((day) => activeDays.includes(day));
   const { supabase } = await requireUser();
   const { error } = await supabase
     .from("settings")
     .update({
       automation_enabled: input.automationEnabled,
-      active_days: orderedDays,
-      active_start_time: input.activeStart,
-      active_end_time: input.activeEnd,
       hourly_minimum: input.hourlyMinimum,
       hourly_maximum: input.hourlyMaximum,
       daily_maximum: input.dailyMaximum,

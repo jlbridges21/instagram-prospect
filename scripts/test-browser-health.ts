@@ -80,13 +80,34 @@ const outreach = formatOutreachStatus({
   online: true,
   enabled: false,
   queueCount: 4,
-  outsideHours: false,
-  nextWindow: null,
   attention: null,
   browser: "closed",
 });
 assert.equal(outreach.desired, "PAUSED");
 assert.equal(outreach.actual, "PAUSED");
+
+const running = formatOutreachStatus({
+  online: true,
+  enabled: true,
+  queueCount: 4,
+  attention: null,
+  browser: "connected",
+});
+assert.equal(running.desired, "RUNNING");
+assert.equal(running.actual, "RUNNING");
+assert.doesNotMatch(running.label, /outside/i);
+assert.doesNotMatch(running.reason, /hour/i);
+
+const waiting = formatOutreachStatus({
+  online: true,
+  enabled: true,
+  queueCount: 4,
+  attention: null,
+  browser: "connected",
+  pacingWait: { reason: "Waiting for minimum spacing", nextAt: "2026-10-03T07:02:41.000Z" },
+});
+assert.equal(waiting.actual, "WAITING");
+assert.match(waiting.reason, /minimum spacing/);
 
 assert.equal(restartBrowserAllowed({ online: true, state: "closed", sideEffect: null }).allowed, true);
 assert.equal(restartBrowserAllowed({ online: true, state: "closed", sideEffect: "follow" }).allowed, false);

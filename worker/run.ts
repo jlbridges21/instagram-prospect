@@ -574,7 +574,6 @@ export async function runWorker(mode: RunMode) {
               checkpoint: false,
               jobReady: false,
               nextAt: outcome.nextAt ?? null,
-              outsideHours: outcome.reason === "outside_active_hours",
               now: new Date(),
             });
             if (outcome.reason === "no_queued_jobs") console.log("Outreach queue is empty.");

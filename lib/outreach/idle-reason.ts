@@ -1,5 +1,4 @@
 import type { OutreachSettings } from "@/lib/outreach/types";
-import { nextOpenInstant } from "@/lib/outreach/time";
 import { localDateKey, localHourKey } from "@/lib/outreach/time";
 
 export function claimBlockMessage(reason: string) {
@@ -12,7 +11,6 @@ export function claimBlockMessage(reason: string) {
 
 export type IdleQueueReason =
   | "no_queued_jobs"
-  | "outside_active_hours"
   | "hourly_limit_reached"
   | "daily_limit_reached"
   | "next_job_scheduled_for"
@@ -112,16 +110,6 @@ export function explainIdleQueue(input: {
       reason: "job_in_progress" as const,
       message: "An outreach step is still open and is not ready to claim.",
       nextAt: null,
-    };
-  }
-
-  const windowOpens = nextOpenInstant(input.now, input.timeZone, input.settings);
-  const insideWindow = Math.abs(windowOpens.getTime() - input.now.getTime()) < 1000;
-  if (!insideWindow) {
-    return {
-      reason: "outside_active_hours" as const,
-      message: "Outside active outreach hours.",
-      nextAt: futureStamp(windowOpens.toISOString(), nowMs),
     };
   }
 

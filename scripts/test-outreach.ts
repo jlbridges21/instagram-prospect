@@ -3,7 +3,7 @@ import { outreachBlockReason } from "../lib/outreach/eligibility";
 import { expiredClaimResolution, isJobClaimable } from "../lib/outreach/claim-rules";
 import { failurePlan, jobsCancelledAfter, verifyDecision, workerMayClaim } from "../lib/outreach/decisions";
 import { jitterSeconds, nextSendInstant } from "../lib/outreach/scheduler";
-import { zonedParts, zonedTimeToUtc } from "../lib/outreach/time";
+import { localDateKey, zonedParts, zonedTimeToUtc } from "../lib/outreach/time";
 import type { OutreachSettings } from "../lib/outreach/types";
 
 const failures: string[] = [];
@@ -93,9 +93,54 @@ const afterHours = nextSendInstant({
 });
 const afterParts = zonedParts(afterHours, zone);
 check(
-  "outside active hours moves to the next window",
-  afterParts.weekday === "sat" && afterParts.hour === 9 && afterParts.minute === 0,
+  "8:00 PM schedules immediately when pacing allows it",
+  afterParts.weekday === "fri" && afterParts.hour === 20 && afterParts.minute === 0,
   `${afterParts.weekday} ${afterParts.hour}:${afterParts.minute}`,
+);
+
+const twoAm = zonedTimeToUtc({ year: 2026, month: 10, day: 3, hour: 2, minute: 0 }, zone);
+const overnight = nextSendInstant({
+  now: twoAm,
+  timeZone: zone,
+  settings: quiet,
+  occupied: [],
+  seed: "overnight",
+});
+const overnightParts = zonedParts(overnight, zone);
+check(
+  "2:00 AM may schedule an eligible send",
+  overnightParts.day === 3 && overnightParts.hour === 2 && overnightParts.minute === 0,
+  `${overnightParts.hour}:${overnightParts.minute}`,
+);
+
+const threePm = zonedTimeToUtc({ year: 2026, month: 10, day: 3, hour: 15, minute: 0 }, zone);
+const afternoon = nextSendInstant({
+  now: threePm,
+  timeZone: zone,
+  settings: quiet,
+  occupied: [],
+  seed: "afternoon",
+});
+const afternoonParts = zonedParts(afternoon, zone);
+check(
+  "3:00 PM schedules the same way",
+  afternoonParts.day === 3 && afternoonParts.hour === 15 && afternoonParts.minute === 0,
+  `${afternoonParts.hour}:${afternoonParts.minute}`,
+);
+
+const spacedFrom = zonedTimeToUtc({ year: 2026, month: 10, day: 3, hour: 2, minute: 0 }, zone);
+const spacedNow = new Date(spacedFrom.getTime() + 10_000);
+const spaced = nextSendInstant({
+  now: spacedNow,
+  timeZone: zone,
+  settings: quiet,
+  occupied: [spacedFrom],
+  seed: "spacing",
+});
+check(
+  "minimum spacing still delays the next send",
+  spaced.getTime() === spacedFrom.getTime() + 30_000,
+  String(spaced.getTime() - spacedFrom.getTime()),
 );
 
 const ten = zonedTimeToUtc({ year: 2026, month: 10, day: 3, hour: 10, minute: 5 }, zone);
@@ -126,7 +171,7 @@ const dailyFull = nextSendInstant({
   seed: "daily",
 });
 const dailyParts = zonedParts(dailyFull, zone);
-check("daily maximum moves to the next active day", dailyParts.day === 4 && dailyParts.hour === 9, `${dailyParts.day} ${dailyParts.hour}`);
+check("daily maximum moves to the next local day", dailyParts.day === 4 && dailyParts.hour === 0 && dailyParts.minute === 0, `${dailyParts.day} ${dailyParts.hour}:${dailyParts.minute}`);
 
 const spreadA = jitterSeconds("alpha", 360);
 const spreadB = jitterSeconds("bravo", 360);
@@ -221,6 +266,34 @@ check(
     maxAttempts: 3,
     now,
   }) === "fail",
+);
+
+const claimAtTwo = zonedTimeToUtc({ year: 2026, month: 10, day: 3, hour: 2, minute: 0 }, zone);
+const claimAtThree = zonedTimeToUtc({ year: 2026, month: 10, day: 3, hour: 15, minute: 0 }, zone);
+const claimable = (at: Date) =>
+  isJobClaimable(
+    {
+      status: "pending",
+      availableAt: at.toISOString(),
+      scheduledFor: at.toISOString(),
+      dependsOnStatus: null,
+      prospectStatus: "approved",
+      outreachCancelled: false,
+      alreadyFollowing: false,
+      alreadyContacted: false,
+      jobType: "verify_profile",
+    },
+    at,
+  );
+check("a due job at 2:00 AM is claimable", claimable(claimAtTwo));
+check("a due job at 3:00 PM is claimable the same way", claimable(claimAtThree));
+
+const beforeMidnight = new Date("2026-10-03T04:30:00.000Z");
+const afterMidnight = new Date("2026-10-03T05:30:00.000Z");
+check(
+  "daily counters follow the settings timezone",
+  localDateKey(beforeMidnight, zone) === "2026-10-2" && localDateKey(afterMidnight, zone) === "2026-10-3",
+  `${localDateKey(beforeMidnight, zone)} / ${localDateKey(afterMidnight, zone)}`,
 );
 
 console.log(failures.length === 0 ? "outreach checks passed" : `${failures.length} failed`);

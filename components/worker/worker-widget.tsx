@@ -34,8 +34,10 @@ type Status = {
   hourly: { count: number; limit: number; resumesAt: string } | null;
   stopReason: string | null;
   queueCount: number;
-  outsideHours: boolean;
-  nextWindow: string | null;
+  nextEligibleAt?: string | null;
+  hourlyMaximum?: number;
+  dailyMaximum?: number;
+  minimumSpacingSeconds?: number;
   attentionReason: string | null;
   browser?: { state: "connected" | "restarting" | "closed" | "failed"; reason: string | null } | null;
   reportedVersion: string | null;
@@ -126,8 +128,11 @@ export function WorkerWidget({ timeZone }: { timeZone: string }) {
     online: Boolean(status?.online),
     enabled: Boolean(status?.outreachEnabled),
     queueCount: status?.queueCount ?? 0,
-    outsideHours: Boolean(status?.outsideHours),
-    nextWindow: status?.nextWindow ?? null,
+    pacingWait:
+      status?.outreachEnabled && status.nextEligibleAt
+        ? { reason: "Waiting for the next scheduled action", nextAt: status.nextEligibleAt }
+        : null,
+    acting: status?.currentAction?.startsWith("executing_") === true,
     attention,
     browser: status?.browser?.state ?? "connected",
   });
@@ -192,7 +197,7 @@ export function WorkerWidget({ timeZone }: { timeZone: string }) {
             <p className="mt-3 text-xs text-slate-500">Current action</p>
             <p>{action}</p>
             {discovery.resumesAt ? <p className="text-xs text-slate-600">Resumes {formatResumeClock(discovery.resumesAt, zone)}</p> : null}
-            {outreach.resumesAt ? <p className="text-xs text-slate-600">Next outreach window {formatResumeClock(outreach.resumesAt, zone)}</p> : null}
+            {outreach.resumesAt ? <p className="text-xs text-slate-600">Next eligible action {formatResumeClock(outreach.resumesAt, zone)}</p> : null}
             <div className="mt-3 grid grid-cols-2 gap-2 text-xs">
               <label>Review target
                 <input aria-label="Review target" className="mt-1 w-full rounded-lg border border-slate-200 px-2 py-1" value={target} onChange={(event) => setTarget(event.target.value)} />
@@ -214,7 +219,13 @@ export function WorkerWidget({ timeZone }: { timeZone: string }) {
               {status?.outreachEnabled ? (
                 <button type="button" title="Stops new outreach claims and keeps the queue." className="rounded-lg border border-slate-200 px-2 py-1 text-xs disabled:opacity-50" disabled={!enabled || pending} onClick={() => send("pause_outreach")}>Pause Outreach</button>
               ) : (
-                <StartOutreachButton disabled={!enabled || pending} ready={status?.queueCount ?? 0} />
+                <StartOutreachButton
+                  disabled={!enabled || pending}
+                  ready={status?.queueCount ?? 0}
+                  hourlyMaximum={status?.hourlyMaximum}
+                  dailyMaximum={status?.dailyMaximum}
+                  minimumSpacingSeconds={status?.minimumSpacingSeconds}
+                />
               )}
             </div>
             {status?.online && (status.browser?.state === "closed" || status.browser?.state === "failed") ? (

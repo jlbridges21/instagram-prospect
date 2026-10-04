@@ -3,6 +3,7 @@ import { WEEKDAYS } from "@/lib/outreach/types";
 
 export const DEFAULT_OUTREACH_SETTINGS: OutreachSettings = {
   automationEnabled: false,
+  // Deprecated. Stored for old rows and ignored by scheduling.
   activeDays: [...WEEKDAYS],
   activeStart: "09:00",
   activeEnd: "19:00",

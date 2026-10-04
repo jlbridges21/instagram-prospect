@@ -19,7 +19,6 @@ import type { ProspectRow } from "@/lib/db/types";
 import { endOfTodayIso, formatDate, formatDateTime, formatRelativeTime, platformLabel, startOfTodayIso } from "@/lib/utils/format";
 import { getWorkerHealth } from "@/lib/utils/worker-health";
 import { attentionKind, formatCurrentAction, formatDiscoveryStatus, formatOutreachStatus, formatWorkerStatus } from "@/lib/status/operations";
-import { nextOpenInstant } from "@/lib/outreach/time";
 import { parseHourlyWaitEvent } from "@/lib/discovery/pacing";
 import { parseBrowserHealthEvent } from "@/lib/worker/browser-health";
 
@@ -70,8 +69,11 @@ export default async function OverviewPage() {
   });
   const worker = workerResult.ok ? workerResult.data : null;
   const now = new Date();
-  const outreachOpens = nextOpenInstant(now, settings.timezone, settings.outreach);
-  const outreachWaiting = Math.abs(outreachOpens.getTime() - now.getTime()) >= 1000;
+  const nextOutreachAt = outreach?.nextAt ?? null;
+  const outreachPacing =
+    settings.outreach.automationEnabled && nextOutreachAt && new Date(nextOutreachAt).getTime() > now.getTime()
+      ? { reason: "Waiting for the next scheduled action", nextAt: nextOutreachAt }
+      : null;
   const progress = await getDiscoveryV3Snapshot(settings.timezone);
 
   const cards = [
@@ -117,8 +119,8 @@ export default async function OverviewPage() {
           online: health.state === "online" || health.state === "attention",
           enabled: settings.outreach.automationEnabled,
           queueCount: outreach?.queueProspects ?? 0,
-          outsideHours: settings.outreach.automationEnabled && outreachWaiting,
-          nextWindow: outreachWaiting ? outreachOpens.toISOString() : outreach?.nextAt ?? null,
+          pacingWait: outreachPacing,
+          acting: worker?.current_task?.startsWith("executing_") === true,
           attention: attentionKind(worker?.current_task, worker?.attention_reason),
           browser: parseBrowserHealthEvent(worker?.last_event)?.state ?? "connected",
         })}

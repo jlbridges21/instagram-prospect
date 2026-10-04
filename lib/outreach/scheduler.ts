@@ -2,11 +2,8 @@ import type { OutreachSettings } from "@/lib/outreach/types";
 import {
   localDateKey,
   localHourKey,
-  nextOpenInstant,
-  parseClock,
+  startOfNextLocalDay,
   startOfNextLocalHour,
-  zonedParts,
-  zonedTimeToUtc,
 } from "@/lib/outreach/time";
 
 export function jitterSeconds(seed: string, spreadSeconds: number) {
@@ -27,30 +24,23 @@ export function nextSendInstant(input: {
   seed: string;
 }) {
   const { timeZone, settings } = input;
-  let candidate = nextOpenInstant(input.now, timeZone, settings);
+  let candidate = new Date(input.now.getTime());
   const latest = latestOccupied(input.occupied);
   if (latest) {
     const afterDelay = new Date(latest.getTime() + settings.minimumActionDelaySeconds * 1000);
-    if (afterDelay.getTime() > candidate.getTime()) {
-      candidate = nextOpenInstant(afterDelay, timeZone, settings);
-    }
+    if (afterDelay.getTime() > candidate.getTime()) candidate = afterDelay;
   }
 
   const jitter = jitterSeconds(input.seed, settings.schedulingSpreadSeconds);
-  if (jitter > 0) {
-    const jittered = new Date(candidate.getTime() + jitter * 1000);
-    const snapped = nextOpenInstant(jittered, timeZone, settings);
-    if (snapped.getTime() === jittered.getTime()) candidate = jittered;
-  }
+  if (jitter > 0) candidate = new Date(candidate.getTime() + jitter * 1000);
 
   for (let guard = 0; guard < 24 * 21; guard += 1) {
-    candidate = nextOpenInstant(candidate, timeZone, settings);
     if (countOnDay(input.occupied, candidate, timeZone) >= settings.dailyMaximum) {
-      candidate = nextDayStart(candidate, timeZone, settings);
+      candidate = startOfNextLocalDay(candidate, timeZone);
       continue;
     }
     if (countInHour(input.occupied, candidate, timeZone) >= settings.hourlyMaximum) {
-      candidate = nextOpenInstant(startOfNextLocalHour(candidate, timeZone), timeZone, settings);
+      candidate = startOfNextLocalHour(candidate, timeZone);
       continue;
     }
     const prior = latestAtOrBefore(input.occupied, candidate);
@@ -64,7 +54,7 @@ export function nextSendInstant(input: {
     return candidate;
   }
 
-  throw new Error("No open outreach window was found.");
+  throw new Error("No outreach time satisfied the hourly, daily, and spacing limits.");
 }
 
 export function nextPrepInstant(input: {
@@ -73,11 +63,8 @@ export function nextPrepInstant(input: {
   settings: OutreachSettings;
   seed: string;
 }) {
-  const open = nextOpenInstant(input.now, input.timeZone, input.settings);
   const jitter = jitterSeconds(input.seed, Math.min(input.settings.schedulingSpreadSeconds, 120));
-  const jittered = new Date(open.getTime() + jitter * 1000);
-  const snapped = nextOpenInstant(jittered, input.timeZone, input.settings);
-  return snapped.getTime() === jittered.getTime() ? jittered : open;
+  return new Date(input.now.getTime() + jitter * 1000);
 }
 
 function latestOccupied(occupied: Date[]) {
@@ -105,12 +92,3 @@ function countInHour(occupied: Date[], candidate: Date, timeZone: string) {
   return occupied.filter((value) => localHourKey(value, timeZone) === key).length;
 }
 
-function nextDayStart(date: Date, timeZone: string, settings: OutreachSettings) {
-  const parts = zonedParts(date, timeZone);
-  const clock = parseClock(settings.activeEnd) ?? { hour: 19, minute: 0 };
-  const end = zonedTimeToUtc(
-    { year: parts.year, month: parts.month, day: parts.day, hour: clock.hour, minute: clock.minute },
-    timeZone,
-  );
-  return nextOpenInstant(end, timeZone, settings);
-}

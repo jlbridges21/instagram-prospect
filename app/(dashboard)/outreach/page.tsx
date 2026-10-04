@@ -7,7 +7,6 @@ import { listOutreachJobs, getOutreachSnapshot } from "@/lib/db/outreach";
 import { fallbackSettings, getSettings } from "@/lib/db/settings";
 import { formatDateTime } from "@/lib/utils/format";
 import { getLatestWorker } from "@/lib/db/workers";
-import { nextOpenInstant } from "@/lib/outreach/time";
 import { attentionKind, formatCurrentAction, formatOutreachStatus, statusDotClass } from "@/lib/status/operations";
 import { getWorkerHealth } from "@/lib/utils/worker-health";
 import { formatResumeClock } from "@/lib/discovery/pacing";
@@ -32,14 +31,17 @@ export default async function OutreachPage() {
   });
   const online = health.state === "online" || health.state === "attention";
   const now = new Date();
-  const opens = nextOpenInstant(now, settings.timezone, settings.outreach);
-  const waiting = settings.outreach.automationEnabled && Math.abs(opens.getTime() - now.getTime()) >= 1000;
+  const nextAt = snapshot?.nextAt ?? null;
+  const pacingWait =
+    settings.outreach.automationEnabled && nextAt && new Date(nextAt).getTime() > now.getTime()
+      ? { reason: "Waiting for the next scheduled action", nextAt }
+      : null;
   const outreachStatus = formatOutreachStatus({
     online,
     enabled: settings.outreach.automationEnabled,
     queueCount: snapshot?.queueProspects ?? 0,
-    outsideHours: waiting,
-    nextWindow: waiting ? opens.toISOString() : snapshot?.nextAt ?? null,
+    pacingWait,
+    acting: worker?.current_task?.startsWith("executing_") === true,
     attention: attentionKind(worker?.current_task, worker?.attention_reason),
   });
 
@@ -47,7 +49,7 @@ export default async function OutreachPage() {
     <div>
       <PageHeader
         title="Outreach Queue"
-        description="Start, pause, or watch the approved queue. Approving a prospect does not send a message."
+        description="Outreach can run at any time while enabled. Pacing and daily/hourly limits still apply. Approving a prospect does not send a message."
         action={<AutomationControls enabled={settings.outreach.automationEnabled} />}
       />
       {!queue.ok && queue.missingTable ? (
@@ -66,7 +68,7 @@ export default async function OutreachPage() {
         <p className="mt-2">Desired: {outreachStatus.desired}</p>
         <p className="mt-1">{outreachStatus.reason}</p>
         {outreachStatus.detail ? <p className="mt-1 text-slate-600">{outreachStatus.detail}</p> : null}
-        {outreachStatus.resumesAt ? <p className="mt-2">Next outreach window: {formatResumeClock(outreachStatus.resumesAt, settings.timezone)}</p> : null}
+        {outreachStatus.resumesAt ? <p className="mt-2">Next eligible action {formatResumeClock(outreachStatus.resumesAt, settings.timezone)}</p> : null}
         <p className="mt-2">Current action: {formatCurrentAction(worker?.current_task, worker?.current_username)}</p>
         <p className="mt-3 text-xs text-slate-500">Pause stops new claims and keeps the queue. Stop ends this run the same way and does not cancel pending outreach. Cancel Pending Outreach stays a separate confirmed action in the control above.</p>
       </section>
@@ -76,7 +78,7 @@ export default async function OutreachPage() {
           <Stat label="Scheduled today" value={String(snapshot.scheduledToday)} />
           <Stat label="Sent today" value={String(snapshot.sentToday)} />
           <Stat
-            label="Next outreach"
+            label="Next eligible action"
             value={snapshot.nextAt ? formatDateTime(snapshot.nextAt, settings.timezone, settings.dateFormat) : "None"}
           />
         </dl>

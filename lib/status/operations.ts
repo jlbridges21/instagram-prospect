@@ -163,9 +163,10 @@ export function formatOutreachStatus(input: {
   online: boolean;
   enabled: boolean;
   queueCount: number;
-  outsideHours: boolean;
-  nextWindow: string | null;
   attention: AttentionKind;
+  /** A real pacing wait, such as minimum spacing or the next scheduled step. Not a time-of-day window. */
+  pacingWait?: { reason: string; nextAt: string | null } | null;
+  acting?: boolean;
   browser?: "connected" | "restarting" | "closed" | "failed" | null;
 }): OperationState {
   const desired: OperationState["desired"] = input.enabled ? "RUNNING" : "PAUSED";
@@ -205,15 +206,15 @@ export function formatOutreachStatus(input: {
       action: "Resolve it in the Windows Chrome window.",
     };
   }
-  if (input.enabled && input.outsideHours) {
+  if (input.enabled && input.pacingWait && !input.acting) {
     return {
       desired: "RUNNING",
       actual: "WAITING",
       tone: "waiting",
-      label: "WAITING — Outside outreach hours",
-      reason: "Outside outreach hours",
-      detail: `${input.queueCount} approved prospect${input.queueCount === 1 ? "" : "s"} remain in the queue.`,
-      resumesAt: input.nextWindow,
+      label: `WAITING — ${input.pacingWait.reason}`,
+      reason: input.pacingWait.reason,
+      detail: "Hourly, daily, and spacing limits still apply. Outreach is not limited to a time of day.",
+      resumesAt: input.pacingWait.nextAt,
       action: null,
     };
   }

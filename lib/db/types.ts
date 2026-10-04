@@ -77,8 +77,11 @@ export type SettingsRow = {
   strong_fit_minimum: number;
   possible_fit_minimum: number;
   automation_enabled?: boolean;
+  /** @deprecated Ignored by outreach scheduling. */
   active_days?: string[] | null;
+  /** @deprecated Ignored by outreach scheduling. */
   active_start_time?: string | null;
+  /** @deprecated Ignored by outreach scheduling. */
   active_end_time?: string | null;
   hourly_minimum?: number;
   hourly_maximum?: number;

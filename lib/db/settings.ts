@@ -68,6 +68,7 @@ function discoveryFromRow(row: SettingsRow): DiscoverySettings {
 function outreachFromRow(row: SettingsRow): OutreachSettings {
   return {
     automationEnabled: row.automation_enabled ?? DEFAULT_OUTREACH_SETTINGS.automationEnabled,
+    // Deprecated columns. Runtime pacing does not read these.
     activeDays: normalizeDays(row.active_days),
     activeStart: normalizeClock(row.active_start_time, DEFAULT_OUTREACH_SETTINGS.activeStart),
     activeEnd: normalizeClock(row.active_end_time, DEFAULT_OUTREACH_SETTINGS.activeEnd),
