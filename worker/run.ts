@@ -18,6 +18,7 @@ import {
   type SideEffect,
 } from "../lib/worker/browser-health";
 import { prospectCompletionLine } from "../lib/outreach/completion-log";
+import { JobQuarantine, persistFailure } from "../lib/outreach/failure-sync";
 import { launchBrowser } from "./browser/launch";
 import { createHeartbeatSession, mustHeartbeatBeforeClaim, safeHeartbeatError } from "./heartbeat-session";
 import { CloudClient, type CloudConfig, type JobPayload } from "./cloud/client";
@@ -49,6 +50,8 @@ let stopRequested = false;
 let openedSession = false;
 let activeSideEffect: SideEffect = null;
 const browserLock = new BrowserActionLock();
+const quarantine = new JobQuarantine();
+let outreachSyncBlocked: { jobId: string; username: string } | null = null;
 
 const sleep = (ms: number) =>
   new Promise<void>((resolve) => {
@@ -593,7 +596,12 @@ export async function runWorker(mode: RunMode) {
         });
         if (mode !== "smoke" && !discoveryOnly && !noWrite && (step.action === "outreach" || activeSideEffect)) {
           const outcome = await runOneJob(cloud, page, identity, config, stats);
-          if (outcome.worked) {
+          if (outcome.reason === "state_sync_failed") {
+            live.attention = outcome.message ?? "Could not synchronize Outreach job state.";
+            live.task = "outreach_state_sync";
+            live.username = outcome.username;
+            outreachDueAt = Date.now() + 60_000;
+          } else if (outcome.worked) {
             outreachDueAt = 0;
             const line = prospectCompletionLine({
               username: outcome.username,
@@ -613,9 +621,9 @@ export async function runWorker(mode: RunMode) {
               now: new Date(),
             });
             if (outcome.reason === "no_queued_jobs") console.log("Outreach queue is empty.");
-            else if (outcome.message) console.log(outcome.message);
+            else if (outcome.message && outcome.reason !== "state_sync_failed") console.log(outcome.message);
             if (!config.discoveryEnabled || discoveryPace.full) {
-              live.task = outcome.nextAt ? "outreach_spacing_wait" : "idle";
+              if (outcome.reason !== "state_sync_failed") live.task = outcome.nextAt ? "outreach_spacing_wait" : "idle";
               await beat(cloud, identity, live.task, stats, true, true, live.attention, live.username, live.lastEvent);
               await sleep(Math.min(wait.waitMs, 15_000));
               continue;
@@ -746,6 +754,17 @@ async function runOneJob(
   config: CloudConfig,
   stats: { seen: number; ingested: number; excluded: number; qualified: number; errors: number },
 ) {
+  if (outreachSyncBlocked) {
+    return {
+      worked: false,
+      reason: "state_sync_failed" as const,
+      nextAt: null,
+      message: `Could not save retry state for @${outreachSyncBlocked.username}. No DM was sent.`,
+      username: outreachSyncBlocked.username,
+      jobType: "send_message",
+      sequenceComplete: false,
+    };
+  }
   if (!config.automationEnabled) {
     return { worked: false, reason: "outreach_paused" as const, nextAt: null, message: null, username: null, jobType: "", sequenceComplete: false };
   }
@@ -762,11 +781,33 @@ async function runOneJob(
     };
   }
   const job = next.job;
+  if (!quarantine.allowsBrowser(job.id)) {
+    return {
+      worked: false,
+      reason: "state_sync_failed" as const,
+      nextAt: null,
+      message: `Could not save retry state for @${job.instagramUsername}. No DM was sent.`,
+      username: job.instagramUsername,
+      jobType: job.type,
+      sequenceComplete: false,
+    };
+  }
   await beat(cloud, identity, `executing_${job.type}`, stats, true, true, undefined, job.instagramUsername, null);
   await cloud.startJob(job.id, identity.worker_id);
   try {
     const result = await executeJob(page, job);
     const settlement = await settleExecution(cloud, identity.worker_id, job, result);
+    if (outreachSyncBlocked) {
+      return {
+        worked: false,
+        reason: "state_sync_failed" as const,
+        nextAt: null,
+        message: `Could not save retry state for @${job.instagramUsername}. No DM was sent.`,
+        username: job.instagramUsername,
+        jobType: job.type,
+        sequenceComplete: false,
+      };
+    }
     return {
       worked: true,
       reason: null,
@@ -918,8 +959,10 @@ async function settleExecution(
   }
   if (outcome.recipientUnconfirmed) {
     const reason = outcome.ambiguousReason || "Conversation recipient could not be confirmed.";
-    await reportFailure(cloud, workerId, job.id, "recipient_confirmation_failed", reason, true);
-    console.log(reason);
+    console.log(`Thread identity not confirmed for @${job.instagramUsername}.`);
+    console.log("No DM sent.");
+    console.log("Scheduling retry. This prospect will not be opened again until that retry is saved.");
+    await reportFailure(cloud, workerId, job.id, "recipient_confirmation_failed", reason, true, job.instagramUsername);
     return "stop" as const;
   }
   if (outcome.manualReview) {
@@ -976,15 +1019,29 @@ async function reportFailure(
   errorCode: string,
   errorMessage: string,
   retryable: boolean,
+  username?: string,
 ) {
   const body = { error_code: errorCode, error_message: errorMessage.slice(0, 500), retryable };
-  try {
-    await cloud.failJob(jobId, workerId, body);
+  quarantine.noteBrowserRun(jobId, username ?? jobId);
+  const saved = await persistFailure({
+    write: async () => {
+      await cloud.failJob(jobId, workerId, body);
+    },
+    sleep,
+    log: (message) => console.log(message),
+  });
+  if (saved.ok) {
     forgetPending(jobId);
-  } catch (error) {
-    rememberPending({ jobId, workerId, kind: "fail", body, createdAt: new Date().toISOString() });
-    console.log(error instanceof Error ? error.message : "The job failure could not be recorded.");
+    quarantine.clear(jobId);
+    if (outreachSyncBlocked?.jobId === jobId) outreachSyncBlocked = null;
+    return;
   }
+  rememberPending({ jobId, workerId, kind: "fail", body, createdAt: new Date().toISOString() });
+  quarantine.markBlocked(jobId);
+  outreachSyncBlocked = { jobId, username: username ?? "unknown" };
+  console.log("State sync failed.");
+  console.log(`@${outreachSyncBlocked.username} quarantined.`);
+  console.log("Outreach blocked pending reconciliation.");
 }
 
 async function flushPending(cloud: CloudClient, workerId: string) {
@@ -996,6 +1053,8 @@ async function flushPending(cloud: CloudClient, workerId: string) {
         await cloud.failJob(pending.jobId, workerId, pending.body);
       }
       forgetPending(pending.jobId);
+      quarantine.clear(pending.jobId);
+      if (outreachSyncBlocked?.jobId === pending.jobId) outreachSyncBlocked = null;
     } catch (error) {
       const status = error instanceof Error && "statusCode" in error ? Number(error.statusCode) : 0;
       if (status === 409 || status === 404) forgetPending(pending.jobId);

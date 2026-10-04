@@ -814,6 +814,10 @@ export function queueSendStatusLabel(job: {
   now?: Date;
 }) {
   if (job.job_type !== "send_message") return null;
+  if (/thread identity/i.test(job.last_error ?? "")) {
+    if (job.status === "retry_wait") return "Retrying — Thread identity not confirmed";
+    if (job.status === "running" || job.status === "claimed") return "Needs attention — Could not save retry state";
+  }
   if (job.status === "retry_wait") {
     if (
     job.last_error &&

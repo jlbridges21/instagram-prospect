@@ -21,9 +21,13 @@ const FIT_TEXT: Record<string, string> = {
   not_relevant: "Not relevant",
 };
 
+export function isStateSyncFailure(text: string | null | undefined) {
+  return /state sync|save retry state|synchronize Outreach job state/i.test(text ?? "");
+}
+
 export function attentionKind(task: string | null | undefined, reason: string | null | undefined): AttentionKind {
   const text = `${task ?? ""} ${reason ?? ""}`;
-  if (!text.trim()) return null;
+  if (!text.trim() || isStateSyncFailure(reason)) return null;
   if (/browser_closed|browser_failed|browser_restarting|outreach_recovery_required/i.test(text)) return null;
   if (/login|logged out|sign in/i.test(text)) return "logged_out";
   if (/checkpoint|challenge/i.test(text)) return "checkpoint";
@@ -169,6 +173,7 @@ export function formatOutreachStatus(input: {
   pacingWait?: { reason: string; nextAt: string | null } | null;
   acting?: boolean;
   browser?: "connected" | "restarting" | "closed" | "failed" | null;
+  stateSync?: { username?: string | null } | null;
 }): OperationState {
   const desired: OperationState["desired"] = input.enabled ? "RUNNING" : "PAUSED";
   if (input.online && (input.browser === "closed" || input.browser === "failed" || input.browser === "restarting")) {
@@ -193,6 +198,19 @@ export function formatOutreachStatus(input: {
       detail: "Outreach cannot run until the Windows worker reconnects.",
       resumesAt: null,
       action: "Start the Windows worker.",
+    };
+  }
+  if (input.stateSync) {
+    const who = input.stateSync.username?.replace(/^@/, "");
+    return {
+      desired,
+      actual: "BLOCKED",
+      tone: "blocked",
+      label: "BLOCKED — State sync failed",
+      reason: "Could not synchronize Outreach job state.",
+      detail: `${who ? `Affected prospect: @${who}. ` : ""}No DM was sent.`,
+      resumesAt: null,
+      action: "Retry state sync after restarting the worker. View the prospect error for details.",
     };
   }
   if (input.attention) {
@@ -306,7 +324,7 @@ export function formatOutreachAction(input: {
   username: string | null | undefined;
   waiting: { reason: string; eligibleIn: string } | null;
 }) {
-  if (input.task === "executing_verify_profile" || input.task === "executing_follow_profile" || input.task === "executing_send_message") {
+  if (input.task === "executing_verify_profile" || input.task === "executing_follow_profile" || input.task === "executing_send_message" || input.task === "outreach_state_sync") {
     return formatCurrentAction(input.task, input.username);
   }
   if (input.waiting) return `${input.waiting.reason}. Eligible in ${input.waiting.eligibleIn}`;
@@ -340,6 +358,8 @@ export function formatCurrentAction(task: string | null | undefined, username: s
       return "Running a dashboard action";
     case "outreach_spacing_wait":
       return "Waiting for the next Outreach action";
+    case "outreach_state_sync":
+      return name ? `Could not save retry state for ${name}` : "Could not synchronize Outreach job state";
     case "paused":
     case "idle":
     case "standby":

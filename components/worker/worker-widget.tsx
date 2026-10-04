@@ -9,6 +9,7 @@ import { livePollDelay } from "@/lib/discovery/policy";
 import { formatResumeClock } from "@/lib/discovery/pacing";
 import {
   attentionKind,
+  isStateSyncFailure,
   formatCurrentAction,
   formatDiscoveryStatus,
   formatOutreachStatus,
@@ -136,6 +137,7 @@ export function WorkerWidget({ timeZone }: { timeZone: string }) {
     acting: status?.currentAction?.startsWith("executing_") === true,
     attention,
     browser: status?.browser?.state ?? "connected",
+    stateSync: isStateSyncFailure(status?.attentionReason) ? { username: status?.username } : null,
   });
   const action = formatCurrentAction(status?.currentAction, status?.username);
   const headline = widgetHeadline({ online: Boolean(status?.online), attention, action, discoveryActual: discovery.actual });

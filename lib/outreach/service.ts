@@ -19,11 +19,16 @@ import { claimPaceDecision, formatEligibleIn, nextProspectSlot, paceReasonLabel,
 import { automationChange, requeueDecision } from "@/lib/outreach/requeue";
 import {
   clipError,
-  failurePlan,
   jobsCancelledAfter,
   verifyDecision,
   workerMayClaim,
 } from "@/lib/outreach/decisions";
+import {
+  cappedFailurePlan,
+  existingFailureRecord,
+  reconcileRunningSend,
+  retryDelayMinutes,
+} from "@/lib/outreach/failure-sync";
 import {
   followResultSchema,
   sendResultSchema,
@@ -724,7 +729,7 @@ async function resumeOwnedFollow(
 async function releaseUnsentRecipientFailures(admin: Client, now: Date) {
   const failed = await admin
     .from("outreach_jobs")
-    .select("id, last_error, result")
+    .select("id, last_error, result, attempt_count, max_attempts")
     .eq("job_type", "send_message")
     .eq("status", "failed")
     .limit(20);
@@ -738,11 +743,13 @@ async function releaseUnsentRecipientFailures(admin: Client, now: Date) {
       text === "composer_text_mismatch" ||
       /recipient|thread identity/i.test(text);
     if (!recoverable) continue;
+    const delayMinutes = retryDelayMinutes(job.attempt_count, job.max_attempts);
+    if (delayMinutes == null) continue;
     await admin
       .from("outreach_jobs")
       .update({
         status: "retry_wait",
-        available_at: now.toISOString(),
+        available_at: new Date(now.getTime() + delayMinutes * 60 * 1000).toISOString(),
         failed_at: null,
         claimed_by_worker_id: null,
         claimed_at: null,
@@ -770,7 +777,13 @@ async function resumeOwnedSend(
   if (prospectId) request = request.eq("prospect_id", prospectId);
   const listed = await request;
   if (listed.error || !listed.data?.length) return null;
-  const open = listed.data.filter((job) => {
+  for (const job of listed.data) {
+    const parked = reconcileRunningSend(job, now);
+    if (!parked) continue;
+    await admin.from("outreach_jobs").update(parked).eq("id", job.id).in("status", ["running", "claimed"]);
+  }
+  const stillOpen = listed.data.filter((job) => !reconcileRunningSend(job, now));
+  const open = stillOpen.filter((job) => {
     const decision = staleReclaimDecision(
       {
         id: job.id,
@@ -1169,6 +1182,11 @@ export async function failJob(input: {
   now?: Date;
 }) {
   const now = input.now ?? new Date();
+  const current = await input.admin.from("outreach_jobs").select("*").eq("id", input.jobId).maybeSingle();
+  if (current.error) return { ok: false as const, error: "Could not read that job." };
+  if (!current.data) return { ok: false as const, error: "That job could not be found.", status: 404 };
+  const existing = existingFailureRecord(current.data, input.errorCode);
+  if (existing) return { ok: true as const, status: existing.status, attemptCount: existing.attemptCount };
   const owned = await ownedJob(input.admin, input.jobId, input.workerId, now);
   if (!owned.ok) return owned;
   return failOwnedJob(input.admin, owned.job, { ...input, now });
@@ -1235,7 +1253,7 @@ async function failOwnedJob(
     return { ok: true as const, status: "retry_wait" as const, attemptCount: job.attempt_count };
   }
 
-  const plan = failurePlan({
+  const plan = cappedFailurePlan({
     attemptCount: job.attempt_count,
     maxAttempts: job.max_attempts,
     retryable: input.retryable,
@@ -1249,7 +1267,8 @@ async function failOwnedJob(
       ? null
       : new Date(input.now.getTime() + plan.delayMinutes * 60 * 1000).toISOString();
 
-  const { error } = await admin
+  const prior = job.result && typeof job.result === "object" && !Array.isArray(job.result) ? job.result : {};
+  const { data: saved, error } = await admin
     .from("outreach_jobs")
     .update({
       status: plan.status,
@@ -1261,10 +1280,24 @@ async function failOwnedJob(
       claimed_at: null,
       claim_expires_at: null,
       started_at: null,
-      result: { error_code: input.errorCode, sendAttempted: false },
+      result: {
+        ...prior,
+        error_code: input.errorCode,
+        sendAttempted: (prior as { sendAttempted?: boolean }).sendAttempted === true,
+      },
     })
-    .eq("id", job.id);
+    .eq("id", job.id)
+    .eq("attempt_count", job.attempt_count)
+    .in("status", ["pending", "claimed", "running", "retry_wait"])
+    .select("id")
+    .maybeSingle();
   if (error) return { ok: false as const, error: "Could not record the job failure." };
+  if (!saved) {
+    const again = await admin.from("outreach_jobs").select("status, attempt_count, result").eq("id", job.id).maybeSingle();
+    const replay = again.data ? existingFailureRecord(again.data, input.errorCode) : null;
+    if (replay) return { ok: true as const, status: replay.status, attemptCount: replay.attemptCount };
+    return { ok: false as const, error: "Could not record the job failure." };
+  }
 
   if (plan.status === "failed") {
     await cancelJobTypes(

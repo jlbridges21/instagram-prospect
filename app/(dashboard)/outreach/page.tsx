@@ -8,7 +8,7 @@ import { listOutreachJobs, getOutreachSnapshot } from "@/lib/db/outreach";
 import { fallbackSettings, getSettings } from "@/lib/db/settings";
 import { formatDateTime } from "@/lib/utils/format";
 import { getLatestWorker } from "@/lib/db/workers";
-import { attentionKind, formatOutreachAction, formatOutreachStatus, statusDotClass } from "@/lib/status/operations";
+import { attentionKind, formatOutreachAction, formatOutreachStatus, isStateSyncFailure, statusDotClass } from "@/lib/status/operations";
 import { getWorkerHealth } from "@/lib/utils/worker-health";
 import { formatResumeClock } from "@/lib/discovery/pacing";
 import { claimPaceDecision, formatEligibleIn, paceReasonLabel, reflowPlan, type PaceJob } from "@/lib/outreach/pace";
@@ -74,6 +74,7 @@ export default async function OutreachPage() {
     pacingWait,
     acting: worker?.current_task?.startsWith("executing_") === true,
     attention: attentionKind(worker?.current_task, worker?.attention_reason),
+    stateSync: isStateSyncFailure(worker?.attention_reason) ? { username: worker?.current_username } : null,
   });
 
   return (

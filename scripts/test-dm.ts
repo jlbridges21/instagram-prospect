@@ -597,7 +597,7 @@ assert.equal(
     status: "retry_wait",
     last_error: "Composer was found but thread identity was not confirmed.",
   }),
-  "Composer was found but thread identity was not confirmed.",
+  "Retrying — Thread identity not confirmed",
 );
 assert.equal(
   queueSendStatusLabel({

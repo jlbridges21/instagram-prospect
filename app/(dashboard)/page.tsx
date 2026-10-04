@@ -18,7 +18,7 @@ import { getLatestWorker } from "@/lib/db/workers";
 import type { ProspectRow } from "@/lib/db/types";
 import { endOfTodayIso, formatDate, formatDateTime, formatRelativeTime, platformLabel, startOfTodayIso } from "@/lib/utils/format";
 import { getWorkerHealth } from "@/lib/utils/worker-health";
-import { attentionKind, formatCurrentAction, formatDiscoveryStatus, formatOutreachStatus, formatWorkerStatus } from "@/lib/status/operations";
+import { attentionKind, formatCurrentAction, formatDiscoveryStatus, formatOutreachStatus, formatWorkerStatus, isStateSyncFailure } from "@/lib/status/operations";
 import { parseHourlyWaitEvent } from "@/lib/discovery/pacing";
 import { parseBrowserHealthEvent } from "@/lib/worker/browser-health";
 
@@ -122,6 +122,7 @@ export default async function OverviewPage() {
           pacingWait: outreachPacing,
           acting: worker?.current_task?.startsWith("executing_") === true,
           attention: attentionKind(worker?.current_task, worker?.attention_reason),
+          stateSync: isStateSyncFailure(worker?.attention_reason) ? { username: worker?.current_username } : null,
           browser: parseBrowserHealthEvent(worker?.last_event)?.state ?? "connected",
         })}
       />
