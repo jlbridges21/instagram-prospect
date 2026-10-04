@@ -14,7 +14,7 @@ import type { ProspectRow } from "@/lib/db/types";
 import { createClient } from "@/lib/supabase/server";
 import { sanitizeSearch, startOfTodayIso } from "@/lib/utils/format";
 
-export type ProspectView = "active" | "review" | "approved" | "contacted" | "excluded" | "all";
+export type ProspectView = "active" | "review" | "approved" | "outreach" | "contacted" | "excluded" | "suppressed" | "all";
 
 export type ProspectQuery = {
   q: string;
@@ -44,6 +44,10 @@ export async function getProspectPage(
   const from = (query.page - 1) * pageSize;
   const to = from + pageSize - 1;
 
+  if (query.view === "suppressed") return { ok: true, data: { rows: [], count: 0 } };
+  const queuedIds = query.view === "outreach" ? await openOutreachProspectIds(supabase) : null;
+  if (queuedIds && queuedIds.length === 0) return { ok: true, data: { rows: [], count: 0 } };
+
   let request = supabase.from("prospects").select(PROSPECT_LIST_COLUMNS, { count: "exact" });
 
   if (query.view === "active") {
@@ -52,6 +56,8 @@ export async function getProspectPage(
     request = request.in("status", ["qualified", "review"]);
   } else if (query.view === "approved") {
     request = request.eq("status", "approved");
+  } else if (query.view === "outreach" && queuedIds) {
+    request = request.in("id", queuedIds);
   } else if (query.view === "contacted") {
     request = request.in("status", ["contacted", "replied", "follow_up", "demo_booked", "converted"]);
   } else if (query.view === "excluded") {
@@ -109,9 +115,39 @@ export async function getProspectPage(
   return { ok: true, data: { rows: (data ?? []) as ProspectRow[], count: count ?? 0 } };
 }
 
+const OPEN_OUTREACH = ["pending", "retry_wait", "claimed", "running"] as const;
+
+async function openOutreachProspectIds(supabase: Awaited<ReturnType<typeof createClient>>) {
+  const { data } = await supabase.from("outreach_jobs").select("prospect_id").in("status", [...OPEN_OUTREACH]).limit(2000);
+  return [...new Set((data ?? []).map((row) => row.prospect_id).filter((id): id is string => Boolean(id)))];
+}
+
+export async function getProspectTabCounts() {
+  const supabase = await createClient();
+  const [review, approved, contacted, excluded, queued, suppressed] = await Promise.all([
+    supabase.from("prospects").select("id", { count: "exact", head: true }).in("status", ["qualified", "review"]),
+    supabase.from("prospects").select("id", { count: "exact", head: true }).eq("status", "approved"),
+    supabase.from("prospects").select("id", { count: "exact", head: true }).in("status", ["contacted", "replied", "follow_up", "demo_booked", "converted"]),
+    supabase.from("prospects").select("id", { count: "exact", head: true }).or("already_following.eq.true,status.eq.disqualified,status.eq.skipped"),
+    openOutreachProspectIds(supabase),
+    supabase.from("discovery_suppressions").select("instagram_username_normalized", { count: "exact", head: true }),
+  ]);
+  return {
+    review: review.count ?? 0,
+    approved: approved.count ?? 0,
+    outreach: queued.length,
+    contacted: contacted.count ?? 0,
+    excluded: excluded.count ?? 0,
+    suppressed: suppressed.count ?? 0,
+  };
+}
+
 export async function listProspectIds(query: ProspectQuery) {
   const supabase = await createClient();
   const ids: string[] = [];
+  if (query.view === "suppressed") return [];
+  const queuedIds = query.view === "outreach" ? await openOutreachProspectIds(supabase) : null;
+  if (queuedIds && queuedIds.length === 0) return [];
   for (let page = 0; page < 20; page += 1) {
     let request = supabase.from("prospects").select("id");
     if (query.view === "active") {
@@ -120,6 +156,8 @@ export async function listProspectIds(query: ProspectQuery) {
       request = request.in("status", ["qualified", "review"]);
     } else if (query.view === "approved") {
       request = request.eq("status", "approved");
+    } else if (query.view === "outreach" && queuedIds) {
+      request = request.in("id", queuedIds);
     } else if (query.view === "contacted") {
       request = request.in("status", ["contacted", "replied", "follow_up", "demo_booked", "converted"]);
     } else if (query.view === "excluded") {

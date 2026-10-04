@@ -14,6 +14,7 @@ export const WORKER_COMMAND_TYPES = [
   "inspect_composer",
   "refresh_instagram_auth_check",
   "clear_worker_attention",
+  "restart_browser_session_if_safe",
 ] as const;
 
 export type WorkerCommandType = (typeof WORKER_COMMAND_TYPES)[number];
@@ -49,13 +50,14 @@ const payloadByType = {
   inspect_composer: usernamePayload,
   refresh_instagram_auth_check: emptyPayload,
   clear_worker_attention: emptyPayload,
+  restart_browser_session_if_safe: emptyPayload,
 } as const;
 
 const BLOCKED_KEYS = ["shell", "command", "script", "powershell", "cmd", "path", "code", "eval"];
 
 export function commandPriority(type: WorkerCommandType) {
   if (type === "pause_discovery" || type === "stop_discovery" || type === "pause_outreach") return 1;
-  if (type === "clear_worker_attention" || type === "refresh_instagram_auth_check") return 2;
+  if (type === "clear_worker_attention" || type === "refresh_instagram_auth_check" || type === "restart_browser_session_if_safe") return 2;
   if (type === "start_outreach" || type === "run_one_outreach" || type === "recover_outreach" || type === "run_outreach_preview") return 3;
   if (type === "start_discovery") return 4;
   return 5;
@@ -152,6 +154,7 @@ export const COMMAND_LABELS: Record<WorkerCommandType, string> = {
   inspect_composer: "Test Message Composer",
   refresh_instagram_auth_check: "Check Instagram login",
   clear_worker_attention: "Clear attention",
+  restart_browser_session_if_safe: "Restart Automation Browser",
 };
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {

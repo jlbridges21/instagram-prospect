@@ -91,6 +91,8 @@ export async function runDiscoveryV2(input: {
   maybeOutreach?: () => Promise<void>;
   metrics?: CloudEfficiency;
   gate?: (input: { inspections: number; ai: number; emptyCycles: number }) => Promise<{ pause: boolean; reason: string | null } | null>;
+  profilePages?: [Page, Page];
+  retainTabs?: boolean;
 }) {
   const metrics = input.metrics ?? emptyEfficiency();
   const queue = new CandidateQueue(10);
@@ -116,10 +118,14 @@ export async function runDiscoveryV2(input: {
       log("warn", "qualification_request_failed", { prospect_id: prospectId, message: error instanceof Error ? error.message : "failed" });
     }
   });
-  const tabs = [] as Array<{ id: (typeof PROFILE_TABS)[number]; page: Page }>;
+  const tabs = input.profilePages
+    ? PROFILE_TABS.map((id, index) => ({ id, page: input.profilePages![index] }))
+    : [] as Array<{ id: (typeof PROFILE_TABS)[number]; page: Page }>;
   try {
-    for (const id of PROFILE_TABS) {
-      tabs.push({ id, page: await input.context.newPage() });
+    if (!input.profilePages) {
+      for (const id of PROFILE_TABS) {
+        tabs.push({ id, page: await input.context.newPage() });
+      }
     }
     latestConfig = await input.cloud.config();
     await Promise.all([
@@ -131,7 +137,7 @@ export async function runDiscoveryV2(input: {
   } finally {
     persistQueue(queue);
     await qualify.drain().catch(() => undefined);
-    await Promise.all(tabs.map((tab) => tab.page.close().catch(() => undefined)));
+    if (!input.retainTabs) await Promise.all(tabs.map((tab) => tab.page.close().catch(() => undefined)));
   }
   if (stopError) throw stopError;
 

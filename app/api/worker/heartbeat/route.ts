@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { isWorkerAuthorized, workerError, workerUnauthorized } from "@/lib/worker/auth";
-import { offerWorkerCommand } from "@/lib/worker/command-service";
+import { offerWorkerCommand, recordWorkerEvent } from "@/lib/worker/command-service";
 
 export const runtime = "nodejs";
 
@@ -23,6 +23,7 @@ const heartbeatSchema = z.object({
   current_username: z.string().trim().max(80).nullable().optional(),
   last_event: z.string().trim().max(300).nullable().optional(),
   new_session: z.boolean().optional(),
+  version: z.string().trim().max(20).optional(),
 });
 
 export async function POST(request: Request) {
@@ -103,6 +104,14 @@ export async function POST(request: Request) {
   }
 
   await touchSession(admin, parsed.data, requestedStatus, now).catch(() => undefined);
+  if (parsed.data.new_session && parsed.data.version) {
+    await recordWorkerEvent(admin, {
+      workerId: parsed.data.worker_id,
+      eventType: "worker_connected",
+      message: "Worker connected.",
+      metadata: { version: parsed.data.version },
+    }).catch(() => undefined);
+  }
   const nextCommand = await offerWorkerCommand(admin, parsed.data.worker_id).catch(() => null);
 
   return Response.json({ ok: true, next_command: nextCommand });

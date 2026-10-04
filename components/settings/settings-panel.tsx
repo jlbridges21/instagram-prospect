@@ -380,8 +380,15 @@ export function SettingsPanel({
             <Field label="Profile inspection concurrency" hint="Fixed at 2.">
               <TextInput value="2" readOnly />
             </Field>
-            <Field label="Hourly profile inspection pace" hint="Controls profile inspection only. Does not control Follow or DM pacing. The window is a rolling 60 minutes.">
-              <TextInput inputMode="numeric" value={maxHour} onChange={(event) => setMaxHour(event.target.value)} />
+            <Field label="Hourly profile inspection pace" hint={`Controls profile inspection only. Does not control Follow or DM pacing. Current: ${maxHour || "30"} profiles per rolling 60 minutes.`}>
+              <div className="mt-1.5 flex flex-wrap gap-2">
+                {["20", "30", "40"].map((value) => (
+                  <button key={value} type="button" className={maxHour === value ? "rounded-lg bg-indigo-600 px-3 py-1 text-sm text-white" : "rounded-lg border border-slate-200 px-3 py-1 text-sm"} onClick={() => setMaxHour(value)}>
+                    {value}
+                  </button>
+                ))}
+                <TextInput aria-label="Custom hourly inspection pace" inputMode="numeric" value={maxHour} onChange={(event) => setMaxHour(event.target.value)} className="w-24" />
+              </div>
             </Field>
             <Field label="Maximum profiles per session">
               <TextInput inputMode="numeric" value={maxSession} onChange={(event) => setMaxSession(event.target.value)} />

@@ -6,12 +6,12 @@ import { requestWorkerCommand } from "@/lib/actions/worker-commands";
 import type { WorkerCommandType } from "@/lib/worker/commands";
 
 const TOOLS: { type: WorkerCommandType; title: string; body: string; confirm?: string }[] = [
-  { type: "run_discovery_test", title: "Test Discovery — 10 Profiles", body: "Safely inspects up to 10 Instagram profiles. May create prospects and run AI qualification. Does not Follow accounts or send DMs, and does not change the saved Review target." },
-  { type: "run_outreach_preview", title: "Preview Next Outreach", body: "Opens the next eligible approved prospect and validates the planned Follow and DM workflow. No Follow is performed and no DM is sent." },
-  { type: "run_one_outreach", title: "Run One Outreach", body: "Processes only the next eligible approved prospect, then stops. This can Follow and can send a DM if every safety check passes.", confirm: "This will perform a real outreach action." },
-  { type: "recover_outreach", title: "Recover Interrupted Outreach", body: "Checks an interrupted outreach sequence and recovers a Follow or DM state without blindly repeating an action." },
-  { type: "inspect_dm", title: "Test Instagram DM Detection", body: "Opens the profile and Direct UI, then verifies recipient and composer detection. It does not type or send." },
-  { type: "inspect_composer", title: "Test Message Composer", body: "Opens the verified Direct thread, loads the locked message, and reads it back. It does not send. An unsent draft may remain if Instagram prevents safe clearing." },
+  { type: "run_discovery_test", title: "Test Discovery — 10 Profiles", body: "What it will do: inspect up to 10 profiles and may create prospects or run AI. What it may change: Review prospects. What it will not do: Follow, send a DM, or change the saved Review target." },
+  { type: "run_outreach_preview", title: "Preview Next Outreach", body: "What it will do: open the next eligible approved prospect and check the planned Follow and DM. What it may change: nothing is saved as sent. What it will not do: Follow or send a DM." },
+  { type: "run_one_outreach", title: "Run One Outreach", body: "What it will do: process one eligible approved prospect, then stop. What it may change: a real Follow and one DM if every safety check passes. What it will not do: continue through the rest of the queue.", confirm: "This will perform a real outreach action." },
+  { type: "recover_outreach", title: "Recover Interrupted Outreach", body: "What it will do: check an interrupted Follow or DM and recover the recorded state. What it may change: the stored outreach step. What it will not do: blindly repeat a Follow or DM." },
+  { type: "inspect_dm", title: "Test Instagram DM Detection", body: "What it will do: open the profile and Direct UI and check the recipient. What it may change: the open browser tab. What it will not do: type or send." },
+  { type: "inspect_composer", title: "Test Message Composer", body: "What it will do: load the locked message and read it back. What it may change: an unsent draft can remain. What it will not do: send the message." },
 ];
 
 export function DiagnosticsPanel({ disabled }: { disabled: boolean }) {
@@ -33,7 +33,7 @@ export function DiagnosticsPanel({ disabled }: { disabled: boolean }) {
   }
 
   return (
-    <section className="rounded-2xl border border-slate-200 bg-white p-4">
+    <section id="diagnostics" className="rounded-2xl border border-slate-200 bg-white p-4">
       <h2 className="text-sm font-semibold text-slate-900">Tools and diagnostics</h2>
       <p className="mt-1 text-sm text-slate-500">These use the same checks as the local worker. They are disabled while the worker is offline.</p>
       <label className="mt-3 block text-xs text-slate-500">

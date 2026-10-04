@@ -1,12 +1,11 @@
 import type { Metadata } from "next";
 import { CalendarClock, Check, Inbox, MessageSquare, Reply, Sparkles, UserCheck } from "lucide-react";
 import { FunnelChart, StatCard } from "@/components/dashboard/metrics";
-import { AutomationControls } from "@/components/outreach/automation-controls";
 import { RecentActivity } from "@/components/dashboard/recent-activity";
 import { RecentProspects } from "@/components/dashboard/recent-prospects";
 import { WorkerSummary } from "@/components/dashboard/worker-summary";
 import { LiveProspectSync } from "@/components/prospects/live-sync";
-import { DiscoveryProgress } from "@/components/worker/discovery-progress";
+import { OperationSummary } from "@/components/status/operation-summary";
 import { DatabaseSetup } from "@/components/layout/database-setup";
 import { getDiscoveryV3Snapshot } from "@/lib/db/discovery";
 import { PageHeader } from "@/components/layout/page-header";
@@ -19,6 +18,10 @@ import { getLatestWorker } from "@/lib/db/workers";
 import type { ProspectRow } from "@/lib/db/types";
 import { endOfTodayIso, formatDate, formatDateTime, formatRelativeTime, platformLabel, startOfTodayIso } from "@/lib/utils/format";
 import { getWorkerHealth } from "@/lib/utils/worker-health";
+import { attentionKind, formatCurrentAction, formatDiscoveryStatus, formatOutreachStatus, formatWorkerStatus } from "@/lib/status/operations";
+import { nextOpenInstant } from "@/lib/outreach/time";
+import { parseHourlyWaitEvent } from "@/lib/discovery/pacing";
+import { parseBrowserHealthEvent } from "@/lib/worker/browser-health";
 
 export const metadata: Metadata = { title: "Overview" };
 
@@ -66,6 +69,9 @@ export default async function OverviewPage() {
     attentionReason: workerResult.ok ? workerResult.data?.attention_reason : null,
   });
   const worker = workerResult.ok ? workerResult.data : null;
+  const now = new Date();
+  const outreachOpens = nextOpenInstant(now, settings.timezone, settings.outreach);
+  const outreachWaiting = Math.abs(outreachOpens.getTime() - now.getTime()) >= 1000;
   const progress = await getDiscoveryV3Snapshot(settings.timezone);
 
   const cards = [
@@ -83,27 +89,40 @@ export default async function OverviewPage() {
     <div>
       <PageHeader
         title="Overview"
-        description="A live read of prospect records, review work, and the local worker."
+        description="Worker, Discovery, and the current action. Open a workflow page to change it."
       />
       <LiveProspectSync />
-      <div className="mb-6">
-        <DiscoveryProgress
-          running={settings.discovery.enabled}
-          currentReview={progress.currentReview}
-          target={settings.discovery.reviewTarget}
-          reason={settings.discovery.stopReason}
-          sessionInspections={progress.sessionInspections}
-          sessionCap={settings.discovery.sessionInspectionCap}
-          dailyInspections={progress.dailyInspections}
-          dailyInspectionCap={settings.discovery.dailyInspectionCap}
-          dailyAi={progress.dailyAi}
-          dailyAiCap={settings.discovery.dailyAiCap}
-          lastEvent={worker?.last_event}
-          workerTask={worker?.current_task}
-          attentionReason={worker?.attention_reason}
-          timeZone={settings.timezone}
-        />
-      </div>
+      <OperationSummary
+        timeZone={settings.timezone}
+        action={formatCurrentAction(worker?.current_task, worker?.current_username, Boolean(parseHourlyWaitEvent(worker?.last_event)) && settings.discovery.enabled)}
+        review={settings.discovery.reviewTarget === "unlimited" ? `${progress.currentReview} / Unlimited` : `${progress.currentReview} / ${settings.discovery.reviewTarget}`}
+        today={{ inspected: progress.dailyInspections, ai: progress.dailyAi, sent: outreach?.sentToday ?? 0 }}
+        worker={formatWorkerStatus({
+          online: health.state === "online" || health.state === "attention",
+          attention: attentionKind(worker?.current_task, worker?.attention_reason),
+          attentionText: worker?.attention_reason,
+        })}
+        discovery={formatDiscoveryStatus({
+          online: health.state === "online" || health.state === "attention",
+          enabled: settings.discovery.enabled,
+          stopReason: settings.discovery.stopReason,
+          hourly: settings.discovery.enabled ? parseHourlyWaitEvent(worker?.last_event) : null,
+          attention: attentionKind(worker?.current_task, worker?.attention_reason),
+          attentionText: worker?.attention_reason,
+          reviewCount: progress.currentReview,
+          reviewTarget: settings.discovery.reviewTarget,
+          browser: parseBrowserHealthEvent(worker?.last_event)?.state ?? "connected",
+        })}
+        outreach={formatOutreachStatus({
+          online: health.state === "online" || health.state === "attention",
+          enabled: settings.outreach.automationEnabled,
+          queueCount: outreach?.queueProspects ?? 0,
+          outsideHours: settings.outreach.automationEnabled && outreachWaiting,
+          nextWindow: outreachWaiting ? outreachOpens.toISOString() : outreach?.nextAt ?? null,
+          attention: attentionKind(worker?.current_task, worker?.attention_reason),
+          browser: parseBrowserHealthEvent(worker?.last_event)?.state ?? "connected",
+        })}
+      />
       {missing ? <div className="mb-6"><DatabaseSetup message={missing.error} /></div> : null}
       {failure ? (
         <div className="mb-6 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
@@ -129,13 +148,12 @@ export default async function OverviewPage() {
             <div>
               <h2 className="text-sm font-semibold text-slate-900">Outreach</h2>
               <p className="mt-1 text-xs text-slate-500">
-                Worker {health.label.toLowerCase()}
                 {outreach.nextAt
-                  ? ` · Next ${formatDateTime(outreach.nextAt, settings.timezone, settings.dateFormat)}`
-                  : ""}
+                  ? `Next ${formatDateTime(outreach.nextAt, settings.timezone, settings.dateFormat)}`
+                  : "Open Outreach to start or pause."}
               </p>
             </div>
-            <AutomationControls enabled={settings.outreach.automationEnabled} />
+            <a href="/outreach" className="text-sm font-medium text-indigo-700">Open Outreach</a>
           </div>
           <dl className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-4">
             <Mini label="Queue" value={outreach.queueProspects} />

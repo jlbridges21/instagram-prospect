@@ -1,7 +1,12 @@
 import { parseHourlyWaitEvent } from "@/lib/discovery/pacing";
+import { DEFAULT_OUTREACH_SETTINGS } from "@/lib/outreach/defaults";
+import { nextOpenInstant } from "@/lib/outreach/time";
+import { parseBrowserHealthEvent } from "@/lib/worker/browser-health";
+import { showInActivity } from "@/lib/status/operations";
 import { createClient } from "@/lib/supabase/server";
 import { widgetState } from "@/lib/worker/widget-state";
 import { getWorkerHealth } from "@/lib/utils/worker-health";
+import { WORKER_VERSION } from "@/worker/version";
 
 export const runtime = "nodejs";
 
@@ -10,12 +15,13 @@ export async function GET() {
   const { data: userData } = await supabase.auth.getUser();
   if (!userData.user) return Response.json({ online: false }, { status: 401 });
 
-  const [settings, worker, review, events, command] = await Promise.all([
-    supabase.from("settings").select("heartbeat_interval_seconds, discovery_enabled, automation_enabled, discovery_review_target, max_profiles_per_hour, discovery_run_mode").eq("id", 1).maybeSingle(),
+  const [settings, worker, review, events, command, jobs] = await Promise.all([
+    supabase.from("settings").select("heartbeat_interval_seconds, timezone, discovery_enabled, automation_enabled, discovery_review_target, discovery_stop_reason, max_profiles_per_hour, discovery_run_mode, active_start_time, active_end_time").eq("id", 1).maybeSingle(),
     supabase.from("worker_instances").select("worker_id, machine_name, status, last_heartbeat_at, current_task, current_username, last_event, attention_reason, browser_connected, instagram_authenticated").order("last_heartbeat_at", { ascending: false }).limit(1).maybeSingle(),
     supabase.from("prospects").select("id", { count: "exact", head: true }).eq("status", "review").in("fit_label", ["strong_fit", "possible_fit"]).eq("is_sample", false),
-    supabase.from("worker_events").select("id, event_type, message, created_at").order("created_at", { ascending: false }).limit(20),
-    supabase.from("worker_commands").select("id, command_type, status, error_message").in("status", ["queued", "running"]).order("created_at", { ascending: false }).limit(1).maybeSingle(),
+    supabase.from("worker_events").select("id, event_type, message, metadata, created_at").order("created_at", { ascending: false }).limit(20),
+    supabase.from("worker_commands").select("id, command_type, status, error_message, error_code").in("status", ["queued", "running"]).order("created_at", { ascending: false }).limit(1).maybeSingle(),
+    supabase.from("outreach_jobs").select("prospect_id").in("status", ["pending", "retry_wait", "claimed", "running"]).limit(500),
   ]);
 
   const row = worker.data;
@@ -41,6 +47,23 @@ export async function GET() {
     error: row?.status === "error",
   });
 
+  const timeZone = settings.data?.timezone || "America/Chicago";
+  const outreachSettings = {
+    ...DEFAULT_OUTREACH_SETTINGS,
+    activeStart: settings.data?.active_start_time || DEFAULT_OUTREACH_SETTINGS.activeStart,
+    activeEnd: settings.data?.active_end_time || DEFAULT_OUTREACH_SETTINGS.activeEnd,
+  };
+  const now = new Date();
+  const opens = nextOpenInstant(now, timeZone, outreachSettings);
+  const outsideHours = Math.abs(opens.getTime() - now.getTime()) >= 1000;
+  const queueCount = new Set((jobs.data ?? []).map((job) => job.prospect_id)).size;
+  const versionEvent = (events.data ?? []).find((event) => event.event_type === "worker_connected");
+  const metadata = versionEvent?.metadata;
+  const reportedVersion = metadata && typeof metadata === "object" && !Array.isArray(metadata) && "version" in metadata
+    ? String(metadata.version || "") || null
+    : null;
+  const visibleEvents = (events.data ?? []).filter((event) => showInActivity(event.event_type, event.message));
+
   return Response.json({
     online,
     state: view.state,
@@ -60,8 +83,16 @@ export async function GET() {
     reviewTarget: settings.data?.discovery_review_target ?? "unlimited",
     hourlyLimit: settings.data?.max_profiles_per_hour ?? 30,
     hourly,
+    browser: parseBrowserHealthEvent(row?.last_event),
+    stopReason: settings.data?.discovery_stop_reason ?? null,
+    queueCount,
+    outsideHours: outreachEnabled && outsideHours,
+    nextWindow: outsideHours ? opens.toISOString() : null,
     attentionReason: row?.attention_reason ?? null,
     command: command.data ?? null,
-    events: events.data ?? [],
+    events: visibleEvents,
+    reportedVersion,
+    requiredVersion: WORKER_VERSION,
+    timeZone,
   });
 }

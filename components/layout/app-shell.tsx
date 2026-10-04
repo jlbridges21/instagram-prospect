@@ -7,6 +7,7 @@ import {
   CalendarClock,
   ChartColumn,
   LayoutDashboard,
+  Radar,
   ListChecks,
   Menu,
   Send,
@@ -24,6 +25,7 @@ import { cn } from "@/lib/utils/cn";
 
 const icons: Record<NavIcon, LucideIcon> = {
   overview: LayoutDashboard,
+  discovery: Radar,
   prospects: Users,
   review: ListChecks,
   outreach: Send,

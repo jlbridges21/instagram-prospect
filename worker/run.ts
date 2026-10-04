@@ -1,6 +1,21 @@
 import { continuousOutreachStep } from "../lib/discovery/policy";
 import { checkpointHoldDecision, formatWorkerModes } from "../lib/discovery/pacing";
 import { discoveryRunShouldStop } from "../lib/worker/commands";
+import {
+  browserStateFromSignals,
+  contextUsable,
+  discoveryAdmission,
+  executionStates,
+  formatBrowserHealthEvent,
+  isBrowserClosedMessage,
+  pagesToOpen,
+  recoveryDecision,
+  restartBrowserAllowed,
+  shouldLogBrowserFailure,
+  startDiscoveryEffect,
+  type BrowserState,
+  type SideEffect,
+} from "../lib/worker/browser-health";
 import { prospectCompletionLine } from "../lib/outreach/completion-log";
 import { launchBrowser } from "./browser/launch";
 import { createHeartbeatSession, mustHeartbeatBeforeClaim, safeHeartbeatError } from "./heartbeat-session";
@@ -31,6 +46,7 @@ export type RunMode = "agent" | "smoke" | "login";
 
 let stopRequested = false;
 let openedSession = false;
+let activeSideEffect: SideEffect = null;
 
 const sleep = (ms: number) =>
   new Promise<void>((resolve) => {
@@ -88,7 +104,21 @@ export async function runWorker(mode: RunMode) {
     return;
   }
   console.log("✓ Version compatible");
-  const { context, page } = await launchBrowser();
+  let { context, page } = await launchBrowser();
+  const session = {
+    closed: false,
+    restarting: false,
+    failed: false,
+    attempts: 0,
+    discoveryActive: false,
+    profiles: [] as import("playwright").Page[],
+    outreachPage: null as import("playwright").Page | null,
+    lastHealthLog: null as string | null,
+    generation: 0,
+  };
+  context.once("close", () => {
+    if (session.generation === 0) session.closed = true;
+  });
   console.log("✓ Chrome available");
   console.log("✓ Browser launched");
   const inspectUsernameArg = inspectDmArgument();
@@ -212,7 +242,15 @@ export async function runWorker(mode: RunMode) {
     discoveryOnly,
     noWrite,
   });
-  const control = { pauseDiscovery: false };
+  const control: {
+    pauseDiscovery: boolean;
+    browserConnected: () => boolean;
+    restartBrowser: () => Promise<boolean>;
+  } = {
+    pauseDiscovery: false,
+    browserConnected: () => !session.closed,
+    restartBrowser: async () => false,
+  };
   let offered: { commandId: string; type: string; payload: unknown } | null = null;
   const heartbeats = createHeartbeatSession(Math.max(startup.heartbeatIntervalSeconds, 15) * 1000, async () => {
     const command = await beat(
@@ -231,6 +269,13 @@ export async function runWorker(mode: RunMode) {
       await acceptSettingsCommand(cloud, identity.worker_id, command, control, stats);
       return;
     }
+    if (command.type === "start_discovery" && session.discoveryActive && !control.pauseDiscovery) {
+      const effect = startDiscoveryEffect({ loopActive: true });
+      if (!effect.startAnotherLoop) {
+        await acknowledgeStart(cloud, identity.worker_id, command.commandId, true);
+      }
+      return;
+    }
     offered = command;
   });
   if (!claimsOutreach) heartbeats.startInterval();
@@ -241,6 +286,141 @@ export async function runWorker(mode: RunMode) {
   let attentionHold: AttentionError | null = null;
   let attentionLogged = false;
   let standbyPrinted = false;
+
+  function pagesReadable() {
+    try {
+      context.pages();
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  function currentState(): BrowserState {
+    if (!contextUsable({ exists: true, closed: session.closed, pagesReadable: pagesReadable() })) session.closed = true;
+    return browserStateFromSignals({ closed: session.closed, restarting: session.restarting, failed: session.failed });
+  }
+
+  function logOnce(message: string | null) {
+    if (!message || !shouldLogBrowserFailure(session.lastHealthLog, message)) return;
+    session.lastHealthLog = message;
+    console.log(message);
+  }
+
+  async function relaunchBrowser() {
+    const allowed = restartBrowserAllowed({
+      online: true,
+      state: session.failed ? "failed" : "closed",
+      sideEffect: activeSideEffect,
+    });
+    if (!allowed.allowed) {
+      logOnce(allowed.reason);
+      return false;
+    }
+    session.restarting = true;
+    session.failed = false;
+    session.generation += 1;
+    const generation = session.generation;
+    await context.close().catch(() => undefined);
+    session.closed = true;
+    session.profiles = [];
+    session.outreachPage = null;
+    try {
+      const next = await launchBrowser();
+      context = next.context;
+      page = next.page;
+      session.closed = false;
+      session.restarting = false;
+      session.attempts = 0;
+      session.lastHealthLog = null;
+      context.once("close", () => {
+        if (session.generation === generation) session.closed = true;
+      });
+      await ensureHome(page);
+      live.instagramAuthenticated = true;
+      console.log("Browser connected.");
+      return true;
+    } catch (error) {
+      session.restarting = false;
+      session.closed = true;
+      const message = error instanceof Error ? error.message : "Browser recovery failed.";
+      if (/already open|already in use/i.test(message)) session.failed = true;
+      logOnce(message);
+      return false;
+    }
+  }
+
+  async function ensureProfileTabs() {
+    session.profiles = session.profiles.filter((tab) => !tab.isClosed());
+    const need = pagesToOpen(session.profiles.length);
+    if (!contextUsable({ exists: true, closed: session.closed, pagesReadable: pagesReadable() })) {
+      session.closed = true;
+      return null;
+    }
+    for (let index = 0; index < need; index += 1) {
+      session.profiles.push(await context.newPage());
+    }
+    if (session.profiles.length !== 2) return null;
+    return [session.profiles[0], session.profiles[1]] as [import("playwright").Page, import("playwright").Page];
+  }
+
+  async function holdForBrowser(config: CloudConfig) {
+    if (currentState() === "connected") return false;
+    if (claimsOutreach && !outreachReady) {
+      try {
+        await heartbeats.register();
+        outreachReady = true;
+      } catch (error) {
+        if (isAuthFailure(error)) throw error;
+      }
+    }
+    const decision = recoveryDecision({ state: currentState(), attempts: session.attempts, sideEffect: activeSideEffect });
+    if (decision.action === "recover") {
+      session.attempts += 1;
+      logOnce(decision.log);
+      const ok = await relaunchBrowser();
+      if (!ok && session.attempts >= 3) {
+        session.failed = true;
+        logOnce("Browser recovery failed. Worker is blocked.");
+      }
+    } else {
+      logOnce(decision.log);
+    }
+    if (currentState() === "connected") return false;
+    const reported = currentState();
+    const states = executionStates({
+      browser: reported,
+      discoveryEnabled: config.discoveryEnabled,
+      outreachEnabled: config.automationEnabled,
+      sideEffect: activeSideEffect,
+    });
+    const line = formatBrowserHealthEvent({
+      state: reported,
+      discoveryDesired: states.discoveryDesired,
+      discoveryActual: states.discoveryActual,
+      outreachDesired: states.outreachDesired,
+      outreachActual: states.outreachActual,
+      reason: states.reason,
+    });
+    if (line !== modeLine) {
+      console.log(`Discovery desired: ${states.discoveryDesired.toUpperCase()}`);
+      console.log(`Discovery actual: ${states.discoveryActual.toUpperCase()}`);
+      console.log(`Outreach desired: ${states.outreachDesired.toUpperCase()}`);
+      console.log(`Outreach actual: ${states.outreachActual.toUpperCase()}`);
+      if (states.reason) console.log(`Reason: ${states.reason}`);
+      modeLine = line;
+    }
+    live.browserConnected = false;
+    live.task = reported === "restarting" ? "browser_restarting" : "browser_closed";
+    live.lastEvent = line;
+    live.attention = states.reason ?? undefined;
+    await beat(cloud, identity, live.task, stats, false, false, live.attention, live.username, line).catch(() => undefined);
+    await sleep(Math.max(config.heartbeatIntervalSeconds, 15) * 1000);
+    return true;
+  }
+
+  control.browserConnected = () => currentState() === "connected";
+  control.restartBrowser = relaunchBrowser;
 
   try {
     await flushPending(cloud, identity.worker_id);
@@ -261,6 +441,8 @@ export async function runWorker(mode: RunMode) {
           if (debug) console.log("Debug logging is on.");
           announced = true;
         }
+        if (await holdForBrowser(config)) continue;
+        live.browserConnected = true;
         const nextMode = formatWorkerModes({
           discovery: config.discoveryEnabled ? "RUNNING" : "PAUSED",
           outreach: config.automationEnabled ? "RUNNING" : "PAUSED",
@@ -331,6 +513,8 @@ export async function runWorker(mode: RunMode) {
               outreach: config.automationEnabled ? "RUNNING" : "PAUSED",
             }));
             console.log("");
+            console.log("Worker connected.");
+            console.log("Dashboard control ready.");
             console.log("Waiting for dashboard commands...");
           }
         }
@@ -373,7 +557,7 @@ export async function runWorker(mode: RunMode) {
           console.log(`Discovery stopped. Reason: ${runStop.reason}.`);
           continue;
         }
-        if (mode !== "smoke" && !discoveryOnly && !noWrite) {
+        if (mode !== "smoke" && !discoveryOnly && !noWrite && !activeSideEffect) {
           const outcome = await runOneJob(cloud, page, identity, config, stats);
           if (outcome.worked) {
             const line = prospectCompletionLine({
@@ -411,33 +595,52 @@ export async function runWorker(mode: RunMode) {
           return;
         }
         const inspectionCap = discoveryV2Test || discoveryV3Test ? 10 : config.sessionInspectionCap;
-        if (config.discoveryEnabled && !stopping && stats.seen < inspectionCap && !singleOutreach) {
+        const admission = discoveryAdmission({
+          loopActive: session.discoveryActive,
+          pauseLatched: control.pauseDiscovery,
+          browser: currentState(),
+          desiredEnabled: config.discoveryEnabled && !stopping && stats.seen < inspectionCap && !singleOutreach,
+          sideEffect: activeSideEffect,
+        });
+        if (admission.enter) {
+          const tabs = await ensureProfileTabs();
+          if (!tabs) {
+            session.closed = true;
+            continue;
+          }
           live.task = "discovering_candidates";
           live.instagramAuthenticated = true;
           if (discoveryV2Test) console.log("Discovery V2 test. Outreach stays paused. Inspecting up to 10 profiles.");
           if (discoveryV3Test) console.log("Discovery V3 test. Outreach stays paused. Inspecting up to 10 profiles. No follow and no DM.");
-          let outreachPage: import("playwright").Page | null = null;
-          await runDiscoveryV2({
-            context,
-            homePage: page,
-            cloud,
-            stats,
-            live,
-            workerId: identity.worker_id,
-            noWrite,
-            debug: debug || discoveryOnly,
-            inspectionLimit: inspectionCap,
-            shouldStop: () => stopping || control.pauseDiscovery,
-            metrics: efficiency,
-            gate: async (tick) => cloud.discoveryProgress(tick).catch(() => null),
-            maybeOutreach: async () => {
-              if (discoveryOnly || noWrite || discoveryV2Test || discoveryV3Test) return;
-              const current = await cloud.config();
-              if (!current.automationEnabled) return;
-              outreachPage ??= await context.newPage();
-              await runOneJob(cloud, outreachPage, identity, current, stats);
-            },
-          });
+          session.discoveryActive = true;
+          console.log("Discovery actual state: RUNNING");
+          try {
+            await runDiscoveryV2({
+              context,
+              homePage: page,
+              cloud,
+              stats,
+              live,
+              workerId: identity.worker_id,
+              noWrite,
+              debug: debug || discoveryOnly,
+              inspectionLimit: inspectionCap,
+              profilePages: tabs,
+              retainTabs: true,
+              shouldStop: () => stopping || control.pauseDiscovery || session.closed,
+              metrics: efficiency,
+              gate: async (tick) => cloud.discoveryProgress(tick).catch(() => null),
+              maybeOutreach: async () => {
+                if (discoveryOnly || noWrite || discoveryV2Test || discoveryV3Test || activeSideEffect || session.closed) return;
+                const current = await cloud.config();
+                if (!current.automationEnabled) return;
+                if (!session.outreachPage || session.outreachPage.isClosed()) session.outreachPage = await context.newPage();
+                await runOneJob(cloud, session.outreachPage, identity, current, stats);
+              },
+            });
+          } finally {
+            session.discoveryActive = false;
+          }
           if (discoveryV2Test || discoveryV3Test) return;
         } else {
           live.task = "idle";
@@ -465,6 +668,11 @@ export async function runWorker(mode: RunMode) {
           continue;
         }
         const message = error instanceof Error ? error.message : "Cloud connection unavailable. Retrying...";
+        if (isBrowserClosedMessage(message)) {
+          session.closed = true;
+          logOnce("Browser closed.");
+          continue;
+        }
         const offline = /fetch|network|ECONN|ENOTFOUND|timed out/i.test(message);
         console.log(offline ? "Cloud connection unavailable. Retrying..." : message);
         log("error", "worker_loop", { message });
@@ -549,6 +757,24 @@ async function runOneJob(
 }
 
 async function executeJob(page: import("playwright").Page, job: JobPayload) {
+  const effect: SideEffect = job.type === "follow_profile" ? "follow" : job.type === "send_message" ? "send" : null;
+  if (effect) activeSideEffect = effect;
+  try {
+    const result = await executeJobBody(page, job);
+    if (effect && result && typeof result === "object" && "confirmation" in result && result.confirmation === "uncertain") {
+      activeSideEffect = effect;
+    } else if (effect) {
+      activeSideEffect = null;
+    }
+    return result;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "";
+    if (!(effect && isBrowserClosedMessage(message))) activeSideEffect = effect ? null : activeSideEffect;
+    throw error;
+  }
+}
+
+async function executeJobBody(page: import("playwright").Page, job: JobPayload) {
   if (job.type === "verify_profile") {
     const profile = await readProfile(page, job.instagramUsername);
     return {
@@ -760,6 +986,7 @@ async function beat(
     session_errors: stats.errors,
     current_username: username ?? null,
     last_event: lastEvent ?? null,
+    version: WORKER_VERSION,
   });
   openedSession = true;
   return response.next_command?.commandId ? response.next_command : null;
@@ -832,8 +1059,33 @@ async function acceptSettingsCommand(
     const claimed = await cloud.claimCommand(workerId, command.commandId);
     cloud.invalidateConfig();
     if (command.type === "pause_discovery" || command.type === "stop_discovery") control.pauseDiscovery = true;
-    if (command.type === "start_discovery") stats.seen = 0;
+    if (command.type === "start_discovery") {
+      control.pauseDiscovery = false;
+      stats.seen = 0;
+    }
     if (claimed.applied) await cloud.finishCommand(workerId, command.commandId, true, { acknowledged: true });
+  } catch (error) {
+    const status = error instanceof Error && "statusCode" in error ? Number(error.statusCode) : 0;
+    if (status !== 409) console.log(error instanceof Error ? error.message : "The dashboard command could not be claimed.");
+  }
+}
+
+async function acknowledgeStart(cloud: CloudClient, workerId: string, commandId: string, browserOk: boolean) {
+  try {
+    const claimed = await cloud.claimCommand(workerId, commandId);
+    cloud.invalidateConfig();
+    console.log("Dashboard command received: Start Discovery");
+    console.log("Command claimed.");
+    console.log("Discovery desired state: RUNNING");
+    if (!browserOk) {
+      await cloud.finishCommand(workerId, commandId, false, {}, "browser_unavailable");
+      console.log("Command failed: browser_unavailable");
+      console.log("Discovery actual: BLOCKED");
+      return;
+    }
+    console.log("Discovery controller: Already running.");
+    if (claimed.applied) await cloud.finishCommand(workerId, commandId, true, { acknowledged: true });
+    console.log("Command completed.");
   } catch (error) {
     const status = error instanceof Error && "statusCode" in error ? Number(error.statusCode) : 0;
     if (status !== 409) console.log(error instanceof Error ? error.message : "The dashboard command could not be claimed.");
@@ -847,17 +1099,49 @@ async function runDashboardCommand(
   stats: { seen: number; ingested: number; excluded: number; qualified: number; errors: number; hour: number[] },
   live: { task: string; username: string | null; lastEvent: string | null; attention?: string },
   command: { commandId: string; type: string; payload: unknown },
-  control: { pauseDiscovery: boolean },
+  control: { pauseDiscovery: boolean; browserConnected: () => boolean; restartBrowser: () => Promise<boolean> },
 ) {
   let claimed = false;
   try {
     const result = await cloud.claimCommand(identity.worker_id, command.commandId);
     claimed = true;
     cloud.invalidateConfig();
+    if (result.applied && command.type === "start_discovery") {
+      const effect = startDiscoveryEffect({ loopActive: false });
+      control.pauseDiscovery = !effect.clearPauseLatch ? control.pauseDiscovery : false;
+      stats.seen = 0;
+      console.log("Dashboard command received: Start Discovery");
+      console.log("Command claimed.");
+      console.log("Discovery desired state: RUNNING");
+      if (!control.browserConnected()) {
+        await cloud.finishCommand(identity.worker_id, command.commandId, false, {}, "browser_unavailable");
+        console.log("Command failed: browser_unavailable");
+        console.log("Discovery actual: BLOCKED");
+        return;
+      }
+      console.log("Discovery controller: Starting...");
+      await cloud.finishCommand(identity.worker_id, command.commandId, true, { acknowledged: true });
+      console.log("Command completed.");
+      return;
+    }
     if (result.applied) {
-      if (command.type === "start_discovery") stats.seen = 0;
       await cloud.finishCommand(identity.worker_id, command.commandId, true, { acknowledged: true });
       console.log(`${command.type.replaceAll("_", " ")} acknowledged.`);
+      return;
+    }
+    if (command.type === "restart_browser_session_if_safe") {
+      const allowed = restartBrowserAllowed({
+        online: true,
+        state: control.browserConnected() ? "connected" : activeSideEffect ? "closed" : "closed",
+        sideEffect: activeSideEffect,
+      });
+      if (!allowed.allowed || control.browserConnected()) {
+        await cloud.finishCommand(identity.worker_id, command.commandId, false, {}, allowed.reason ?? "The automation browser is already connected.");
+        return;
+      }
+      const ok = await control.restartBrowser();
+      await cloud.finishCommand(identity.worker_id, command.commandId, ok, { restarted: ok }, ok ? undefined : "browser_unavailable");
+      console.log(ok ? "Browser connected." : "Browser recovery failed. Worker is blocked.");
       return;
     }
     live.task = "command_running";

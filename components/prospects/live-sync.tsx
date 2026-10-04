@@ -1,11 +1,12 @@
 "use client";
 
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { livePollDelay, pageRefreshNeeded } from "@/lib/discovery/policy";
 
-export function LiveProspectSync() {
+export function LiveProspectSync({ notice = false }: { notice?: boolean }) {
   const router = useRouter();
+  const [pending, setPending] = useState(false);
 
   useEffect(() => {
     let cursor = new Date().toISOString();
@@ -25,7 +26,8 @@ export function LiveProspectSync() {
             const nextKey = `${body.workerTask ?? ""}|${body.workerEvent ?? ""}`;
             const statusChanged = workerKey !== "" && nextKey !== workerKey;
             workerKey = nextKey;
-            if (pageRefreshNeeded(body.changed === true) || statusChanged) router.refresh();
+            if (notice && body.changed) setPending(true);
+            else if (pageRefreshNeeded(body.changed === true) || statusChanged) router.refresh();
           }
         }
       } catch {
@@ -39,7 +41,15 @@ export function LiveProspectSync() {
       stopped = true;
       window.clearTimeout(timer);
     };
-  }, [router]);
+  }, [notice, router]);
 
-  return null;
+  if (!pending) return null;
+  return (
+    <div className="mb-3 flex items-center justify-between rounded-xl border border-indigo-200 bg-indigo-50 px-3 py-2 text-sm text-indigo-950">
+      <p>New prospects are available. The current page, filters, and selection stay put.</p>
+      <button type="button" className="rounded-lg bg-indigo-600 px-2 py-1 text-xs text-white" onClick={() => { setPending(false); router.refresh(); }}>
+        Show
+      </button>
+    </div>
+  );
 }

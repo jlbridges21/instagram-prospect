@@ -27,6 +27,11 @@ export async function SuppressionList() {
           </tr>
         </thead>
         <tbody>
+          {(data ?? []).length === 0 ? (
+            <tr>
+              <td className="px-3 py-6 text-slate-500" colSpan={7}>No profiles have been suppressed before AI.</td>
+            </tr>
+          ) : null}
           {(data ?? []).map((row) => (
             <tr key={row.instagram_username_normalized} className="border-t border-slate-100">
               <td className="px-3 py-2">@{row.instagram_username_normalized}</td>
@@ -34,7 +39,7 @@ export async function SuppressionList() {
               <td className="px-3 py-2">{row.follow_relationship ?? "—"}</td>
               <td className="px-3 py-2">{row.source ?? "—"}</td>
               <td className="px-3 py-2">{row.last_seen_at.slice(0, 10)}</td>
-              <td className="px-3 py-2">{row.permanent ? "Permanent" : row.expires_at?.slice(0, 10) ?? "—"}</td>
+              <td className="px-3 py-2">{row.permanent || !row.expires_at ? "Never" : row.expires_at.slice(0, 10)}</td>
               <td className="px-3 py-2">
                 <RemoveSuppression username={row.instagram_username_normalized} />
               </td>

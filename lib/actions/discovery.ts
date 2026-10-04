@@ -49,5 +49,25 @@ export async function fillReview(target: number): Promise<ActionResult> {
   revalidatePath("/prospects");
   revalidatePath("/worker");
   revalidatePath("/settings");
+  revalidatePath("/discovery");
   return { ok: true, message: `Discovery is on. Review target is ${target}. Outreach was not changed.` };
+}
+
+export async function saveDiscoveryPreferences(input: { reviewTarget: number; hourlyPace: number }): Promise<ActionResult> {
+  if (!Number.isInteger(input.reviewTarget) || input.reviewTarget < 1 || input.reviewTarget > 5000) {
+    return { ok: false, error: "Choose a review target between 1 and 5000." };
+  }
+  if (!Number.isInteger(input.hourlyPace) || input.hourlyPace < 1 || input.hourlyPace > 200) {
+    return { ok: false, error: "Choose an hourly pace between 1 and 200." };
+  }
+  const { supabase } = await requireUser();
+  const { error } = await supabase
+    .from("settings")
+    .update({ discovery_review_target: input.reviewTarget, max_profiles_per_hour: input.hourlyPace })
+    .eq("id", 1);
+  if (error) return { ok: false, error: error.message };
+  revalidatePath("/");
+  revalidatePath("/discovery");
+  revalidatePath("/settings");
+  return { ok: true, message: "Saved. This does not start Discovery." };
 }

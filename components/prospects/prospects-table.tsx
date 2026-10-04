@@ -11,6 +11,7 @@ import { bulkProspectActions } from "@/lib/outreach/requeue";
 import { AnalyzeSelectedButton } from "@/components/prospects/qualify-controls";
 import { TableOptions } from "@/components/prospects/table-options";
 import { canApprove, canSkip } from "@/lib/prospects/status";
+import { bulkActionCopy } from "@/lib/prospects/tabs";
 import type { FitLabel, ProspectStatus } from "@/lib/constants/prospects";
 import { FIT_LABELS_TEXT, STATUS_LABELS } from "@/lib/constants/prospects";
 import { Avatar } from "@/components/ui/avatar";
@@ -308,7 +309,7 @@ export function ProspectsTable({
         </div>
       ) : null}
       {selected.length > 0 ? (
-        <div className="mb-3 flex items-center justify-between rounded-xl border border-slate-200 bg-white px-4 py-3">
+        <div className="sticky top-16 z-20 mb-3 flex flex-wrap items-center justify-between gap-2 rounded-xl border border-slate-200 bg-white px-4 py-3 shadow-sm">
           <p className="text-sm text-slate-700">{allFiltered ? matchCount : selected.length} selected</p>
           <div className="flex flex-wrap gap-2">
             <AnalyzeSelectedButton
@@ -542,8 +543,8 @@ export function ProspectsTable({
         title={confirmApprove && confirmApprove.length === visibleReviewIds.length && view === "review" && selected.length === 0
           ? `Approve ${confirmApprove.length} visible prospects?`
           : `Approve ${confirmApprove?.length ?? 0} eligible prospects?`}
-        description="This uses the same approval as Review Queue. Each eligible prospect is approved, the message is locked, and outreach is scheduled. Prospects that are not in review are left unchanged."
-        confirmLabel="Approve"
+        description={bulkActionCopy("approve", confirmApprove?.length ?? 0).description}
+        confirmLabel={bulkActionCopy("approve", confirmApprove?.length ?? 0).confirm}
         pending={pending}
         onClose={() => setConfirmApprove(null)}
         onConfirm={() => {
@@ -565,8 +566,8 @@ export function ProspectsTable({
       <ConfirmDialog
         open={confirmDelete !== null && ((confirmDelete.length < 200 && !allFiltered) || largeDeleteConfirmed)}
         title={allFiltered ? `Delete ${matchCount} prospects permanently?` : confirmDelete?.length === 1 ? `Delete @${rows.find((row) => row.id === confirmDelete[0])?.username ?? "prospect"} permanently?` : `Delete ${confirmDelete?.length ?? 0} prospects permanently?`}
-        description="This deletes the prospect and associated ShootPortal Outreach records from Supabase. This cannot be undone. No bio, photo, or message is kept."
-        confirmLabel={allFiltered ? `Delete ${matchCount} prospects` : "Delete permanently"}
+        description={bulkActionCopy("delete", allFiltered ? matchCount : confirmDelete?.length ?? 0).description}
+        confirmLabel={bulkActionCopy("delete", allFiltered ? matchCount : confirmDelete?.length ?? 0).confirm}
         tone="danger"
         pending={pending}
         onClose={() => {

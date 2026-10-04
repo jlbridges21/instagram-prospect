@@ -8,7 +8,8 @@ import {
   SOURCE_LABELS,
   STATUS_LABELS,
 } from "@/lib/constants/prospects";
-import type { ProspectQuery, ProspectView } from "@/lib/db/prospects";
+import type { ProspectQuery } from "@/lib/db/prospects";
+import { PROSPECT_TABS, type ProspectTabId } from "@/lib/prospects/tabs";
 import { prospectSearchString } from "@/lib/utils/prospect-search";
 import { SelectInput, TextInput } from "@/components/ui/field";
 import { buttonClasses } from "@/components/ui/button";
@@ -16,47 +17,47 @@ import { buttonClasses } from "@/components/ui/button";
 export function ProspectFilters({
   query,
   categories,
+  counts,
 }: {
   query: ProspectQuery;
   categories: string[];
+  counts?: Partial<Record<ProspectTabId, number>>;
 }) {
-  const views: { id: ProspectView; label: string }[] = [
-    { id: "active", label: "Active" },
-    { id: "review", label: "Review" },
-    { id: "approved", label: "Approved" },
-    { id: "contacted", label: "Contacted" },
-    { id: "excluded", label: "Excluded" },
-    { id: "all", label: "All" },
-  ];
+  const tab = PROSPECT_TABS.find((item) => item.id === query.view) ?? PROSPECT_TABS[0];
 
   return (
     <div className="mb-4">
-      <div className="mb-3 flex gap-2 overflow-x-auto">
-        <Link
-          href="/prospects?view=suppressed"
-          className={buttonClasses("secondary")}
-        >
-          Suppressed before AI
-        </Link>
-        {views.map((view) => (
+      <div className="mb-2 flex gap-2 overflow-x-auto pb-1" role="tablist" aria-label="Prospect workflow">
+        {PROSPECT_TABS.map((view) => (
           <Link
             key={view.id}
             href={`/prospects${prospectSearchString({ ...query, view: view.id, page: 1 })}`}
+            role="tab"
+            aria-selected={query.view === view.id}
+            title={view.help}
             className={
               query.view === view.id
-                ? "rounded-full bg-indigo-600 px-3 py-1 text-sm font-medium text-white"
-                : "rounded-full bg-white px-3 py-1 text-sm font-medium text-slate-600 ring-1 ring-slate-200"
+                ? "rounded-full bg-indigo-600 px-3 py-1 text-sm font-medium whitespace-nowrap text-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600"
+                : "rounded-full bg-white px-3 py-1 text-sm font-medium whitespace-nowrap text-slate-600 ring-1 ring-slate-200 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600"
             }
           >
             {view.label}
+            {counts && counts[view.id] != null ? <span className="ml-1 tabular-nums opacity-80">{counts[view.id]}</span> : null}
           </Link>
         ))}
+        <Link
+          href={`/prospects${prospectSearchString({ ...query, view: "all", page: 1 })}`}
+          className={query.view === "all" ? "rounded-full bg-slate-900 px-3 py-1 text-sm font-medium text-white" : "rounded-full bg-white px-3 py-1 text-sm font-medium text-slate-600 ring-1 ring-slate-200"}
+        >
+          All
+        </Link>
       </div>
+      <p className="mb-3 text-sm text-slate-500">{tab.help}</p>
     <form
       method="get"
       className="mb-4 grid gap-3 rounded-xl border border-slate-200 bg-white p-4 md:grid-cols-2 xl:grid-cols-4"
     >
-      {query.view !== "active" ? <input type="hidden" name="view" value={query.view} /> : null}
+      {query.view !== "review" ? <input type="hidden" name="view" value={query.view} /> : null}
       <label className="block md:col-span-2 xl:col-span-2">
         <span className="text-xs font-medium text-slate-500">Search</span>
         <TextInput

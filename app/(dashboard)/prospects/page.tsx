@@ -17,12 +17,25 @@ import {
   type ProspectSource,
 } from "@/lib/constants/prospects";
 import { getProspectOutreachFlags } from "@/lib/db/outreach";
-import { getProspectCategories, getProspectPage, type ProspectQuery, type ProspectView } from "@/lib/db/prospects";
+import { getProspectCategories, getProspectPage, getProspectTabCounts, type ProspectQuery } from "@/lib/db/prospects";
 import { fallbackSettings, getSettings } from "@/lib/db/settings";
 import { formatDate, formatDateTime, formatFollowerCount, parsePositiveInt, readParam } from "@/lib/utils/format";
 import { followingBadge } from "@/lib/prospects/following";
 import { prospectReason } from "@/lib/prospects/reason";
+import { parseProspectTab, prospectTab } from "@/lib/prospects/tabs";
+import { prospectWhy } from "@/lib/status/operations";
 import { prospectMessage } from "@/lib/utils/message";
+
+function whyLine(row: { status: string; fit_label: string | null; fit_score: number | null; already_following: boolean; qualification_reason?: string | null; qualification_error?: string | null; already_contacted?: boolean; ai_analyzed_at?: string | null; follow_relationship?: string | null }) {
+  const why = prospectWhy({
+    status: row.status,
+    fitLabel: row.fit_label,
+    fitScore: row.fit_score,
+    reason: prospectReason(row),
+    alreadyFollowing: row.already_following,
+  });
+  return `${why.headline}. ${why.detail}`;
+}
 
 export const metadata: Metadata = { title: "Prospects" };
 export const maxDuration = 60;
@@ -39,14 +52,7 @@ export default async function ProspectsPage({
   const sortValue = readParam(params, "sort");
 
   const viewValue = readParam(params, "view");
-  const view: ProspectView =
-    viewValue === "review" ||
-    viewValue === "approved" ||
-    viewValue === "contacted" ||
-    viewValue === "excluded" ||
-    viewValue === "all"
-      ? viewValue
-      : "active";
+  const view = viewValue === "all" ? "all" : parseProspectTab(viewValue);
   const query: ProspectQuery = {
     q: readParam(params, "q"),
     view,
@@ -61,15 +67,16 @@ export default async function ProspectsPage({
     pageSize: pageSizeFromParam(readParam(params, "pageSize")),
   };
 
-  const [settingsResult, pageResult, categories] = await Promise.all([
+  const [settingsResult, pageResult, categories, counts] = await Promise.all([
     getSettings(),
     getProspectPage(query),
     getProspectCategories(),
+    getProspectTabCounts(),
   ]);
   const settings = settingsResult.ok ? settingsResult.data : fallbackSettings();
   const filtered = Boolean(
     query.q ||
-      query.view !== "active" ||
+      query.view !== "review" ||
       query.status !== "all" ||
       query.fit !== "all" ||
       query.category ||
@@ -102,10 +109,18 @@ export default async function ProspectsPage({
           {pageResult.error}
         </div>
       ) : null}
-      <LiveProspectSync />
-      {viewValue === "suppressed" ? <SuppressionList /> : null}
-      <ProspectFilters query={query} categories={categories} />
-      {viewValue === "suppressed" ? null : <ProspectsTable
+      <LiveProspectSync notice />
+      {view === "suppressed" ? <SuppressionList /> : null}
+      <ProspectFilters query={query} categories={categories} counts={counts} />
+      {view !== "suppressed" && pageRows.length === 0 && pageResult.ok ? (
+        <div className="mb-4 rounded-xl border border-slate-200 bg-white px-4 py-8 text-center">
+          <p className="text-sm font-medium text-slate-900">{view === "all" ? "No profiles match these filters." : prospectTab(view).empty}</p>
+          {view === "review" ? (
+            <a href="/discovery" className="mt-3 inline-flex rounded-lg bg-indigo-600 px-3 py-2 text-sm text-white">Start Discovery</a>
+          ) : null}
+        </div>
+      ) : null}
+      {view === "suppressed" ? null : <ProspectsTable
         matchCount={count}
         query={query}
         filtered={filtered}
@@ -124,7 +139,7 @@ export default async function ProspectsPage({
           discovered: formatDate(row.discovered_at, settings.timezone, settings.dateFormat),
           profileUrl: row.profile_url || `https://www.instagram.com/${row.instagram_username}/`,
           pictureUrl: row.profile_picture_url,
-          reason: prospectReason(row),
+          reason: whyLine(row),
           message: prospectMessage({
             template: settings.messageTemplate,
             messageOverride: row.message_override,
