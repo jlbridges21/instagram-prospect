@@ -7,7 +7,7 @@ import { getDiscoveryV3Snapshot } from "@/lib/db/discovery";
 import { fallbackSettings, getSettings } from "@/lib/db/settings";
 import { getLatestWorker } from "@/lib/db/workers";
 import { parseHourlyWaitEvent, formatResumeClock } from "@/lib/discovery/pacing";
-import { attentionKind, formatCurrentAction, formatDiscoveryStatus, statusDotClass } from "@/lib/status/operations";
+import { attentionKind, formatCurrentAction, formatDiscoveryStatus, outreachOwnsWorker, statusDotClass } from "@/lib/status/operations";
 import { parseBrowserHealthEvent } from "@/lib/worker/browser-health";
 import { getWorkerHealth } from "@/lib/utils/worker-health";
 
@@ -38,8 +38,14 @@ export default async function DiscoveryPage() {
     reviewCount: progress.currentReview,
     reviewTarget: settings.discovery.reviewTarget,
     browser: parseBrowserHealthEvent(worker?.last_event)?.state ?? "connected",
+    yieldingToOutreach: settings.discovery.enabled && !hourly && outreachOwnsWorker(worker?.current_task),
   });
-  const action = formatCurrentAction(worker?.current_task, worker?.current_username, Boolean(hourly));
+  const servicingOutreach = outreachOwnsWorker(worker?.current_task) && !worker?.current_task?.includes("spacing");
+  const action = hourly
+    ? "Waiting for the hourly inspection slot"
+    : servicingOutreach
+      ? "Temporarily yielding to Outreach"
+      : formatCurrentAction(worker?.current_task, worker?.current_username);
 
   return (
     <div>

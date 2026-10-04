@@ -41,6 +41,7 @@ export function formatDiscoveryStatus(input: {
   reviewCount: number;
   reviewTarget: number | "unlimited";
   browser?: "connected" | "restarting" | "closed" | "failed" | null;
+  yieldingToOutreach?: boolean;
 }): OperationState {
   const review = input.reviewTarget === "unlimited" ? `${input.reviewCount} / Unlimited` : `${input.reviewCount} / ${input.reviewTarget}`;
   const desired: OperationState["desired"] = input.enabled
@@ -123,8 +124,8 @@ export function formatDiscoveryStatus(input: {
       actual: "RUNNING",
       tone: "running",
       label: "RUNNING",
-      reason: "Discovery is looking for qualified prospects.",
-      detail: `Review ${review}.`,
+      reason: input.yieldingToOutreach ? "Temporarily yielding to Outreach" : "Discovery is looking for qualified prospects.",
+      detail: input.yieldingToOutreach ? `Worker currently servicing Outreach. Review ${review}.` : `Review ${review}.`,
       resumesAt: null,
       action: null,
     };
@@ -296,8 +297,26 @@ export function formatWorkerStatus(input: { online: boolean; attention: Attentio
   };
 }
 
+export function outreachOwnsWorker(task: string | null | undefined) {
+  return task === "executing_verify_profile" || task === "executing_follow_profile" || task === "executing_send_message" || task === "outreach_spacing_wait";
+}
+
+export function formatOutreachAction(input: {
+  task: string | null | undefined;
+  username: string | null | undefined;
+  waiting: { reason: string; eligibleIn: string } | null;
+}) {
+  if (input.task === "executing_verify_profile" || input.task === "executing_follow_profile" || input.task === "executing_send_message") {
+    return formatCurrentAction(input.task, input.username);
+  }
+  if (input.waiting) return `${input.waiting.reason}. Eligible in ${input.waiting.eligibleIn}`;
+  return "Queue empty";
+}
+
 export function formatCurrentAction(task: string | null | undefined, username: string | null | undefined, hourlyWaiting = false) {
-  if (hourlyWaiting || task === "discovery_hourly_wait") return "Waiting for the hourly Discovery slot";
+  if ((hourlyWaiting || task === "discovery_hourly_wait") && !task?.startsWith("executing_") && task !== "outreach_spacing_wait") {
+    return "Waiting for the hourly Discovery slot";
+  }
   const who = username?.replace(/^@/, "");
   const name = who ? `@${who}` : null;
   switch (task) {
@@ -319,6 +338,8 @@ export function formatCurrentAction(task: string | null | undefined, username: s
       return "Instagram needs a sign-in";
     case "command_running":
       return "Running a dashboard action";
+    case "outreach_spacing_wait":
+      return "Waiting for the next Outreach action";
     case "paused":
     case "idle":
     case "standby":

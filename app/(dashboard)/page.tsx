@@ -96,7 +96,7 @@ export default async function OverviewPage() {
       <LiveProspectSync />
       <OperationSummary
         timeZone={settings.timezone}
-        action={formatCurrentAction(worker?.current_task, worker?.current_username, Boolean(parseHourlyWaitEvent(worker?.last_event)) && settings.discovery.enabled)}
+        action={formatCurrentAction(worker?.current_task, worker?.current_username)}
         review={settings.discovery.reviewTarget === "unlimited" ? `${progress.currentReview} / Unlimited` : `${progress.currentReview} / ${settings.discovery.reviewTarget}`}
         today={{ inspected: progress.dailyInspections, ai: progress.dailyAi, sent: outreach?.sentToday ?? 0 }}
         worker={formatWorkerStatus({

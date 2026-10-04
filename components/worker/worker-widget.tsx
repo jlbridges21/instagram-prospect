@@ -123,6 +123,7 @@ export function WorkerWidget({ timeZone }: { timeZone: string }) {
     reviewCount: status?.reviewCount ?? 0,
     reviewTarget: status?.reviewTarget ?? "unlimited",
     browser: status?.browser?.state ?? "connected",
+    yieldingToOutreach: Boolean(status?.discoveryEnabled) && !status?.hourly && (status?.currentAction === "executing_verify_profile" || status?.currentAction === "executing_follow_profile" || status?.currentAction === "executing_send_message"),
   });
   const outreach = formatOutreachStatus({
     online: Boolean(status?.online),
@@ -136,7 +137,7 @@ export function WorkerWidget({ timeZone }: { timeZone: string }) {
     attention,
     browser: status?.browser?.state ?? "connected",
   });
-  const action = formatCurrentAction(status?.currentAction, status?.username, Boolean(status?.hourly) && Boolean(status?.discoveryEnabled));
+  const action = formatCurrentAction(status?.currentAction, status?.username);
   const headline = widgetHeadline({ online: Boolean(status?.online), attention, action, discoveryActual: discovery.actual });
   const recommendation = recommendedDiagnostic(status?.command?.error_code || status?.command?.error_message);
   const zone = timeZone || "UTC";

@@ -18,7 +18,6 @@ import {
   formatHourlyWaitEvent,
   formatWorkerModes,
   hourlyInspectionPace,
-  hourlyWaitMs,
   queueThresholds,
 } from "../../lib/discovery/pacing";
 import { formatDiscoveryStatus } from "../../lib/worker/discovery-status";
@@ -93,6 +92,8 @@ export async function runDiscoveryV2(input: {
   gate?: (input: { inspections: number; ai: number; emptyCycles: number }) => Promise<{ pause: boolean; reason: string | null } | null>;
   profilePages?: [Page, Page];
   retainTabs?: boolean;
+  shouldYield?: () => boolean | Promise<boolean>;
+  browserLock?: { tryAcquire: (owner: "discovery") => boolean; release: (owner: "discovery") => void };
 }) {
   const metrics = input.metrics ?? emptyEfficiency();
   const queue = new CandidateQueue(10);
@@ -107,6 +108,7 @@ export async function runDiscoveryV2(input: {
   let emptyCycles = 0;
   let acquisitionHeld = false;
   let hourlyNoticeAt = 0;
+  let exitReason: "hourly" | "yield" | "stopped" | "done" = "done";
   const qualify = new QualificationQueue(3, async (prospectId) => {
       metrics.qualificationRequests += 1;
       try {
@@ -140,6 +142,7 @@ export async function runDiscoveryV2(input: {
     if (!input.retainTabs) await Promise.all(tabs.map((tab) => tab.page.close().catch(() => undefined)));
   }
   if (stopError) throw stopError;
+  return exitReason;
 
   async function collectLoop() {
     let idleScrolls = 0;
@@ -156,8 +159,12 @@ export async function runDiscoveryV2(input: {
       const pace = hourPace();
       if (pace.full) {
         announceHourly(pace, config.automationEnabled);
-        await sleep(hourlyWaitMs(pace.resumesAt, Date.now()));
-        continue;
+        exitReason = "hourly";
+        return;
+      }
+      if (await input.shouldYield?.()) {
+        exitReason = "yield";
+        return;
       }
       if (hourlyNoticeAt !== 0) {
         hourlyNoticeAt = 0;
@@ -178,7 +185,7 @@ export async function runDiscoveryV2(input: {
       publish(config, null);
       if (!acquisition.acquire) {
         input.live.task = qualify.activeCount > 0 ? "qualifying_profiles" : "inspecting_profiles";
-        await input.maybeOutreach?.().catch(() => undefined);
+        if (!input.shouldYield) await input.maybeOutreach?.().catch(() => undefined);
         await sleep(500);
         continue;
       }
@@ -254,7 +261,7 @@ export async function runDiscoveryV2(input: {
         await scrollFeed(input.homePage);
         await sleep(config.discoveryScrollDelaySeconds * 1000);
       }
-      await input.maybeOutreach?.().catch(() => undefined);
+      if (!input.shouldYield) await input.maybeOutreach?.().catch(() => undefined);
     }
   }
 
@@ -263,8 +270,12 @@ export async function runDiscoveryV2(input: {
       const pace = hourPace();
       if (pace.full) {
         announceHourly(pace, latestConfig?.automationEnabled === true);
-        await sleep(hourlyWaitMs(pace.resumesAt, Date.now()));
-        continue;
+        exitReason = "hourly";
+        return;
+      }
+      if (await input.shouldYield?.()) {
+        exitReason = "yield";
+        return;
       }
       const candidate = queue.claim(tabId);
       if (!candidate) {
@@ -286,11 +297,20 @@ export async function runDiscoveryV2(input: {
       log("info", tabId === "profile-tab-1" ? "candidate_claimed_tab_a" : "candidate_claimed_tab_b", {
         username: candidate.username,
       });
+      if (input.browserLock && !input.browserLock.tryAcquire("discovery")) {
+        queue.release(candidate.username);
+        exitReason = "yield";
+        return;
+      }
       try {
         await inspectCandidate(page, candidate);
         queue.complete(candidate.username, "done");
         failures.set(tabId, 0);
         log("info", "candidate_completed", { username: candidate.username, tab: tabId });
+        if (await input.shouldYield?.()) {
+          exitReason = "yield";
+          return;
+        }
       } catch (error) {
         if (isAttention(error)) {
           queue.fail(candidate.username);
@@ -305,6 +325,8 @@ export async function runDiscoveryV2(input: {
         if ([...failures.values()].every((count) => count >= 3)) {
           input.live.attention = "Both profile inspection tabs are failing. Discovery is still running.";
         }
+      } finally {
+        input.browserLock?.release("discovery");
       }
     }
   }

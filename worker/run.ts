@@ -1,5 +1,6 @@
 import { continuousOutreachStep } from "../lib/discovery/policy";
-import { checkpointHoldDecision, formatWorkerModes } from "../lib/discovery/pacing";
+import { checkpointHoldDecision, formatHourlyWaitEvent, formatWorkerModes, hourlyInspectionPace } from "../lib/discovery/pacing";
+import { BrowserActionLock, nextOrchestratorStep } from "../lib/worker/orchestrator";
 import { discoveryRunShouldStop } from "../lib/worker/commands";
 import {
   browserStateFromSignals,
@@ -47,6 +48,7 @@ export type RunMode = "agent" | "smoke" | "login";
 let stopRequested = false;
 let openedSession = false;
 let activeSideEffect: SideEffect = null;
+const browserLock = new BrowserActionLock();
 
 const sleep = (ms: number) =>
   new Promise<void>((resolve) => {
@@ -226,6 +228,7 @@ export async function runWorker(mode: RunMode) {
     return;
   }
   const stats = { seen: 0, ingested: 0, excluded: 0, qualified: 0, errors: 0, hour: [] as number[] };
+  let outreachDueAt = 0;
   const efficiency = emptyEfficiency();
   const live = {
     task: "idle",
@@ -557,9 +560,41 @@ export async function runWorker(mode: RunMode) {
           console.log(`Discovery stopped. Reason: ${runStop.reason}.`);
           continue;
         }
-        if (mode !== "smoke" && !discoveryOnly && !noWrite && !activeSideEffect) {
+        const outreachDueNow = config.automationEnabled && (activeSideEffect != null || Date.now() >= outreachDueAt);
+        const discoveryPace = hourlyInspectionPace({
+          stamps: stats.hour,
+          now: Date.now(),
+          limit: config.maxProfilesPerHour,
+        });
+        stats.hour = discoveryPace.active;
+        if (discoveryPace.full && discoveryPace.resumesAt != null) {
+          live.lastEvent = formatHourlyWaitEvent({
+            count: discoveryPace.count,
+            limit: discoveryPace.limit,
+            resumesAt: discoveryPace.resumesAt,
+          });
+        }
+        const step = nextOrchestratorStep({
+          now: Date.now(),
+          attention: false,
+          heartbeatDueAt: Date.now() + Math.max(config.heartbeatIntervalSeconds, 15) * 1000,
+          outreach: {
+            desired: config.automationEnabled,
+            critical: activeSideEffect != null,
+            eligibleNow: outreachDueNow,
+            nextEligibleAt: outreachDueAt > Date.now() ? outreachDueAt : null,
+          },
+          discovery: {
+            desired: config.discoveryEnabled,
+            eligibleNow: config.discoveryEnabled && !discoveryPace.full && !control.pauseDiscovery,
+            nextEligibleAt: discoveryPace.resumesAt,
+            inspectionInProgress: false,
+          },
+        });
+        if (mode !== "smoke" && !discoveryOnly && !noWrite && (step.action === "outreach" || activeSideEffect)) {
           const outcome = await runOneJob(cloud, page, identity, config, stats);
           if (outcome.worked) {
+            outreachDueAt = 0;
             const line = prospectCompletionLine({
               username: outcome.username,
               jobType: outcome.jobType,
@@ -568,8 +603,9 @@ export async function runWorker(mode: RunMode) {
             if (line) console.log(line);
             continue;
           }
+          outreachDueAt = outcome.nextAt ? new Date(outcome.nextAt).getTime() : Date.now() + 60_000;
           if (config.automationEnabled && outcome.reason) {
-            const step = continuousOutreachStep({
+            const wait = continuousOutreachStep({
               paused: outcome.reason === "outreach_paused",
               checkpoint: false,
               jobReady: false,
@@ -578,9 +614,10 @@ export async function runWorker(mode: RunMode) {
             });
             if (outcome.reason === "no_queued_jobs") console.log("Outreach queue is empty.");
             else if (outcome.message) console.log(outcome.message);
-            if (outcome.nextAt) console.log("Waiting...");
-            if (!config.discoveryEnabled) {
-              await sleep(step.waitMs);
+            if (!config.discoveryEnabled || discoveryPace.full) {
+              live.task = outcome.nextAt ? "outreach_spacing_wait" : "idle";
+              await beat(cloud, identity, live.task, stats, true, true, live.attention, live.username, live.lastEvent);
+              await sleep(Math.min(wait.waitMs, 15_000));
               continue;
             }
           }
@@ -601,7 +638,8 @@ export async function runWorker(mode: RunMode) {
           desiredEnabled: config.discoveryEnabled && !stopping && stats.seen < inspectionCap && !singleOutreach,
           sideEffect: activeSideEffect,
         });
-        if (admission.enter) {
+        const outreachStillDue = config.automationEnabled && (activeSideEffect != null || Date.now() >= outreachDueAt);
+        if (admission.enter && !discoveryPace.full && !outreachStillDue) {
           const tabs = await ensureProfileTabs();
           if (!tabs) {
             session.closed = true;
@@ -627,6 +665,8 @@ export async function runWorker(mode: RunMode) {
               profilePages: tabs,
               retainTabs: true,
               shouldStop: () => stopping || control.pauseDiscovery || session.closed,
+              shouldYield: () => config.automationEnabled && (activeSideEffect != null || Date.now() >= outreachDueAt),
+              browserLock,
               metrics: efficiency,
               gate: async (tick) => cloud.discoveryProgress(tick).catch(() => null),
               maybeOutreach: async () => {
@@ -641,11 +681,16 @@ export async function runWorker(mode: RunMode) {
             session.discoveryActive = false;
           }
           if (discoveryV2Test || discoveryV3Test) return;
+          continue;
         } else {
-          live.task = "idle";
+          live.task = config.automationEnabled && outreachDueAt > Date.now() ? "outreach_spacing_wait" : "idle";
           await beat(cloud, identity, live.task, stats, true, true, live.attention, live.username, live.lastEvent);
           if (stats.seen >= inspectionCap) console.log("Session profile limit reached. Waiting.");
-          await sleep(Math.max(config.heartbeatIntervalSeconds, 20) * 1000);
+          const wakeAt = Math.min(
+            outreachDueAt > Date.now() ? outreachDueAt : Date.now() + 15_000,
+            discoveryPace.resumesAt ?? Date.now() + 15_000,
+          );
+          await sleep(Math.max(1_000, Math.min(15_000, wakeAt - Date.now())));
         }
       } catch (error) {
         if (isAuthFailure(error)) return;
@@ -757,6 +802,8 @@ async function runOneJob(
 
 async function executeJob(page: import("playwright").Page, job: JobPayload) {
   const effect: SideEffect = job.type === "follow_profile" ? "follow" : job.type === "send_message" ? "send" : null;
+  const critical = effect != null;
+  browserLock.tryAcquire("outreach", critical);
   if (effect) activeSideEffect = effect;
   try {
     const result = await executeJobBody(page, job);
@@ -770,6 +817,8 @@ async function executeJob(page: import("playwright").Page, job: JobPayload) {
     const message = error instanceof Error ? error.message : "";
     if (!(effect && isBrowserClosedMessage(message))) activeSideEffect = effect ? null : activeSideEffect;
     throw error;
+  } finally {
+    if (!activeSideEffect) browserLock.release("outreach");
   }
 }
 

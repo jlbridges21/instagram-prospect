@@ -8,7 +8,7 @@ import { listOutreachJobs, getOutreachSnapshot } from "@/lib/db/outreach";
 import { fallbackSettings, getSettings } from "@/lib/db/settings";
 import { formatDateTime } from "@/lib/utils/format";
 import { getLatestWorker } from "@/lib/db/workers";
-import { attentionKind, formatCurrentAction, formatOutreachStatus, statusDotClass } from "@/lib/status/operations";
+import { attentionKind, formatOutreachAction, formatOutreachStatus, statusDotClass } from "@/lib/status/operations";
 import { getWorkerHealth } from "@/lib/utils/worker-health";
 import { formatResumeClock } from "@/lib/discovery/pacing";
 import { claimPaceDecision, formatEligibleIn, paceReasonLabel, reflowPlan, type PaceJob } from "@/lib/outreach/pace";
@@ -114,7 +114,11 @@ export default async function OutreachPage() {
             {outlook.estimatedCompletion ? `. Estimated completion: ~${formatDateTime(outlook.estimatedCompletion.toISOString(), settings.timezone, settings.dateFormat)}` : ""}
           </p>
         ) : null}
-        <p className="mt-2">Current action: {formatCurrentAction(worker?.current_task, worker?.current_username)}</p>
+        <p className="mt-2">Current Outreach action: {formatOutreachAction({
+          task: worker?.current_task,
+          username: worker?.current_username,
+          waiting: pace.action === "wait" && pace.at ? { reason: paceReasonLabel(pace.reason), eligibleIn: formatEligibleIn(pace.at, now) } : null,
+        })}</p>
         <p className="mt-3 text-xs text-slate-500">Pause stops new claims and keeps the queue. Stop ends this run the same way and does not cancel pending outreach. Cancel Pending Outreach stays a separate confirmed action in the control above.</p>
       </section>
       {snapshot ? (
