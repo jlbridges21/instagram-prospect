@@ -12,13 +12,15 @@ export async function recordDiscoveryProgress(
   admin: Client,
   input: { inspections?: number; ai?: number; emptyCycles?: number },
 ) {
-  const settings = await admin
-    .from("settings")
-    .select(
-      "timezone, discovery_enabled, automation_enabled, discovery_review_target, discovery_session_inspection_cap, discovery_daily_inspection_cap, discovery_daily_ai_cap, discovery_stop_reason, discovery_auto_paused",
-    )
-    .eq("id", 1)
-    .maybeSingle();
+  const settingsColumns = "timezone, discovery_enabled, automation_enabled, discovery_review_target, discovery_session_inspection_cap, discovery_daily_inspection_cap, discovery_daily_ai_cap, discovery_stop_reason, discovery_auto_paused, discovery_run_mode";
+  let settings = await admin.from("settings").select(settingsColumns).eq("id", 1).maybeSingle();
+  if (settings.error && /discovery_run_mode/i.test(settings.error.message)) {
+    settings = await admin
+      .from("settings")
+      .select("timezone, discovery_enabled, automation_enabled, discovery_review_target, discovery_session_inspection_cap, discovery_daily_inspection_cap, discovery_daily_ai_cap, discovery_stop_reason, discovery_auto_paused")
+      .eq("id", 1)
+      .maybeSingle();
+  }
   if (settings.error || !settings.data) {
     if (
       !settings.error ||
@@ -66,7 +68,13 @@ export async function recordDiscoveryProgress(
     .in("fit_label", ["strong_fit", "possible_fit"])
     .eq("is_sample", false);
   const currentReview = review.count ?? 0;
-  const target: ReviewTarget = row.discovery_review_target == null ? "unlimited" : row.discovery_review_target;
+  const runMode = "discovery_run_mode" in row ? row.discovery_run_mode : "review_target";
+  const target: ReviewTarget =
+    runMode && runMode !== "review_target"
+      ? "unlimited"
+      : row.discovery_review_target == null
+        ? "unlimited"
+        : row.discovery_review_target;
   const session = await openSession(admin);
   const sessionInspections = (session?.profiles_inspected ?? 0) + inspections;
   const decision = discoveryStopDecision({

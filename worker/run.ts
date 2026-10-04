@@ -1,5 +1,6 @@
 import { continuousOutreachStep } from "../lib/discovery/policy";
 import { checkpointHoldDecision, formatWorkerModes } from "../lib/discovery/pacing";
+import { discoveryRunShouldStop } from "../lib/worker/commands";
 import { prospectCompletionLine } from "../lib/outreach/completion-log";
 import { launchBrowser } from "./browser/launch";
 import { createHeartbeatSession, mustHeartbeatBeforeClaim, safeHeartbeatError } from "./heartbeat-session";
@@ -211,8 +212,10 @@ export async function runWorker(mode: RunMode) {
     discoveryOnly,
     noWrite,
   });
-  const heartbeats = createHeartbeatSession(Math.max(startup.heartbeatIntervalSeconds, 15) * 1000, () =>
-    beat(
+  const control = { pauseDiscovery: false };
+  let offered: { commandId: string; type: string; payload: unknown } | null = null;
+  const heartbeats = createHeartbeatSession(Math.max(startup.heartbeatIntervalSeconds, 15) * 1000, async () => {
+    const command = await beat(
       cloud,
       identity,
       live.task,
@@ -222,8 +225,14 @@ export async function runWorker(mode: RunMode) {
       live.attention,
       live.username,
       live.lastEvent,
-    ),
-  );
+    );
+    if (!command || offered) return;
+    if (command.type === "pause_discovery" || command.type === "stop_discovery" || command.type === "pause_outreach") {
+      await acceptSettingsCommand(cloud, identity.worker_id, command, control, stats);
+      return;
+    }
+    offered = command;
+  });
   if (!claimsOutreach) heartbeats.startInterval();
   let outreachReady = false;
   let backoff = 5_000;
@@ -231,6 +240,7 @@ export async function runWorker(mode: RunMode) {
   let modeLine = "";
   let attentionHold: AttentionError | null = null;
   let attentionLogged = false;
+  let standbyPrinted = false;
 
   try {
     await flushPending(cloud, identity.worker_id);
@@ -293,6 +303,36 @@ export async function runWorker(mode: RunMode) {
           }
           console.log("Worker heartbeat registered");
           outreachReady = true;
+          if (!standbyPrinted) {
+            standbyPrinted = true;
+            console.log("");
+            console.log("ShootPortal Outreach Worker");
+            console.log("");
+            console.log("Worker:");
+            console.log(identity.machine_name);
+            console.log("");
+            console.log("Cloud:");
+            console.log("Connected");
+            console.log("");
+            console.log("Browser:");
+            console.log("Connected");
+            console.log("");
+            console.log("Instagram:");
+            console.log(live.instagramAuthenticated ? "Authenticated" : "Not authenticated");
+            console.log("");
+            console.log("Control:");
+            console.log("Dashboard connected");
+            console.log("");
+            console.log("Status:");
+            console.log(config.discoveryEnabled || config.automationEnabled ? "RUNNING" : "STANDBY");
+            console.log("");
+            console.log(formatWorkerModes({
+              discovery: config.discoveryEnabled ? "RUNNING" : "PAUSED",
+              outreach: config.automationEnabled ? "RUNNING" : "PAUSED",
+            }));
+            console.log("");
+            console.log("Waiting for dashboard commands...");
+          }
         }
         if (dryRun) {
           await runDryOutreach(cloud, page);
@@ -307,6 +347,30 @@ export async function runWorker(mode: RunMode) {
           await beat(cloud, identity, live.task, stats, false, live.instagramAuthenticated, live.attention, live.username, live.lastEvent);
           console.log("Worker is disabled in Settings. Waiting.");
           await sleep(config.heartbeatIntervalSeconds * 1000);
+          continue;
+        }
+        if (offered && !discoveryOnly) {
+          const command = offered;
+          offered = null;
+          await runDashboardCommand(cloud, page, identity, stats, live, command, control).catch((error) => {
+            console.log(error instanceof Error ? error.message : "The dashboard command failed.");
+          });
+          cloud.invalidateConfig();
+          continue;
+        }
+        const freshConfig = await cloud.config();
+        const runStop = discoveryRunShouldStop({
+          mode: freshConfig.discoveryRunMode,
+          startedAt: freshConfig.discoveryRunStartedAt,
+          durationMinutes: freshConfig.discoveryRunMinutes,
+          inspectionLimit: freshConfig.discoveryRunInspectionLimit,
+          inspections: stats.seen,
+          now: new Date(),
+        });
+        if (freshConfig.discoveryEnabled && runStop.stop) {
+          await cloud.finishDiscoveryRun().catch(() => undefined);
+          cloud.invalidateConfig();
+          console.log(`Discovery stopped. Reason: ${runStop.reason}.`);
           continue;
         }
         if (mode !== "smoke" && !discoveryOnly && !noWrite) {
@@ -363,7 +427,7 @@ export async function runWorker(mode: RunMode) {
             noWrite,
             debug: debug || discoveryOnly,
             inspectionLimit: inspectionCap,
-            shouldStop: () => stopping,
+            shouldStop: () => stopping || control.pauseDiscovery,
             metrics: efficiency,
             gate: async (tick) => cloud.discoveryProgress(tick).catch(() => null),
             maybeOutreach: async () => {
@@ -678,7 +742,7 @@ async function beat(
 ) {
   const status = task === "offline" ? "offline" : task === "attention_required" || task === "auth_required" ? "attention_required" : "online";
   const first = !openedSession;
-  await cloud.heartbeat({
+  const response = await cloud.heartbeat({
     new_session: first,
     worker_id: identity.worker_id,
     machine_name: identity.machine_name,
@@ -698,6 +762,7 @@ async function beat(
     last_event: lastEvent ?? null,
   });
   openedSession = true;
+  return response.next_command?.commandId ? response.next_command : null;
 }
 
 function isAuthFailure(error: unknown) {
@@ -756,14 +821,122 @@ async function runDryOutreach(cloud: CloudClient, page: import("playwright").Pag
   );
 }
 
+async function acceptSettingsCommand(
+  cloud: CloudClient,
+  workerId: string,
+  command: { commandId: string; type: string },
+  control: { pauseDiscovery: boolean },
+  stats: { seen: number },
+) {
+  try {
+    const claimed = await cloud.claimCommand(workerId, command.commandId);
+    cloud.invalidateConfig();
+    if (command.type === "pause_discovery" || command.type === "stop_discovery") control.pauseDiscovery = true;
+    if (command.type === "start_discovery") stats.seen = 0;
+    if (claimed.applied) await cloud.finishCommand(workerId, command.commandId, true, { acknowledged: true });
+  } catch (error) {
+    const status = error instanceof Error && "statusCode" in error ? Number(error.statusCode) : 0;
+    if (status !== 409) console.log(error instanceof Error ? error.message : "The dashboard command could not be claimed.");
+  }
+}
+
+async function runDashboardCommand(
+  cloud: CloudClient,
+  page: import("playwright").Page,
+  identity: ReturnType<typeof loadIdentity>,
+  stats: { seen: number; ingested: number; excluded: number; qualified: number; errors: number; hour: number[] },
+  live: { task: string; username: string | null; lastEvent: string | null; attention?: string },
+  command: { commandId: string; type: string; payload: unknown },
+  control: { pauseDiscovery: boolean },
+) {
+  let claimed = false;
+  try {
+    const result = await cloud.claimCommand(identity.worker_id, command.commandId);
+    claimed = true;
+    cloud.invalidateConfig();
+    if (result.applied) {
+      if (command.type === "start_discovery") stats.seen = 0;
+      await cloud.finishCommand(identity.worker_id, command.commandId, true, { acknowledged: true });
+      console.log(`${command.type.replaceAll("_", " ")} acknowledged.`);
+      return;
+    }
+    live.task = "command_running";
+    if (command.type === "run_discovery_test") {
+      await runDiscoveryV2({
+        context: page.context(),
+        homePage: page,
+        cloud,
+        stats,
+        live,
+        workerId: identity.worker_id,
+        noWrite: false,
+        debug: false,
+        inspectionLimit: 10,
+        shouldStop: () => control.pauseDiscovery,
+        maybeOutreach: async () => undefined,
+      });
+      await cloud.finishCommand(identity.worker_id, command.commandId, true, { inspected: stats.seen, followed: false, sent: false });
+      console.log("Test Discovery finished. No Follow or DM was performed.");
+      return;
+    }
+    if (command.type === "run_outreach_preview") {
+      await runDryOutreach(cloud, page);
+      await cloud.finishCommand(identity.worker_id, command.commandId, true, { followed: false, sent: false });
+      return;
+    }
+    if (command.type === "run_one_outreach" || command.type === "recover_outreach") {
+      await runSingleOutreach(cloud, page, identity, stats, live, { recover: command.type === "recover_outreach" });
+      await cloud.finishCommand(identity.worker_id, command.commandId, true, { single: true });
+      return;
+    }
+    if (command.type === "inspect_dm" || command.type === "inspect_composer") {
+      const username = typeof command.payload === "object" && command.payload && "username" in command.payload ? String(command.payload.username) : "";
+      if (command.type === "inspect_dm") {
+        const inspection = await inspectDirectMessage(page, username);
+        console.log(`DM detection for @${username}. Nothing was typed or sent.`);
+        await cloud.finishCommand(identity.worker_id, command.commandId, true, {
+          composerFound: inspection.composerFound,
+          existingConversation: inspection.existingConversation,
+          sent: false,
+        });
+      } else {
+        const locked = await cloud.previewLockedMessage(username);
+        if (!locked.message) {
+          await cloud.finishCommand(identity.worker_id, command.commandId, false, {}, "Locked message was not found. Nothing was sent.");
+          return;
+        }
+        const inspection = await inspectComposerMessage(page, username, locked.message);
+        console.log(inspection.clearNote ?? "Composer check finished. Nothing was sent.");
+        await cloud.finishCommand(identity.worker_id, command.commandId, true, { sent: false, clearNote: inspection.clearNote ?? null });
+      }
+      return;
+    }
+    if (command.type === "refresh_instagram_auth_check" || command.type === "clear_worker_attention") {
+      const signal = await pageNeedsAttention(page);
+      if (signal && command.type === "clear_worker_attention") {
+        await cloud.finishCommand(identity.worker_id, command.commandId, false, {}, "Instagram still needs attention in the browser.");
+        return;
+      }
+      await cloud.finishCommand(identity.worker_id, command.commandId, true, { attention: signal });
+      return;
+    }
+    await cloud.finishCommand(identity.worker_id, command.commandId, false, {}, "This command is not available.");
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "The dashboard command failed.";
+    if (claimed) await cloud.finishCommand(identity.worker_id, command.commandId, false, {}, message).catch(() => undefined);
+    else if (!(error instanceof Error) || !("statusCode" in error) || Number(error.statusCode) !== 409) console.log(message);
+  }
+}
+
 async function runSingleOutreach(
   cloud: CloudClient,
   page: import("playwright").Page,
   identity: ReturnType<typeof loadIdentity>,
   stats: { seen: number; ingested: number; excluded: number; qualified: number; errors: number },
   live: { task: string; username: string | null },
+  options?: { recover?: boolean },
 ) {
-  const recover = process.argv.includes("--recover-outreach");
+  const recover = options?.recover ?? process.argv.includes("--recover-outreach");
   const first = await cloud.nextJob(identity.worker_id, undefined, recover ? { recoverOnly: true } : undefined);
   if (!first.job) {
     if (recover) {

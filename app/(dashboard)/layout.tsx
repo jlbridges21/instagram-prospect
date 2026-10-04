@@ -26,6 +26,7 @@ export default async function DashboardLayout({ children }: { children: React.Re
     <AppShell
       email={user.email ?? "Signed in"}
       workerOnline={health.state === "online" || health.state === "attention"}
+      timeZone={settings.timezone}
     >
       {children}
     </AppShell>

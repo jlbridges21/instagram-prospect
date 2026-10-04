@@ -4,6 +4,7 @@ import { PageHeader } from "@/components/layout/page-header";
 import { WorkerStatusPanel } from "@/components/worker/worker-status";
 import { DiscoveryControls } from "@/components/worker/discovery-controls";
 import { AutomationControls } from "@/components/outreach/automation-controls";
+import { DiagnosticsPanel } from "@/components/worker/diagnostics-panel";
 import { DiscoveryProgress } from "@/components/worker/discovery-progress";
 import { LiveProspectSync } from "@/components/prospects/live-sync";
 import { getDiscoveryToday, getDiscoveryV3Snapshot } from "@/lib/db/discovery";
@@ -78,6 +79,9 @@ export default async function WorkerPage() {
           attentionReason={worker?.attention_reason}
           timeZone={settings.timezone}
         />
+      </div>
+      <div className="mb-6">
+        <DiagnosticsPanel disabled={health.state !== "online" && health.state !== "attention"} />
       </div>
       <DiscoveryV2Status lastEvent={worker?.last_event} task={worker?.current_task} />
       <WorkerStatusPanel

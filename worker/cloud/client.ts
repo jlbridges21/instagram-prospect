@@ -20,6 +20,10 @@ export type CloudConfig = {
   dailyInspectionCap: number;
   dailyAiCap: number;
   discoveryStopReason: string | null;
+  discoveryRunMode: "review_target" | "duration" | "inspection_count" | "continuous";
+  discoveryRunMinutes: number | null;
+  discoveryRunInspectionLimit: number | null;
+  discoveryRunStartedAt: string | null;
 };
 
 export const CONFIG_CACHE_MS = 60_000;
@@ -64,7 +68,33 @@ export class CloudClient {
   ) {}
 
   async heartbeat(body: Record<string, unknown>) {
-    return this.request<{ ok: boolean }>("/api/worker/heartbeat", body);
+    return this.request<{ ok: boolean; next_command?: { commandId: string; type: string; payload: unknown } | null }>("/api/worker/heartbeat", body);
+  }
+
+  invalidateConfig() {
+    this.configCachedAt = null;
+  }
+
+  async claimCommand(workerId: string, commandId: string) {
+    return this.request<{ ok: boolean; type: string; payload: Record<string, unknown>; applied: boolean; error?: string }>(
+      "/api/worker/commands/claim",
+      { worker_id: workerId, command_id: commandId },
+    );
+  }
+
+  async finishCommand(workerId: string, commandId: string, ok: boolean, result?: Record<string, unknown>, errorMessage?: string) {
+    return this.request<{ ok: boolean }>("/api/worker/commands/complete", {
+      worker_id: workerId,
+      command_id: commandId,
+      ok,
+      result: result ?? {},
+      error_message: errorMessage,
+      error_code: ok ? undefined : "command_failed",
+    });
+  }
+
+  async finishDiscoveryRun() {
+    return this.request<{ ok: boolean }>("/api/worker/discovery/finish-run", {});
   }
 
   async config() {
@@ -97,6 +127,10 @@ export class CloudClient {
       dailyInspectionCap: numberOr(json.dailyInspectionCap, 500),
       dailyAiCap: numberOr(json.dailyAiCap, 300),
       discoveryStopReason: typeof json.discoveryStopReason === "string" ? json.discoveryStopReason : null,
+      discoveryRunMode: json.discoveryRunMode === "duration" || json.discoveryRunMode === "inspection_count" || json.discoveryRunMode === "continuous" ? json.discoveryRunMode : "review_target",
+      discoveryRunMinutes: typeof json.discoveryRunMinutes === "number" ? json.discoveryRunMinutes : null,
+      discoveryRunInspectionLimit: typeof json.discoveryRunInspectionLimit === "number" ? json.discoveryRunInspectionLimit : null,
+      discoveryRunStartedAt: typeof json.discoveryRunStartedAt === "string" ? json.discoveryRunStartedAt : null,
     } satisfies CloudConfig;
     this.configCache = value;
     this.configCachedAt = Date.now();

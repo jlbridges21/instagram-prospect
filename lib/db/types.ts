@@ -102,7 +102,41 @@ export type SettingsRow = {
   discovery_daily_ai_cap?: number;
   discovery_stop_reason?: string | null;
   discovery_auto_paused?: boolean;
+  discovery_run_mode?: "review_target" | "duration" | "inspection_count" | "continuous";
+  discovery_run_minutes?: number | null;
+  discovery_run_inspection_limit?: number | null;
+  discovery_run_started_at?: string | null;
   updated_at: string;
+};
+
+export type WorkerCommandRow = {
+  id: string;
+  worker_id: string | null;
+  command_type: string;
+  payload: Json;
+  status: string;
+  created_at: string;
+  claimed_at: string | null;
+  started_at: string | null;
+  completed_at: string | null;
+  failed_at: string | null;
+  expires_at: string | null;
+  result: Json | null;
+  error_code: string | null;
+  error_message: string | null;
+  requested_by: string | null;
+  created_by_source: string;
+  priority: number;
+  idempotency_key: string | null;
+};
+
+export type WorkerEventRow = {
+  id: string;
+  worker_id: string | null;
+  event_type: string;
+  message: string;
+  metadata: Json;
+  created_at: string;
 };
 
 export type DiscoverySuppressionRow = {
@@ -306,6 +340,18 @@ export type Database = {
         Row: DiscoveryDailyUsageRow;
         Insert: Insert<DiscoveryDailyUsageRow> & { usage_date: string };
         Update: Insert<DiscoveryDailyUsageRow>;
+        Relationships: [];
+      };
+      worker_commands: {
+        Row: WorkerCommandRow;
+        Insert: Insert<WorkerCommandRow> & { command_type: string };
+        Update: Insert<WorkerCommandRow>;
+        Relationships: [];
+      };
+      worker_events: {
+        Row: WorkerEventRow;
+        Insert: Insert<WorkerEventRow> & { event_type: string; message: string };
+        Update: Insert<WorkerEventRow>;
         Relationships: [];
       };
       targeting_settings: {

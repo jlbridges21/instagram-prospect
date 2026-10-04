@@ -19,6 +19,7 @@ import {
 import { logout } from "@/lib/actions/auth";
 import { NAV_ITEMS, isNavItemActive, type NavIcon } from "@/lib/constants/navigation";
 import { Logo } from "@/components/layout/logo";
+import { WorkerWidget } from "@/components/worker/worker-widget";
 import { cn } from "@/lib/utils/cn";
 
 const icons: Record<NavIcon, LucideIcon> = {
@@ -35,10 +36,12 @@ const icons: Record<NavIcon, LucideIcon> = {
 export function AppShell({
   email,
   workerOnline,
+  timeZone,
   children,
 }: {
   email: string;
   workerOnline: boolean;
+  timeZone: string;
   children: React.ReactNode;
 }) {
   const pathname = usePathname();
@@ -97,10 +100,11 @@ export function AppShell({
             </div>
           </div>
         ) : null}
-        <main id="main" className="mx-auto w-full max-w-[1200px] px-4 py-6 sm:px-6 lg:px-8 lg:py-8">
+        <main id="main" className="mx-auto w-full max-w-[1200px] px-4 py-6 pb-28 sm:px-6 lg:px-8 lg:py-8">
           {children}
         </main>
       </div>
+      <WorkerWidget timeZone={timeZone} />
     </div>
   );
 }

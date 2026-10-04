@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { isWorkerAuthorized, workerError, workerUnauthorized } from "@/lib/worker/auth";
+import { offerWorkerCommand } from "@/lib/worker/command-service";
 
 export const runtime = "nodejs";
 
@@ -102,8 +103,9 @@ export async function POST(request: Request) {
   }
 
   await touchSession(admin, parsed.data, requestedStatus, now).catch(() => undefined);
+  const nextCommand = await offerWorkerCommand(admin, parsed.data.worker_id).catch(() => null);
 
-  return Response.json({ ok: true });
+  return Response.json({ ok: true, next_command: nextCommand });
 }
 
 function compatibleHeartbeat<T extends { status: string; current_task: string | null }>(

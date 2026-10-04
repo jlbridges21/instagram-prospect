@@ -380,7 +380,7 @@ export function SettingsPanel({
             <Field label="Profile inspection concurrency" hint="Fixed at 2.">
               <TextInput value="2" readOnly />
             </Field>
-            <Field label="Maximum profiles per hour">
+            <Field label="Hourly profile inspection pace" hint="Controls profile inspection only. Does not control Follow or DM pacing. The window is a rolling 60 minutes.">
               <TextInput inputMode="numeric" value={maxHour} onChange={(event) => setMaxHour(event.target.value)} />
             </Field>
             <Field label="Maximum profiles per session">
