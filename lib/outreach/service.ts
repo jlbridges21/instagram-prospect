@@ -15,7 +15,7 @@ import {
   uncertainFollowResult,
 } from "@/lib/outreach/follow-confirm";
 import { claimBlockMessage, explainIdleQueue } from "@/lib/outreach/idle-reason";
-import { nextPrepInstant, nextSendInstant } from "@/lib/outreach/scheduler";
+import { claimPaceDecision, formatEligibleIn, nextProspectSlot, paceReasonLabel, reflowPlan, type PaceJob } from "@/lib/outreach/pace";
 import { automationChange, requeueDecision } from "@/lib/outreach/requeue";
 import {
   clipError,
@@ -41,8 +41,6 @@ const queueResultSchema = z.object({
   reason: z.string().optional(),
 });
 
-const OPEN_SEND_STATUSES = ["pending", "retry_wait", "claimed", "running", "completed"] as const;
-
 export function migrationRequiredMessage() {
   return "Outreach queue is not available yet. Run the Prompt 4 database migration.";
 }
@@ -55,13 +53,27 @@ function dbFailure(error: { code?: string; message?: string }) {
 export async function loadSendOccupancy(supabase: Client) {
   const { data, error } = await supabase
     .from("outreach_jobs")
-    .select("scheduled_for, completed_at, status")
+    .select("completed_at")
     .eq("job_type", "send_message")
-    .in("status", [...OPEN_SEND_STATUSES]);
+    .eq("status", "completed")
+    .not("completed_at", "is", null);
 
   if (error) return { ok: false as const, error: dbFailure(error) };
-  const occupied = (data ?? []).map((row) => new Date(row.completed_at ?? row.scheduled_for));
+  const occupied = (data ?? [])
+    .map((row) => (row.completed_at ? new Date(row.completed_at) : null))
+    .filter((value): value is Date => value !== null);
   return { ok: true as const, occupied };
+}
+
+function prospectSlot(now: Date, settings: AppSettings, completedSendTimes: Date[]) {
+  return nextProspectSlot({
+    now,
+    timeZone: settings.timezone,
+    minimumSpacingSeconds: settings.outreach.minimumActionDelaySeconds,
+    hourlyMaximum: settings.outreach.hourlyMaximum,
+    dailyMaximum: settings.outreach.dailyMaximum,
+    completedSendTimes,
+  });
 }
 
 export async function queueProspect(input: {
@@ -85,26 +97,15 @@ export async function queueProspect(input: {
   }).trim();
   if (!message) return { ok: false as const, error: "The outreach message is empty." };
 
-  const prep = nextPrepInstant({
-    now,
-    timeZone: input.settings.timezone,
-    settings: input.settings.outreach,
-    seed: `${input.prospect.id}:prep`,
-  });
-  const sendAt = nextSendInstant({
-    now: prep.getTime() > now.getTime() ? prep : now,
-    timeZone: input.settings.timezone,
-    settings: input.settings.outreach,
-    occupied: input.occupied,
-    seed: `${input.prospect.id}:send`,
-  });
+  const slot = prospectSlot(now, input.settings, input.occupied);
+  const when = slot.at.toISOString();
 
   const queued = await input.supabase.rpc("queue_outreach_sequence", {
     p_prospect_id: input.prospect.id,
     p_message: message,
-    p_verify_at: prep.toISOString(),
-    p_follow_at: prep.toISOString(),
-    p_send_at: sendAt.toISOString(),
+    p_verify_at: when,
+    p_follow_at: when,
+    p_send_at: when,
   });
 
   if (queued.error) return { ok: false as const, error: dbFailure(queued.error) };
@@ -119,12 +120,12 @@ export async function queueProspect(input: {
     };
   }
 
-  input.occupied.push(sendAt);
+  input.occupied.push(slot.at);
   await logActivity(input.supabase, {
     prospectId: input.prospect.id,
     eventType: "outreach_queued",
     description: `Queued outreach for @${input.prospect.instagram_username}.`,
-    metadata: { actor: input.actor, scheduledFor: sendAt.toISOString() },
+    metadata: { actor: input.actor, scheduledFor: when },
   });
 
   return { ok: true as const, created: true, skipped: null };
@@ -166,26 +167,15 @@ export async function requeueProspect(input: {
   if (!message) return { ok: false as const, error: "The outreach message is empty." };
 
   const now = input.now ?? new Date();
-  const prep = nextPrepInstant({
-    now,
-    timeZone: input.settings.timezone,
-    settings: input.settings.outreach,
-    seed: `${input.prospect.id}:requeue:${decision.version}:prep`,
-  });
-  const sendAt = nextSendInstant({
-    now: prep.getTime() > now.getTime() ? prep : now,
-    timeZone: input.settings.timezone,
-    settings: input.settings.outreach,
-    occupied: input.occupied,
-    seed: `${input.prospect.id}:requeue:${decision.version}:send`,
-  });
+  const slot = prospectSlot(now, input.settings, input.occupied);
+  const when = slot.at.toISOString();
 
   const queued = await input.supabase.rpc("requeue_outreach_sequence", {
     p_prospect_id: input.prospect.id,
     p_message: message,
-    p_verify_at: prep.toISOString(),
-    p_follow_at: prep.toISOString(),
-    p_send_at: sendAt.toISOString(),
+    p_verify_at: when,
+    p_follow_at: when,
+    p_send_at: when,
   });
   if (queued.error) {
     if (isMissingRelation(queued.error)) {
@@ -203,12 +193,12 @@ export async function requeueProspect(input: {
     return { ok: true as const, created: false, skipped: reason };
   }
 
-  input.occupied.push(sendAt);
+  input.occupied.push(slot.at);
   await logActivity(input.supabase, {
     prospectId: input.prospect.id,
     eventType: "outreach_requeued",
     description: "Outreach was requeued.",
-    metadata: { actor: input.actor, scheduledFor: sendAt.toISOString(), version: decision.version },
+    metadata: { actor: input.actor, scheduledFor: when, version: decision.version },
   });
   return { ok: true as const, created: true, skipped: null };
 }
@@ -312,11 +302,16 @@ export async function claimNextJob(input: {
     };
   }
 
+  const paced = await paceBeforeClaim(input.admin, input.settings, now, input.prospectId);
+  if (paced.action === "wait") {
+    return { ok: true as const, job: null, reason: paced.reason, message: paced.message, nextAt: paced.nextAt };
+  }
+
   const claimed = await input.admin.rpc("claim_next_outreach_job", {
     p_worker_id: input.workerId,
     p_lease_seconds: input.settings.outreach.claimLeaseSeconds,
     p_now: now.toISOString(),
-    p_prospect_id: input.prospectId ?? null,
+    p_prospect_id: paced.prospectId ?? input.prospectId ?? null,
   });
   if (claimed.error) return { ok: false as const, error: "Could not claim the next job." };
   if (!claimed.data || typeof claimed.data !== "object" || Array.isArray(claimed.data)) {
@@ -364,6 +359,148 @@ export async function claimNextJob(input: {
         : await followContext(input.admin, prospectId, claimed.data.result, typeof claimed.data.started_at === "string" ? claimed.data.started_at : null),
     ),
   };
+}
+
+async function paceBeforeClaim(
+  admin: Client,
+  settings: AppSettings,
+  now: Date,
+  prospectId?: string | null,
+) {
+  const loaded = await loadPaceJobs(admin, prospectId);
+  if (!loaded.ok) return { action: "claim" as const, prospectId: prospectId ?? null };
+  const decision = claimPaceDecision({
+    now,
+    timeZone: settings.timezone,
+    minimumSpacingSeconds: settings.outreach.minimumActionDelaySeconds,
+    hourlyMaximum: settings.outreach.hourlyMaximum,
+    dailyMaximum: settings.outreach.dailyMaximum,
+    completedSendTimes: loaded.completedSendTimes,
+    jobs: loaded.jobs,
+  });
+  if (decision.action === "idle") return { action: "claim" as const, prospectId: prospectId ?? null };
+  if (decision.action === "wait" && decision.at) {
+    if (decision.reason !== "scheduled_retry" && decision.prospectId) {
+      await schedulePendingProspect(admin, decision.prospectId, decision.at);
+    }
+    const when = formatOutreachWhen(decision.at.toISOString(), settings.timezone);
+    return {
+      action: "wait" as const,
+      reason: decision.reason,
+      nextAt: decision.at.toISOString(),
+      message: `${paceReasonLabel(decision.reason)}. Next time: ${when}. Eligible in ${formatEligibleIn(decision.at, now)}.`,
+    };
+  }
+  if (decision.action === "claim" && decision.prospectId && decision.reason === "ready") {
+    await schedulePendingProspect(admin, decision.prospectId, now);
+  }
+  return { action: "claim" as const, prospectId: decision.prospectId };
+}
+
+async function schedulePendingProspect(admin: Client, prospectId: string, at: Date) {
+  const current = await admin
+    .from("outreach_jobs")
+    .select("id, status, started_at, result, last_error, scheduled_for")
+    .eq("prospect_id", prospectId);
+  if (current.error || !current.data) return;
+  const open = current.data.filter((job) => job.status !== "completed" && job.status !== "cancelled");
+  const unsafe = open.length === 0 || open.some((job) => job.status !== "pending" || job.started_at || jobIsUncertainRow(job));
+  if (unsafe) return;
+  const iso = at.toISOString();
+  const unchanged = open.every((job) => Math.abs(new Date(job.scheduled_for).getTime() - at.getTime()) < 1000);
+  if (unchanged) return;
+  await admin
+    .from("outreach_jobs")
+    .update({ scheduled_for: iso, available_at: iso })
+    .eq("prospect_id", prospectId)
+    .eq("status", "pending");
+}
+
+function jobIsUncertainRow(job: { status: string; result: unknown; last_error: string | null }) {
+  return job.status !== "pending" || /uncertain/i.test(job.last_error ?? "") || resultUncertain(job.result);
+}
+
+function resultUncertain(result: unknown) {
+  if (!result || typeof result !== "object" || Array.isArray(result)) return false;
+  const record = result as { confirmation?: string; error_code?: string; sendAttempted?: boolean };
+  return (
+    record.confirmation === "uncertain" ||
+    record.error_code === "follow_confirmation_uncertain" ||
+    record.error_code === "send_confirmation_uncertain" ||
+    record.sendAttempted === true
+  );
+}
+
+export async function recalculateQueuedOutreach(supabase: Client, settings: AppSettings, actor: string, now = new Date()) {
+  const loaded = await loadPaceJobs(supabase, null);
+  if (!loaded.ok) return { ok: false as const, error: loaded.error };
+  const plan = reflowPlan({
+    now,
+    timeZone: settings.timezone,
+    minimumSpacingSeconds: settings.outreach.minimumActionDelaySeconds,
+    hourlyMaximum: settings.outreach.hourlyMaximum,
+    dailyMaximum: settings.outreach.dailyMaximum,
+    completedSendTimes: loaded.completedSendTimes,
+    jobs: loaded.jobs,
+  });
+  const byProspect = new Map<string, string>();
+  for (const update of plan.updates) byProspect.set(update.prospectId, update.scheduledFor);
+  for (const [prospectId, scheduledFor] of byProspect) {
+    const current = await supabase
+      .from("outreach_jobs")
+      .select("id, status, started_at, result, last_error")
+      .eq("prospect_id", prospectId);
+    if (current.error || !current.data) continue;
+    const open = current.data.filter((job) => job.status !== "completed" && job.status !== "cancelled");
+    if (open.length === 0 || open.some((job) => job.status !== "pending" || job.started_at || jobIsUncertainRow(job))) continue;
+    await supabase
+      .from("outreach_jobs")
+      .update({ scheduled_for: scheduledFor, available_at: scheduledFor })
+      .eq("prospect_id", prospectId)
+      .eq("status", "pending");
+  }
+  await logActivity(supabase, {
+    eventType: "outreach_queued",
+    description: `Recomputed timing for ${byProspect.size} queued prospect${byProspect.size === 1 ? "" : "s"}.`,
+    metadata: { actor, prospects: byProspect.size },
+  });
+  return { ok: true as const, prospects: byProspect.size };
+}
+
+async function loadPaceJobs(admin: Client, prospectId?: string | null) {
+  let pendingQuery = admin
+    .from("outreach_jobs")
+    .select("id, prospect_id, job_type, status, scheduled_for, available_at, started_at, completed_at, created_at, result, last_error, depends_on_job_id")
+    .in("status", ["pending", "retry_wait", "claimed", "running", "completed", "failed"]);
+  if (prospectId) pendingQuery = pendingQuery.eq("prospect_id", prospectId);
+  const [pending, sends] = await Promise.all([
+    pendingQuery.limit(500),
+    admin.from("outreach_jobs").select("completed_at").eq("job_type", "send_message").eq("status", "completed").not("completed_at", "is", null).limit(500),
+  ]);
+  if (pending.error) return { ok: false as const, error: dbFailure(pending.error) };
+  const prospectIds = [...new Set((pending.data ?? []).map((job) => job.prospect_id))];
+  const people = prospectIds.length
+    ? await admin.from("prospects").select("id, instagram_username").in("id", prospectIds)
+    : { data: [] as { id: string; instagram_username: string }[] };
+  const usernameById = new Map((people.data ?? []).map((person) => [person.id, person.instagram_username]));
+  const jobs: PaceJob[] = (pending.data ?? []).map((job) => ({
+    id: job.id,
+    prospectId: job.prospect_id,
+    username: usernameById.get(job.prospect_id) ?? null,
+    jobType: job.job_type,
+    status: job.status,
+    scheduledFor: job.scheduled_for,
+    availableAt: job.available_at,
+    startedAt: job.started_at,
+    completedAt: job.completed_at,
+    createdAt: job.created_at,
+    result: job.result,
+    lastError: job.last_error,
+  }));
+  const completedSendTimes = (sends.data ?? [])
+    .map((job) => (job.completed_at ? new Date(job.completed_at) : null))
+    .filter((value): value is Date => value !== null);
+  return { ok: true as const, jobs, completedSendTimes };
 }
 
 async function explainWhyNoJob(admin: Client, settings: AppSettings, now: Date, prospectId?: string | null) {

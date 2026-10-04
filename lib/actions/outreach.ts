@@ -4,6 +4,7 @@ import { revalidatePath } from "next/cache";
 import type { ActionResult } from "@/lib/actions/prospects";
 import {
   cancelProspectOutreach,
+  recalculateQueuedOutreach,
   rescheduleJob,
   retryFailedJob,
   setAutomation,
@@ -109,12 +110,8 @@ export async function saveOutreachSettings(input: {
   if (!Number.isInteger(input.hourlyMinimum) || input.hourlyMinimum < 1 || input.hourlyMinimum > 100) {
     return { ok: false, error: "Hourly minimum must be a whole number from 1 to 100." };
   }
-  if (
-    !Number.isInteger(input.hourlyMaximum) ||
-    input.hourlyMaximum < input.hourlyMinimum ||
-    input.hourlyMaximum > 100
-  ) {
-    return { ok: false, error: "Hourly maximum must be at least the minimum, and no more than 100." };
+  if (!Number.isInteger(input.hourlyMaximum) || input.hourlyMaximum < 1 || input.hourlyMaximum > 100) {
+    return { ok: false, error: "Completed outreaches per hour must be a whole number from 1 to 100." };
   }
   if (!Number.isInteger(input.dailyMaximum) || input.dailyMaximum < 1 || input.dailyMaximum > 5000) {
     return { ok: false, error: "Daily maximum must be a whole number from 1 to 5000." };
@@ -157,4 +154,17 @@ export async function saveOutreachSettings(input: {
   if (error) return { ok: false, error: error.message };
   revalidateOutreach();
   return { ok: true };
+}
+
+export async function recalculateOutreachSchedule(): Promise<ActionResult> {
+  const { supabase, user } = await requireUser();
+  const settingsResult = await getSettings();
+  const settings = settingsResult.ok ? settingsResult.data : fallbackSettings();
+  const result = await recalculateQueuedOutreach(supabase, settings, user.email ?? "authenticated user");
+  if (!result.ok) return result;
+  revalidateOutreach();
+  return {
+    ok: true,
+    message: `Recomputed timing for ${result.prospects} queued prospect${result.prospects === 1 ? "" : "s"}.`,
+  };
 }
