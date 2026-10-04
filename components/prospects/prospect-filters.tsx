@@ -37,8 +37,8 @@ export function ProspectFilters({
             title={view.help}
             className={
               query.view === view.id
-                ? "rounded-full bg-indigo-600 px-3 py-1 text-sm font-medium whitespace-nowrap text-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600"
-                : "rounded-full bg-white px-3 py-1 text-sm font-medium whitespace-nowrap text-slate-600 ring-1 ring-slate-200 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600"
+                ? "rounded-lg bg-indigo-50 px-3 py-1.5 text-sm font-medium whitespace-nowrap text-indigo-700 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600"
+                : "rounded-lg px-3 py-1.5 text-sm font-medium whitespace-nowrap text-slate-600 hover:bg-slate-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600"
             }
           >
             {view.label}
@@ -47,7 +47,7 @@ export function ProspectFilters({
         ))}
         <Link
           href={`/prospects${prospectSearchString({ ...query, view: "all", page: 1 })}`}
-          className={query.view === "all" ? "rounded-full bg-slate-900 px-3 py-1 text-sm font-medium text-white" : "rounded-full bg-white px-3 py-1 text-sm font-medium text-slate-600 ring-1 ring-slate-200"}
+          className={query.view === "all" ? "rounded-lg bg-indigo-50 px-3 py-1.5 text-sm font-medium whitespace-nowrap text-indigo-700" : "rounded-lg px-3 py-1.5 text-sm font-medium whitespace-nowrap text-slate-600 hover:bg-slate-50"}
         >
           All
         </Link>

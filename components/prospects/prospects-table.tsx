@@ -644,7 +644,7 @@ function ColumnCell({
   }
   if (column === "following") return <FollowingBadge value={row.following} />;
   if (column === "fit") {
-    const label = row.fitLabel ? FIT_LABELS_TEXT[row.fitLabel] : "Unscored";
+    const label = row.fitLabel ? FIT_LABELS_TEXT[row.fitLabel] : "Not analyzed";
     return (
       <span title={`${row.fitScore ?? "—"} ${label}`} className="flex min-w-0 items-center gap-2 overflow-hidden">
         <span className="shrink-0 tabular-nums font-medium text-slate-900">{row.fitScore ?? "—"}</span>
@@ -748,13 +748,14 @@ function RowActions({
 }
 
 function FollowingBadge({ value }: { value: ProspectTableRow["following"] }) {
+  const label = { Yes: "Following", No: "Not following", Requested: "Requested", Unknown: "Unknown" }[value];
   const tone = {
-    Yes: "bg-slate-100 text-slate-700 ring-slate-200",
-    No: "bg-indigo-50 text-indigo-700 ring-indigo-200",
+    Yes: "bg-green-50 text-green-800 ring-green-200",
+    No: "bg-blue-50 text-blue-700 ring-blue-200",
     Requested: "bg-amber-50 text-amber-800 ring-amber-200",
     Unknown: "bg-slate-50 text-slate-500 ring-slate-200",
   }[value];
-  return <span className={cn("inline-flex rounded-md px-1.5 py-0.5 text-xs font-medium ring-1 ring-inset", tone)}>{value}</span>;
+  return <span className={cn("inline-flex rounded-md px-1.5 py-0.5 text-xs font-medium ring-1 ring-inset", tone)}>{label}</span>;
 }
 
 function Meta({ label, value }: { label: string; value: string }) {

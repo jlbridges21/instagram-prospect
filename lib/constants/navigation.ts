@@ -1,9 +1,9 @@
 export const NAV_ITEMS = [
-  { href: "/", label: "Overview", icon: "overview" },
-  { href: "/prospects", label: "Prospects", icon: "prospects" },
+  { href: "/", label: "Home", icon: "overview" },
   { href: "/discovery", label: "Discovery", icon: "discovery" },
+  { href: "/prospects", label: "Prospects", icon: "prospects" },
   { href: "/review", label: "Review Queue", icon: "review" },
-  { href: "/outreach", label: "Outreach Queue", icon: "outreach" },
+  { href: "/outreach", label: "Outreach", icon: "outreach" },
   { href: "/follow-ups", label: "Follow-Ups", icon: "followups" },
   { href: "/analytics", label: "Analytics", icon: "analytics" },
   { href: "/worker", label: "Worker", icon: "worker" },

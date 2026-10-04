@@ -13,7 +13,7 @@ import { getWorkerHealth } from "@/lib/utils/worker-health";
 import { formatResumeClock } from "@/lib/discovery/pacing";
 import { claimPaceDecision, formatEligibleIn, paceReasonLabel, reflowPlan, type PaceJob } from "@/lib/outreach/pace";
 
-export const metadata: Metadata = { title: "Outreach Queue" };
+export const metadata: Metadata = { title: "Outreach" };
 
 export default async function OutreachPage() {
   const settingsResult = await getSettings();
@@ -80,8 +80,8 @@ export default async function OutreachPage() {
   return (
     <div>
       <PageHeader
-        title="Outreach Queue"
-        description="Outreach can run at any time while enabled. Pacing and daily/hourly limits still apply. Approving a prospect does not send a message."
+        title="Outreach"
+        description="Process approved prospects through verification, Follow, and DM. Pacing and daily limits still apply."
         action={
           <div className="flex flex-wrap items-center gap-2">
             <RecalculateScheduleButton />
@@ -121,6 +121,16 @@ export default async function OutreachPage() {
           waiting: pace.action === "wait" && pace.at ? { reason: paceReasonLabel(pace.reason), eligibleIn: formatEligibleIn(pace.at, now) } : null,
         })}</p>
         <p className="mt-3 text-xs text-slate-500">Pause stops new claims and keeps the queue. Stop ends this run the same way and does not cancel pending outreach. Cancel Pending Outreach stays a separate confirmed action in the control above.</p>
+      </section>
+      <section className="mb-4 rounded-xl border border-slate-200 bg-white p-4 text-sm">
+        <h2 className="font-semibold text-slate-900">Pacing</h2>
+        <p className="mt-1 text-xs text-slate-500">Approximate, based on saved settings and completed sends. Discovery can use the gaps between these sends.</p>
+        <dl className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-4">
+          <Stat label="Minimum spacing" value={`${settings.outreach.minimumActionDelaySeconds} seconds`} />
+          <Stat label="Completed sends per hour" value={String(settings.outreach.hourlyMaximum)} />
+          <Stat label="Daily maximum" value={String(settings.outreach.dailyMaximum)} />
+          <Stat label="Next eligible" value={pace.at ? formatDateTime(pace.at.toISOString(), settings.timezone, settings.dateFormat) : "Now or none queued"} />
+        </dl>
       </section>
       {snapshot ? (
         <dl className="mb-4 grid grid-cols-2 gap-3 sm:grid-cols-4">

@@ -39,11 +39,13 @@ export function AppShell({
   email,
   workerOnline,
   timeZone,
+  reviewCount = 0,
   children,
 }: {
   email: string;
   workerOnline: boolean;
   timeZone: string;
+  reviewCount?: number;
   children: React.ReactNode;
 }) {
   const pathname = usePathname();
@@ -67,22 +69,34 @@ export function AppShell({
       >
         Skip to content
       </a>
-      <aside className="fixed inset-y-0 left-0 z-30 hidden w-64 flex-col border-r border-slate-200 bg-white lg:flex">
-        <SidebarContent email={email} pathname={pathname} workerOnline={workerOnline} />
+      <aside className="fixed inset-y-0 left-0 z-30 hidden w-60 flex-col border-r border-slate-200 bg-white lg:flex">
+        <SidebarContent email={email} pathname={pathname} workerOnline={workerOnline} reviewCount={reviewCount} />
       </aside>
 
-      <div className="lg:pl-64">
-        <header className="sticky top-0 z-20 flex h-14 items-center justify-between border-b border-slate-200 bg-white px-4 lg:hidden">
-          <Logo compact />
-          <button
+      <div className="lg:pl-60">
+        <header className="sticky top-0 z-20 flex h-14 items-center justify-between border-b border-slate-200 bg-white px-4">
+          <div className="flex items-center gap-2 lg:hidden">
+            <Logo compact />
+          </div>
+          <p className="hidden text-sm font-medium text-slate-500 lg:block">ShootPortal Outreach</p>
+          <div className="flex items-center gap-2">
+            <Link
+              href="/worker"
+              className="inline-flex items-center gap-2 rounded-lg px-2 py-1 text-sm font-medium text-slate-700 hover:bg-slate-50"
+            >
+              <span className={cn("h-2 w-2 rounded-full", workerOnline ? "bg-green-600" : "bg-slate-300")} aria-hidden />
+              {workerOnline ? "Worker Connected" : "Worker Offline"}
+            </Link>
+            <button
             type="button"
-            className="inline-flex h-9 w-9 items-center justify-center rounded-lg text-slate-700 hover:bg-slate-100"
+            className="inline-flex h-9 w-9 items-center justify-center rounded-lg text-slate-700 hover:bg-slate-100 lg:hidden"
             aria-label={open ? "Close navigation" : "Open navigation"}
             aria-expanded={open}
             onClick={() => setOpenPath(open ? null : pathname)}
           >
             {open ? <X className="h-5 w-5" /> : <Menu className="h-5 w-5" />}
           </button>
+          </div>
         </header>
         {open ? (
           <div className="fixed inset-0 z-40 lg:hidden">
@@ -97,12 +111,13 @@ export function AppShell({
                 email={email}
                 pathname={pathname}
                 workerOnline={workerOnline}
+                reviewCount={reviewCount}
                 onNavigate={() => setOpenPath(null)}
               />
             </div>
           </div>
         ) : null}
-        <main id="main" className="mx-auto w-full max-w-[1200px] px-4 py-6 pb-28 sm:px-6 lg:px-8 lg:py-8">
+        <main id="main" className="mx-auto w-full max-w-[1200px] px-4 py-6 pb-36 sm:px-6 lg:px-8">
           {children}
         </main>
       </div>
@@ -115,11 +130,13 @@ function SidebarContent({
   email,
   pathname,
   workerOnline,
+  reviewCount,
   onNavigate,
 }: {
   email: string;
   pathname: string;
   workerOnline: boolean;
+  reviewCount: number;
   onNavigate?: () => void;
 }) {
   return (
@@ -146,7 +163,10 @@ function SidebarContent({
               )}
             >
               <Icon className="h-4 w-4" aria-hidden />
-              {item.label}
+              <span className="flex-1">{item.label}</span>
+              {item.href === "/review" && reviewCount > 0 ? (
+                <span className="rounded-md bg-indigo-50 px-1.5 py-0.5 text-xs font-semibold tabular-nums text-indigo-700">{reviewCount}</span>
+              ) : null}
             </Link>
           );
         })}

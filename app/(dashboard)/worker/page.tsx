@@ -43,7 +43,7 @@ export default async function WorkerPage() {
     <div>
       <PageHeader
         title="Worker"
-        description="The browser worker runs on your Mac or Windows machine. It does not run on Vercel."
+        description="Technical control center for the local browser worker. Commands are the same ones the dashboard already sends."
         action={
           <div className="flex flex-wrap items-center gap-3">
             <DiscoveryControls enabled={settings.discovery.enabled} />

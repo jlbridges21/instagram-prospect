@@ -69,7 +69,9 @@ export function StartDiscoveryButton({ disabled, reviewCount }: { disabled?: boo
               Hourly profile inspection pace
               <input aria-label="Hourly inspection pace" className="mt-1 w-24 rounded-lg border border-slate-200 px-2 py-1 text-sm" value={hourly} onChange={(event) => setHourly(event.target.value)} />
             </label>
-            <p className="mt-2 text-xs text-slate-500">Suggested Accounts and Home Feed stay on. This pace controls inspections only, not Follow or DM pacing.</p>
+            <p className="mt-2 text-xs text-slate-500">Fit rule: Possible Fit and Strong Fit. Thresholds stay in Settings.</p>
+            <p className="mt-1 text-xs text-slate-500">Suggested Accounts and Home Feed use the saved source settings. This pace controls inspections only, not Follow or DM pacing.</p>
+            <p className="mt-2 text-xs text-slate-700">This run inspects profiles until Review reaches the target you choose. Outreach stays unchanged.</p>
             {mode === "review_target" ? <p className="mt-1 text-xs text-slate-600">Discovery will look for approximately {remaining} more qualified prospects.</p> : null}
             <div className="mt-4 flex justify-end gap-2">
               <button type="button" className="rounded-lg px-3 py-2" onClick={() => setOpen(false)}>Cancel</button>

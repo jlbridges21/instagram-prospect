@@ -46,6 +46,6 @@ export function StatusBadge({ status }: { status: ProspectStatus }) {
 }
 
 export function FitBadge({ label }: { label: FitLabel | null }) {
-  if (!label) return <Badge className="bg-slate-50 text-slate-500 ring-slate-200">Unscored</Badge>;
+  if (!label) return <Badge className="bg-slate-50 text-slate-500 ring-slate-200">Not analyzed</Badge>;
   return <Badge className={fitClasses[label]}>{FIT_LABELS_TEXT[label]}</Badge>;
 }

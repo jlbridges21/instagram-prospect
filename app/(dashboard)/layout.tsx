@@ -1,5 +1,6 @@
 import { redirect } from "next/navigation";
 import { AppShell } from "@/components/layout/app-shell";
+import { getDiscoveryV3Snapshot } from "@/lib/db/discovery";
 import { fallbackSettings, getSettings } from "@/lib/db/settings";
 import { getLatestWorker } from "@/lib/db/workers";
 import { requireUser } from "@/lib/supabase/auth";
@@ -14,6 +15,7 @@ export default async function DashboardLayout({ children }: { children: React.Re
   const [settingsResult, workerResult] = await Promise.all([getSettings(), getLatestWorker()]);
   const settings = settingsResult.ok ? settingsResult.data : fallbackSettings();
   const worker = workerResult.ok ? workerResult.data : null;
+  const progress = await getDiscoveryV3Snapshot(settings.timezone);
   const health = getWorkerHealth({
     status: worker?.status ?? null,
     lastHeartbeatAt: worker?.last_heartbeat_at ?? null,
@@ -27,6 +29,7 @@ export default async function DashboardLayout({ children }: { children: React.Re
       email={user.email ?? "Signed in"}
       workerOnline={health.state === "online" || health.state === "attention"}
       timeZone={settings.timezone}
+      reviewCount={progress.currentReview}
     >
       {children}
     </AppShell>

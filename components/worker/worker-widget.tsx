@@ -16,7 +16,6 @@ import {
   recommendedDiagnostic,
   statusDotClass,
   versionGate,
-  widgetHeadline,
 } from "@/lib/status/operations";
 import { StartDiscoveryButton } from "@/components/worker/start-discovery-button";
 import { StartOutreachButton } from "@/components/worker/start-outreach-button";
@@ -140,7 +139,6 @@ export function WorkerWidget({ timeZone }: { timeZone: string }) {
     stateSync: isStateSyncFailure(status?.attentionReason) ? { username: status?.username } : null,
   });
   const action = formatCurrentAction(status?.currentAction, status?.username);
-  const headline = widgetHeadline({ online: Boolean(status?.online), attention, action, discoveryActual: discovery.actual });
   const recommendation = recommendedDiagnostic(status?.command?.error_code || status?.command?.error_message);
   const zone = timeZone || "UTC";
 
@@ -166,7 +164,7 @@ export function WorkerWidget({ timeZone }: { timeZone: string }) {
   return (
     <>
       {attention || versions.mismatch ? (
-        <div className="fixed inset-x-0 top-14 z-30 border-b border-red-200 bg-red-50 px-4 py-2 text-sm text-red-900 lg:left-64" role="status">
+        <div className="fixed inset-x-0 top-14 z-30 border-b border-red-200 bg-red-50 px-4 py-2 text-sm text-red-900 lg:left-60" role="status">
           <p className="font-semibold">{versions.mismatch ? "Worker update required" : "Instagram needs attention"}</p>
           <p>{versions.mismatch ? versions.message : discovery.reason}</p>
           <p>{versions.mismatch ? "Worker actions stay disabled until the Windows worker is updated." : discovery.detail}</p>
@@ -182,7 +180,7 @@ export function WorkerWidget({ timeZone }: { timeZone: string }) {
             <p className="mt-1 text-slate-800">{status?.online ? "Connected" : "OFFLINE"}</p>
             <p className="text-xs text-slate-600">Browser {status?.browser?.state === "closed" ? "CLOSED" : status?.browser?.state === "failed" ? "FAILED" : status?.browser?.state === "restarting" ? "RESTARTING" : "Connected"}</p>
             <p className="mt-1 text-xs text-slate-500">{status?.machineName ?? "Windows worker"} · {heartbeatLabel(status?.lastHeartbeatAt ?? null)}</p>
-            {!status?.online ? <p className="mt-2 text-xs text-slate-600">Start the Windows worker to use this action.</p> : null}
+            {!status?.online ? <p className="mt-2 text-xs text-slate-600">Start the Windows worker with npm run agent.</p> : null}
             <div className="mt-3 grid grid-cols-2 gap-3 text-xs">
               <div>
                 <p className="text-slate-500">Discovery</p>
@@ -242,9 +240,14 @@ export function WorkerWidget({ timeZone }: { timeZone: string }) {
             </div>
           </div>
         ) : (
-          <button type="button" className="flex max-w-full items-center gap-2 rounded-full border border-slate-200 bg-white px-3 py-2 text-left text-sm shadow-lg focus-visible:outline focus-visible:outline-2 focus-visible:outline-indigo-600" onClick={() => collapse(true)} aria-expanded={open}>
-            <span className={`h-2.5 w-2.5 shrink-0 rounded-full ${statusDotClass(status?.online ? (attention ? "blocked" : discovery.tone) : "offline")}`} aria-hidden />
-            <span className="truncate">{status ? headline : "Worker"}</span>
+          <button type="button" className="w-full rounded-xl border border-slate-200 bg-white p-3 text-left text-sm shadow-sm focus-visible:outline focus-visible:outline-2 focus-visible:outline-indigo-600" onClick={() => collapse(true)} aria-expanded={open}>
+            <span className="flex items-center gap-2 font-medium text-slate-900">
+              <span className={`h-2 w-2 rounded-full ${statusDotClass(status?.online ? (attention ? "blocked" : "running") : "offline")}`} aria-hidden />
+              {status?.online ? "Worker Connected" : "Worker Offline"}
+            </span>
+            <span className="mt-2 block text-xs text-slate-600">Discovery: {discovery.actual}</span>
+            <span className="block text-xs text-slate-600">Outreach: {outreach.actual}</span>
+            <span className="mt-1 block truncate text-xs text-slate-800">{action}</span>
           </button>
         )}
       </section>

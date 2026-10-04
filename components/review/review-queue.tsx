@@ -60,11 +60,14 @@ export function ReviewQueue({
               : "Qualified prospects waiting for a decision will appear here. Approving or skipping updates their status. Nothing is sent to Instagram."
           }
           action={
-            analyzedToday > 0 ? (
-              <p className="text-sm text-slate-600">
-                Analyzed today: {analyzedToday} · Qualified: 0 · Excluded: {excludedToday}
-              </p>
-            ) : null
+            <div className="space-y-2">
+              {analyzedToday > 0 ? (
+                <p className="text-sm text-slate-600">
+                  Analyzed today: {analyzedToday} · Excluded: {excludedToday}
+                </p>
+              ) : null}
+              <Link href="/discovery" className="text-sm font-medium text-indigo-700">View Discovery progress</Link>
+            </div>
           }
         />
       </div>

@@ -24,8 +24,8 @@ export default async function ReviewPage() {
   return (
     <div>
       <PageHeader
-        title="Review queue"
-        description="Decide who is approved. Approving and skipping update the database. Messages are not sent."
+        title="Review Queue"
+        description="Qualified prospects waiting for your decision. Approving or skipping updates the database. Messages are not sent."
       />
       {!queueResult.ok && queueResult.missingTable ? <DatabaseSetup message={queueResult.error} /> : null}
       {!queueResult.ok && !queueResult.missingTable ? (
