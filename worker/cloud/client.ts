@@ -219,7 +219,10 @@ export class CloudClient {
       fitScore?: number;
       category?: string | null;
       skipped?: boolean;
+      cached?: boolean;
       prospectId?: string;
+      username?: string;
+      seedCredit?: { username: string; inspected: number; review: number } | null;
     }>(`/api/worker/prospects/${prospectId}/qualify`, {});
   }
 

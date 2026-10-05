@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState, useTransition } from "react";
+import { useEffect, useMemo, useState, useTransition } from "react";
 import {
   deleteSeeds,
   promoteExistingQualified,
@@ -12,6 +12,7 @@ import {
 } from "@/lib/actions/seeds";
 import { DEFAULT_DISCOVERY_TUNING, DEFAULT_POSITIVE_KEYWORDS, explorationPercent, homeFeedPercent, seedSharePercent, type DiscoveryTuning } from "@/lib/discovery/defaults";
 import { approvalYield, reviewYield } from "@/lib/discovery/seeds";
+import { livePollDelay } from "@/lib/discovery/policy";
 import type { DiscoveryOptimization } from "@/lib/db/models";
 import type { DiscoverySeedRow } from "@/lib/db/types";
 
@@ -34,9 +35,50 @@ export function DiscoverySeedsPanel({
   const [positive, setPositive] = useState(optimization.positiveKeywords.join("\n"));
   const [negative, setNegative] = useState(optimization.negativeKeywords.join("\n"));
   const [form, setForm] = useState(optimization);
+  const [counts, setCounts] = useState<Record<string, { inspected: number; review: number; approved: number; contacted: number }>>({});
+
+  useEffect(() => {
+    let stopped = false;
+    let timer = 0;
+    async function tick() {
+      if (stopped) return;
+      const visibleTab = document.visibilityState === "visible";
+      if (visibleTab) {
+        try {
+          const response = await fetch("/api/dashboard/discovery-seeds", { cache: "no-store" });
+          if (response.ok) {
+            const body = (await response.json()) as { seeds?: Array<{ id: string; inspected: number; review: number; approved: number; contacted: number }> };
+            if (!stopped && Array.isArray(body.seeds)) {
+              setCounts(Object.fromEntries(body.seeds.map((seed) => [seed.id, seed])));
+            }
+          }
+        } catch {
+          // The next poll retries.
+        }
+      }
+      timer = window.setTimeout(tick, livePollDelay(visibleTab));
+    }
+    timer = window.setTimeout(tick, livePollDelay(true));
+    return () => {
+      stopped = true;
+      window.clearTimeout(timer);
+    };
+  }, []);
+
+  const rows = useMemo(() => seeds.map((seed) => {
+    const live = counts[seed.id];
+    if (!live) return seed;
+    return {
+      ...seed,
+      profiles_inspected: live.inspected,
+      profiles_reaching_review: live.review,
+      profiles_approved: live.approved,
+      profiles_contacted: live.contacted,
+    };
+  }), [seeds, counts]);
 
   const visible = useMemo(() => {
-    const filtered = seeds.filter((seed) => {
+    const filtered = rows.filter((seed) => {
       const haystack = `${seed.instagram_username} ${seed.category ?? ""} ${seed.notes ?? ""}`.toLowerCase();
       return haystack.includes(query.trim().toLowerCase());
     });
@@ -45,8 +87,8 @@ export function DiscoverySeedsPanel({
       if (sort === "yield") return reviewYield(b.profiles_inspected, b.profiles_reaching_review) - reviewYield(a.profiles_inspected, a.profiles_reaching_review);
       return b.profiles_reaching_review - a.profiles_reaching_review;
     });
-  }, [seeds, query, sort]);
-  const open = seeds.find((seed) => seed.id === openId) ?? null;
+  }, [rows, query, sort]);
+  const open = rows.find((seed) => seed.id === openId) ?? null;
   function setTuning(key: keyof DiscoveryTuning, value: number) {
     setForm({ ...form, tuning: { ...form.tuning, [key]: value } });
   }

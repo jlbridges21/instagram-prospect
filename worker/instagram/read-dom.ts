@@ -438,21 +438,29 @@ export const READ_DOM_SOURCE = `() => {
   function suggestedProfileCards() {
     const found = [];
     const seen = {};
+    let owner = "";
+    try {
+      const part = (location.pathname.split("/").filter(Boolean)[0] || "").toLowerCase();
+      if (/^[a-z0-9._]{1,30}$/.test(part) && !/^(explore|reels|p|reel|stories|direct|accounts|about|legal)$/.test(part)) owner = part;
+    } catch (error) {
+      owner = "";
+    }
     const markers = [...document.querySelectorAll("body *")].filter((el) => {
       if (el.closest("nav, [role='navigation']")) return false;
       if (el.children && el.children.length > 6) return false;
       const text = (el.textContent || "").replace(/\\s+/g, " ").trim();
-      return text === "Suggested for you" || text === "Suggested accounts";
+      const label = (el.getAttribute("aria-label") || "").replace(/\\s+/g, " ").trim();
+      return text === "Suggested for you" || text === "Suggested accounts" || text === "Similar accounts" || label === "Suggested for you" || label === "Suggested accounts" || label === "Similar accounts";
     }).slice(0, 8);
     for (const marker of markers) {
       let scope = marker.parentElement;
-      for (let depth = 0; depth < 6 && scope; depth += 1) {
+      for (let depth = 0; depth < 8 && scope; depth += 1) {
         const links = [...scope.querySelectorAll("a[href]")];
         let added = 0;
         for (const link of links) {
           if (link.closest("nav, [role='navigation']")) continue;
           const username = usernameFromSuggestedHref(link.getAttribute("href") || "");
-          if (!username || seen[username]) continue;
+          if (!username || username === owner || seen[username]) continue;
           seen[username] = true;
           found.push({ username, href: link.getAttribute("href") || "" });
           added += 1;

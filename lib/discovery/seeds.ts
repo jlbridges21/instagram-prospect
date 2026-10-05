@@ -40,6 +40,27 @@ export function seedStatForCandidate(event: "duplicate_skipped" | "inspected" | 
   return { inspected: 0, duplicates: 0, discovered: 1 };
 }
 
+export function seedCollectionResult(input: { seedId: string; seedUsername: string; usernames: string[] }) {
+  const owner = input.seedUsername.replace(/^@/, "").trim().toLowerCase();
+  const usable = [...new Set(input.usernames.map((name) => name.replace(/^@/, "").trim().toLowerCase()).filter((name) => name && name !== owner))];
+  if (usable.length === 0) return { fallback: true as const, candidates: [] as const };
+  return {
+    fallback: false as const,
+    candidates: usable.map((username) => ({
+      username,
+      source: "seed_suggestion" as const,
+      sourceSeedId: input.seedId,
+      sourceSeedUsername: owner,
+    })),
+  };
+}
+
+export function inspectionSeedId(candidate: { source: string; sourceSeedId?: string | null }) {
+  if (candidate.source !== "seed_suggestion") return null;
+  const id = candidate.sourceSeedId?.trim();
+  return id || null;
+}
+
 export function prospectAttribution(candidate: {
   source: string;
   sourceSeedId?: string | null;

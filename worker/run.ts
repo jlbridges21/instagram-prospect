@@ -812,7 +812,20 @@ export async function runWorker(mode: RunMode) {
                 if (!tab) return null;
                 try {
                   await tab.goto(`https://www.instagram.com/${username}/`, { waitUntil: "domcontentloaded", timeout: 20000 });
-                  return await readDom(tab);
+                  await tab.waitForFunction(
+                    "() => /Suggested for you|Suggested accounts|Similar accounts/i.test(document.body && document.body.innerText || '')",
+                    null,
+                    { timeout: 8000 },
+                  ).catch(() => undefined);
+                  let dom = await readDom(tab);
+                  const own = username.replace(/^@/, "").toLowerCase();
+                  const useful = (dom.suggestedProfiles ?? []).some((card) => card.username.toLowerCase() !== own);
+                  if (!useful) {
+                    await tab.evaluate("window.scrollBy(0, 900)");
+                    await tab.waitForTimeout(700);
+                    dom = await readDom(tab);
+                  }
+                  return dom;
                 } catch (error) {
                   log("warn", "seed_profile_unavailable", { username, message: error instanceof Error ? error.message : "unavailable" });
                   return null;

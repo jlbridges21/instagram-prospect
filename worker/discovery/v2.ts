@@ -5,7 +5,7 @@ import type { CloudClient, CloudConfig } from "../cloud/client";
 import { QualificationQueue } from "./qualify-queue";
 import { CandidateQueue, SessionUsernameCache, chunkUsernames, unseenUsernames, type DiscoveryCandidate } from "./queue";
 import { scoreCandidate } from "../../lib/discovery/candidate-priority";
-import { pickSeed, prospectAttribution, seedStatForCandidate } from "../../lib/discovery/seeds";
+import { inspectionSeedId, pickSeed, prospectAttribution, seedCollectionResult, seedStatForCandidate } from "../../lib/discovery/seeds";
 import { pickCollectionSource } from "../../lib/discovery/source-ranking";
 import { prioritizeCandidates } from "./sources";
 import { AttentionError } from "../instagram/errors";
@@ -121,6 +121,14 @@ export async function runDiscoveryV2(input: {
       const result = await input.cloud.qualifyProspect(prospectId);
       if (!(result.skipped)) aiSinceGate += 1;
       if (result.ok && !result.skipped) input.stats.qualified += 1;
+      if (result.ok && !result.cached && result.status === "review" && result.seedCredit && result.username) {
+        const inspected = result.seedCredit.inspected;
+        const review = result.seedCredit.review;
+        const yieldPercent = inspected > 0 ? ((review / inspected) * 100).toFixed(1) : "0.0";
+        console.log(`@${result.username} → Review`);
+        console.log(`Credited Review to seed @${result.seedCredit.username}`);
+        console.log(`Seed yield: ${review} / ${inspected} = ${yieldPercent}%`);
+      }
     } catch (error) {
       if (isAttention(error)) throw error;
       log("warn", "qualification_request_failed", { prospect_id: prospectId, message: error instanceof Error ? error.message : "failed" });
@@ -225,16 +233,26 @@ export async function runDiscoveryV2(input: {
     if (!seed) return null;
     for (const known of seeds) seedUses.set(known.id, known.id === seed.id ? (seedUses.get(known.id) ?? 0) + 1 : 0);
     console.log(`Discovery seed: @${seed.username}`);
+    console.log("Opening seed suggestions...");
     const page = await input.readSeedProfile(seed.username);
-    if (!page) return null;
-    const found = suggestedCandidates(page);
-    await input.cloud.bumpSeed(seed.id, { used: true, seen: found.length }).catch(() => undefined);
-    if (found.length === 0) return null;
+    const found = page ? suggestedCandidates(page) : [];
+    const collected = seedCollectionResult({
+      seedId: seed.id,
+      seedUsername: seed.username,
+      usernames: found.map((item) => item.username),
+    });
+    await input.cloud.bumpSeed(seed.id, { used: true, seen: collected.candidates.length }).catch(() => undefined);
+    if (collected.fallback) {
+      console.log(`Seed @${seed.username} produced no usable candidates.`);
+      console.log("Falling back to Suggested Accounts.");
+      return null;
+    }
     const mature = seed.inspected >= (config.minSeedSample ?? 10);
     const yieldRate = seed.inspected > 0 ? seed.review / seed.inspected : 0;
+    const byUsername = new Map(found.map((item) => [item.username, item]));
     return {
-      sourceLabel: `Seed @${seed.username}`,
-      ordered: found.map((item) => {
+      sourceLabel: "Seed suggestions",
+      ordered: collected.candidates.map((item) => {
         const priority = scoreCandidate({
           source: "seed",
           seedUsername: seed.username,
@@ -246,15 +264,16 @@ export async function runDiscoveryV2(input: {
           negativeKeywords: config.negativeKeywords ?? [],
           tuning: config.tuning,
         });
+        const match = byUsername.get(item.username);
         return {
           username: item.username,
-          profileUrl: item.profileUrl,
-          source: "seed_suggestion" as const,
-          sourcePostUrl: item.postUrl,
+          profileUrl: match?.profileUrl ?? `https://www.instagram.com/${item.username}/`,
+          source: item.source,
+          sourcePostUrl: match?.postUrl ?? null,
           sourceThumbnailUrl: null,
           discoveredAt: new Date().toISOString(),
-          sourceSeedId: seed.id,
-          sourceSeedUsername: seed.username,
+          sourceSeedId: item.sourceSeedId,
+          sourceSeedUsername: item.sourceSeedUsername,
           priorityScore: priority.score,
           priorityLabel: priority.label,
           priorityReasons: priority.reasons,
@@ -322,7 +341,7 @@ export async function runDiscoveryV2(input: {
             const candidate = byUsername.get(username);
             if (row.skip) {
               log("info", "candidate_duplicate_cloud", { username, status: row.status });
-              if (candidate?.sourceSeedId) await input.cloud.bumpSeed(candidate.sourceSeedId, seedStatForCandidate("duplicate_skipped")).catch(() => undefined);
+              if (candidate && inspectionSeedId(candidate)) await input.cloud.bumpSeed(candidate.sourceSeedId ?? "", seedStatForCandidate("duplicate_skipped")).catch(() => undefined);
               continue;
             }
             if (!candidate) continue;
@@ -333,9 +352,11 @@ export async function runDiscoveryV2(input: {
             const prioritized = withPriority(candidate, config);
             if (queue.enqueue(prioritized) === "queued") {
               queued += 1;
-              console.log(`Queued @${prioritized.username}${prioritized.priorityReasons?.length ? ` — ${prioritized.priorityReasons.join("; ")}` : ""}`);
-              log("info", "candidate_queued", { username: prioritized.username, source: prioritized.source });
-              if (prioritized.sourceSeedId) await input.cloud.bumpSeed(prioritized.sourceSeedId, seedStatForCandidate("queued")).catch(() => undefined);
+              console.log(`Queued @${prioritized.username}`);
+              console.log(`Source: ${prioritized.source}`);
+              if (prioritized.source === "seed_suggestion" && prioritized.sourceSeedUsername) console.log(`Seed: @${prioritized.sourceSeedUsername}`);
+              log("info", "candidate_queued", { username: prioritized.username, source: prioritized.source, seed: prioritized.sourceSeedUsername ?? null });
+              if (inspectionSeedId(prioritized)) await input.cloud.bumpSeed(prioritized.sourceSeedId ?? "", seedStatForCandidate("queued")).catch(() => undefined);
             }
           }
         }
@@ -406,6 +427,8 @@ export async function runDiscoveryV2(input: {
       input.live.task = "inspecting_profiles";
       input.live.username = candidate.username;
       console.log(`Inspecting @${candidate.username}`);
+      console.log(`Source: ${candidate.source}`);
+      if (candidate.source === "seed_suggestion" && candidate.sourceSeedUsername) console.log(`Seed: @${candidate.sourceSeedUsername}`);
       log("info", tabId === "profile-tab-1" ? "candidate_claimed_tab_a" : "candidate_claimed_tab_b", {
         username: candidate.username,
       });
@@ -465,8 +488,9 @@ export async function runDiscoveryV2(input: {
       ...prospectAttribution(candidate),
       follow_relationship: profile.relationship,
     });
-    if (candidate.sourceSeedId && ingested.prospectId) {
-      await input.cloud.recordSeedInspection(candidate.sourceSeedId, ingested.prospectId).catch(() => undefined);
+    const creditedSeed = inspectionSeedId(candidate);
+    if (creditedSeed && ingested.prospectId) {
+      await input.cloud.recordSeedInspection(creditedSeed, ingested.prospectId).catch(() => undefined);
     }
     console.log(`@${candidate.username} cloud: ${ingested.created ? "created" : ingested.reason ?? "updated"}`);
     if (ingested.created) {
