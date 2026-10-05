@@ -18,11 +18,12 @@ import { DEFAULT_MESSAGE_TEMPLATE } from "@/lib/constants/message";
 import { DEFAULT_OUTREACH_SETTINGS, normalizeClock, normalizeDays } from "@/lib/outreach/defaults";
 import type { OutreachSettings } from "@/lib/outreach/types";
 import { databaseErrorMessage, isMissingRelation } from "@/lib/db/errors";
-import type { AppSettings, DataResult, DiscoverySettings, TargetingSettings } from "@/lib/db/models";
+import { DEFAULT_DISCOVERY_OPTIMIZATION, DEFAULT_POSITIVE_KEYWORDS } from "@/lib/discovery/defaults";
+import type { AppSettings, DataResult, DiscoveryOptimization, DiscoverySettings, TargetingSettings } from "@/lib/db/models";
 import type { SettingsRow, TargetingSettingsRow } from "@/lib/db/types";
 import { createClient } from "@/lib/supabase/server";
 
-export type { AppSettings, DataResult, DiscoverySettings, TargetingSettings };
+export type { AppSettings, DataResult, DiscoveryOptimization, DiscoverySettings, TargetingSettings };
 
 export const DEFAULT_DISCOVERY_SETTINGS: DiscoverySettings = {
   enabled: true,
@@ -65,6 +66,27 @@ function discoveryFromRow(row: SettingsRow): DiscoverySettings {
   };
 }
 
+export function optimizationFromRow(row: SettingsRow): DiscoveryOptimization {
+  const strength = row.discovery_yield_strength;
+  const home = row.discovery_home_feed_usage;
+  const strategy = row.discovery_strategy;
+  return {
+    autoPromote: row.discovery_auto_promote ?? DEFAULT_DISCOVERY_OPTIMIZATION.autoPromote,
+    autoPromoteMinScore: row.discovery_auto_promote_min_score ?? DEFAULT_DISCOVERY_OPTIMIZATION.autoPromoteMinScore,
+    promoteStrong: row.discovery_promote_strong ?? DEFAULT_DISCOVERY_OPTIMIZATION.promoteStrong,
+    promotePossible: row.discovery_promote_possible ?? DEFAULT_DISCOVERY_OPTIMIZATION.promotePossible,
+    promoteRequires: row.discovery_promote_requires === "approved" ? "approved" : "review",
+    minSeedSample: row.discovery_min_seed_sample ?? DEFAULT_DISCOVERY_OPTIMIZATION.minSeedSample,
+    favorYield: row.discovery_favor_yield ?? DEFAULT_DISCOVERY_OPTIMIZATION.favorYield,
+    yieldStrength: strength === "low" || strength === "high" ? strength : "medium",
+    homeFeedUsage: home === "medium" || home === "high" ? home : "low",
+    strategy: strategy === "conservative" || strategy === "exploratory" ? strategy : "balanced",
+    seedCooldownCycles: row.discovery_seed_cooldown_cycles ?? DEFAULT_DISCOVERY_OPTIMIZATION.seedCooldownCycles,
+    positiveKeywords: row.discovery_positive_keywords ?? [...DEFAULT_POSITIVE_KEYWORDS],
+    negativeKeywords: row.discovery_negative_keywords ?? [],
+  };
+}
+
 function outreachFromRow(row: SettingsRow): OutreachSettings {
   return {
     automationEnabled: row.automation_enabled ?? DEFAULT_OUTREACH_SETTINGS.automationEnabled,
@@ -100,6 +122,7 @@ export function appSettingsFromRow(row: SettingsRow): AppSettings {
     possibleFitMinimum: row.possible_fit_minimum ?? DEFAULT_POSSIBLE_FIT_MINIMUM,
     outreach: outreachFromRow(row),
     discovery: discoveryFromRow(row),
+    optimization: optimizationFromRow(row),
     updatedAt: row.updated_at,
   };
 }
@@ -137,6 +160,7 @@ export function fallbackSettings(): AppSettings {
     possibleFitMinimum: DEFAULT_POSSIBLE_FIT_MINIMUM,
     outreach: DEFAULT_OUTREACH_SETTINGS,
     discovery: DEFAULT_DISCOVERY_SETTINGS,
+    optimization: { ...DEFAULT_DISCOVERY_OPTIMIZATION, positiveKeywords: [...DEFAULT_POSITIVE_KEYWORDS], negativeKeywords: [] },
     updatedAt: null,
   };
 }

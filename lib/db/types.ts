@@ -43,6 +43,10 @@ export type ProspectRow = {
   status: ProspectStatus;
   notes: string | null;
   source: ProspectSource;
+  source_seed_id?: string | null;
+  source_seed_username?: string | null;
+  discovery_priority_label?: string | null;
+  discovery_priority_reason?: string | null;
   instagram_post_url: string | null;
   instagram_post_thumbnail_url: string | null;
   discovered_at: string | null;
@@ -109,6 +113,47 @@ export type SettingsRow = {
   discovery_run_minutes?: number | null;
   discovery_run_inspection_limit?: number | null;
   discovery_run_started_at?: string | null;
+  discovery_auto_promote?: boolean;
+  discovery_auto_promote_min_score?: number;
+  discovery_promote_strong?: boolean;
+  discovery_promote_possible?: boolean;
+  discovery_promote_requires?: "review" | "approved";
+  discovery_min_seed_sample?: number;
+  discovery_favor_yield?: boolean;
+  discovery_yield_strength?: "low" | "medium" | "high";
+  discovery_home_feed_usage?: "low" | "medium" | "high";
+  discovery_strategy?: "conservative" | "balanced" | "exploratory";
+  discovery_seed_cooldown_cycles?: number;
+  discovery_positive_keywords?: string[] | null;
+  discovery_negative_keywords?: string[] | null;
+  updated_at: string;
+};
+
+export type DiscoverySeedRow = {
+  id: string;
+  instagram_username: string;
+  display_name: string | null;
+  profile_url: string | null;
+  profile_picture_url: string | null;
+  source_type: "manual" | "auto_promoted" | "system_imported";
+  is_active: boolean;
+  is_manual: boolean;
+  auto_promoted_from_prospect_id: string | null;
+  category: string | null;
+  notes: string | null;
+  priority: "low" | "normal" | "high";
+  profiles_discovered: number;
+  profiles_inspected: number;
+  profiles_reaching_review: number;
+  profiles_approved: number;
+  profiles_contacted: number;
+  candidates_seen: number;
+  duplicates_skipped: number;
+  consecutive_uses: number;
+  cooldown_until: string | null;
+  last_used_at: string | null;
+  last_success_at: string | null;
+  created_at: string;
   updated_at: string;
 };
 
@@ -327,6 +372,12 @@ export type Database = {
         Update: Insert<SettingsRow>;
         Relationships: [];
       };
+      discovery_seeds: {
+        Row: DiscoverySeedRow;
+        Insert: Insert<DiscoverySeedRow> & { instagram_username: string };
+        Update: Insert<DiscoverySeedRow>;
+        Relationships: [];
+      };
       discovery_suppressions: {
         Row: DiscoverySuppressionRow;
         Insert: Insert<DiscoverySuppressionRow> & { instagram_username_normalized: string; reason: string };
@@ -472,6 +523,20 @@ export type Database = {
           p_send_at: string;
         };
         Returns: Json;
+      };
+      bump_discovery_seed: {
+        Args: {
+          p_id: string;
+          p_discovered?: number;
+          p_inspected?: number;
+          p_review?: number;
+          p_approved?: number;
+          p_contacted?: number;
+          p_seen?: number;
+          p_duplicates?: number;
+          p_used?: boolean;
+        };
+        Returns: undefined;
       };
       bump_discovery_usage: {
         Args: {

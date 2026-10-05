@@ -4,6 +4,9 @@ import type { BrowserContext, Page } from "playwright";
 import type { CloudClient, CloudConfig } from "../cloud/client";
 import { QualificationQueue } from "./qualify-queue";
 import { CandidateQueue, SessionUsernameCache, chunkUsernames, unseenUsernames, type DiscoveryCandidate } from "./queue";
+import { scoreCandidate } from "../../lib/discovery/candidate-priority";
+import { pickSeed, prospectAttribution, seedStatForCandidate } from "../../lib/discovery/seeds";
+import { pickCollectionSource } from "../../lib/discovery/source-ranking";
 import { prioritizeCandidates } from "./sources";
 import { AttentionError } from "../instagram/errors";
 import { ensureHome, readProfile, scrollFeed } from "../instagram/actions";
@@ -96,6 +99,7 @@ export async function runDiscoveryV2(input: {
   shouldYield?: () => boolean | Promise<boolean>;
   browserLock?: { tryAcquire: (owner: "discovery") => boolean; release: (owner: "discovery") => void };
   singleTurn?: boolean;
+  readSeedProfile?: (username: string) => Promise<import("../instagram/types").DomSnapshot | null>;
 }) {
   const metrics = input.metrics ?? emptyEfficiency();
   const queue = new CandidateQueue(10);
@@ -103,6 +107,7 @@ export async function runDiscoveryV2(input: {
   const cache = new SessionUsernameCache();
   restoreQueue(queue);
   const failures = new Map<string, number>(PROFILE_TABS.map((tab) => [tab, 0]));
+  const seedUses = new Map<string, number>();
   let stopError: unknown = null;
   let pauseReason: string | null = null;
   let sinceGate = 0;
@@ -156,6 +161,105 @@ export async function runDiscoveryV2(input: {
   if (stopError) throw stopError;
   return exitReason;
 
+  async function collectCandidates(config: CloudConfig): Promise<{ ordered: DiscoveryCandidate[]; sourceLabel: string }> {
+    const seeds = (config.discoverySeeds ?? []).map((seed) => ({
+      id: seed.id,
+      username: seed.username,
+      sourceType: seed.sourceType,
+      active: true,
+      priority: seed.priority,
+      inspected: seed.inspected,
+      review: seed.review,
+      consecutiveUses: seedUses.get(seed.id) ?? seed.consecutiveUses,
+    }));
+    const choice = pickCollectionSource({
+      hasSeeds: seeds.length > 0 && Boolean(input.readSeedProfile),
+      homeEnabled: config.homeFeedEnabled,
+      suggestedEnabled: config.suggestedAccountsEnabled,
+      homeUsage: config.homeFeedUsage ?? "low",
+      strategy: config.discoveryStrategy ?? "balanced",
+      random: Math.random(),
+    });
+    if (choice === "seed") {
+      const fromSeed = await candidatesFromSeed(config, seeds);
+      if (fromSeed) return fromSeed;
+    }
+    const dom = await readDiscoveryPage(input.homePage);
+    const useHome = choice === "home_feed" || !config.suggestedAccountsEnabled;
+    const ordered = prioritizeCandidates({
+      suggested: useHome ? [] : suggestedCandidates(dom),
+      home: useHome ? feedCandidates(dom) : [],
+      priority: useHome ? "home_first" : "suggested_first",
+      homeEnabled: useHome && config.homeFeedEnabled,
+      suggestedEnabled: !useHome && config.suggestedAccountsEnabled,
+    });
+    if (ordered.length === 0 && useHome && config.suggestedAccountsEnabled) {
+      return {
+        ordered: prioritizeCandidates({
+          suggested: suggestedCandidates(dom),
+          home: [],
+          priority: "suggested_first",
+          homeEnabled: false,
+          suggestedEnabled: true,
+        }),
+        sourceLabel: "Suggested Accounts",
+      };
+    }
+    return { ordered, sourceLabel: useHome ? "Home Feed" : "Suggested Accounts" };
+  }
+
+  async function candidatesFromSeed(config: CloudConfig, seeds: Parameters<typeof pickSeed>[0]["seeds"]) {
+    if (!input.readSeedProfile) return null;
+    const seed = pickSeed({
+      seeds,
+      minSample: config.minSeedSample ?? 10,
+      favorYield: config.favorYield !== false,
+      yieldStrength: config.yieldStrength ?? "medium",
+      strategy: config.discoveryStrategy ?? "balanced",
+      cooldownCycles: config.seedCooldownCycles ?? 2,
+      now: new Date(),
+      random: Math.random,
+    });
+    if (!seed) return null;
+    for (const known of seeds) seedUses.set(known.id, known.id === seed.id ? (seedUses.get(known.id) ?? 0) + 1 : 0);
+    console.log(`Discovery seed: @${seed.username}`);
+    const page = await input.readSeedProfile(seed.username);
+    if (!page) return null;
+    const found = suggestedCandidates(page);
+    await input.cloud.bumpSeed(seed.id, { used: true, seen: found.length }).catch(() => undefined);
+    if (found.length === 0) return null;
+    const mature = seed.inspected >= (config.minSeedSample ?? 10);
+    const yieldRate = seed.inspected > 0 ? seed.review / seed.inspected : 0;
+    return {
+      sourceLabel: `Seed @${seed.username}`,
+      ordered: found.map((item) => {
+        const priority = scoreCandidate({
+          source: "seed",
+          seedUsername: seed.username,
+          seedYield: yieldRate,
+          seedMature: mature,
+          seedPriority: seed.priority,
+          text: item.username,
+          positiveKeywords: config.positiveKeywords ?? [],
+          negativeKeywords: config.negativeKeywords ?? [],
+        });
+        return {
+          username: item.username,
+          profileUrl: item.profileUrl,
+          source: "seed_suggestion" as const,
+          sourcePostUrl: item.postUrl,
+          sourceThumbnailUrl: null,
+          discoveredAt: new Date().toISOString(),
+          sourceSeedId: seed.id,
+          sourceSeedUsername: seed.username,
+          priorityScore: priority.score,
+          priorityLabel: priority.label,
+          priorityReasons: priority.reasons,
+        };
+      }),
+    };
+  }
+
   async function collectLoop() {
     let idleScrolls = 0;
     let announcedSource = "";
@@ -190,19 +294,9 @@ export async function runDiscoveryV2(input: {
         continue;
       }
       input.live.task = "discovering_candidates";
-      const dom = await readDiscoveryPage(input.homePage);
-      const suggested = suggestedCandidates(dom);
-      const home = feedCandidates(dom);
-      const ordered = prioritizeCandidates({
-        suggested,
-        home,
-        priority: config.discoverySourcePriority,
-        homeEnabled: config.homeFeedEnabled,
-        suggestedEnabled: config.suggestedAccountsEnabled,
-      });
-      const sourceLabel = config.suggestedAccountsEnabled && config.discoverySourcePriority !== "home_first"
-        ? "Suggested Accounts"
-        : "Home Feed";
+      const collected = await collectCandidates(config);
+      const ordered = collected.ordered;
+      const sourceLabel = collected.sourceLabel;
       if (announcedSource !== sourceLabel) {
         announcedSource = sourceLabel;
         console.log(`Discovery source: ${sourceLabel}`);
@@ -222,20 +316,23 @@ export async function runDiscoveryV2(input: {
           for (const row of checked.results) {
             const username = row.username ?? "";
             cache.remember(username, row.skip);
+            const candidate = byUsername.get(username);
             if (row.skip) {
               log("info", "candidate_duplicate_cloud", { username, status: row.status });
+              if (candidate?.sourceSeedId) await input.cloud.bumpSeed(candidate.sourceSeedId, seedStatForCandidate("duplicate_skipped")).catch(() => undefined);
               continue;
             }
-            const candidate = byUsername.get(username);
             if (!candidate) continue;
             if (queue.pendingCount() >= queueThresholds(config.candidateQueueTarget).highWater) {
               filled = true;
               break;
             }
-            if (queue.enqueue(candidate) === "queued") {
+            const prioritized = withPriority(candidate, config);
+            if (queue.enqueue(prioritized) === "queued") {
               queued += 1;
-              console.log(`Queued @${candidate.username}`);
-              log("info", "candidate_queued", { username: candidate.username, source: candidate.source });
+              console.log(`Queued @${prioritized.username}${prioritized.priorityReasons?.length ? ` — ${prioritized.priorityReasons.join("; ")}` : ""}`);
+              log("info", "candidate_queued", { username: prioritized.username, source: prioritized.source });
+              if (prioritized.sourceSeedId) await input.cloud.bumpSeed(prioritized.sourceSeedId, seedStatForCandidate("queued")).catch(() => undefined);
             }
           }
         }
@@ -362,9 +459,10 @@ export async function runDiscoveryV2(input: {
       location_text: profile.profile.locationText,
       already_following: excluded,
       instagram_post_url: candidate.sourcePostUrl,
-      source: candidate.source,
+      ...prospectAttribution(candidate),
       follow_relationship: profile.relationship,
     });
+    if (candidate.sourceSeedId) await input.cloud.bumpSeed(candidate.sourceSeedId, seedStatForCandidate("inspected")).catch(() => undefined);
     console.log(`@${candidate.username} cloud: ${ingested.created ? "created" : ingested.reason ?? "updated"}`);
     if (ingested.created) {
       input.stats.ingested += 1;
@@ -485,6 +583,18 @@ function persistQueue(queue: CandidateQueue) {
 
 function isAttention(error: unknown) {
   return error instanceof AttentionError;
+}
+
+function withPriority(candidate: DiscoveryCandidate, config: CloudConfig): DiscoveryCandidate {
+  if (candidate.priorityScore != null) return candidate;
+  const priority = scoreCandidate({
+    source: candidate.source === "seed_suggestion" ? "seed" : candidate.source,
+    seedUsername: candidate.sourceSeedUsername,
+    text: candidate.username,
+    positiveKeywords: config.positiveKeywords ?? [],
+    negativeKeywords: config.negativeKeywords ?? [],
+  });
+  return { ...candidate, priorityScore: priority.score, priorityLabel: priority.label, priorityReasons: priority.reasons };
 }
 
 function sleep(ms: number) {

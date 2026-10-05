@@ -247,6 +247,10 @@ export type WorkerProspectInput = {
   instagram_post_url?: string | null;
   instagram_post_thumbnail_url?: string | null;
   source?: ProspectSource;
+  source_seed_id?: string | null;
+  source_seed_username?: string | null;
+  discovery_priority_label?: string | null;
+  discovery_priority_reason?: string | null;
   follow_relationship?: "following" | "not_following" | "requested" | "unknown";
 };
 
@@ -329,6 +333,10 @@ export async function ingestWorkerProspect(supabase: Client, input: WorkerProspe
       qualified: false,
       status,
       source: input.source ?? "home_feed",
+      source_seed_id: input.source_seed_id ?? null,
+      source_seed_username: input.source_seed_username ?? null,
+      discovery_priority_label: input.discovery_priority_label ?? null,
+      discovery_priority_reason: input.discovery_priority_reason ?? null,
       instagram_post_url: input.instagram_post_url ?? null,
       instagram_post_thumbnail_url: input.instagram_post_thumbnail_url ?? null,
       qualification_reason: qualificationReason,
@@ -437,6 +445,7 @@ async function rememberSuppression(
 
 function sourceLabel(source: ProspectSource | undefined) {
   if (source === "suggested_accounts") return "Suggested accounts";
+  if (source === "seed_suggestion") return "a Discovery Seed";
   if (source === "manual") return "manual entry";
   return "Home feed";
 }

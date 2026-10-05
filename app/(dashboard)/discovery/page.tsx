@@ -5,6 +5,8 @@ import { ProgressMetric } from "@/components/ui/progress-metric";
 import { StartDiscoveryButton } from "@/components/worker/start-discovery-button";
 import { DiscoveryRunButtons } from "@/components/worker/discovery-run-buttons";
 import { getDiscoveryV3Snapshot } from "@/lib/db/discovery";
+import { discoverySourceStats, listDiscoverySeeds } from "@/lib/db/seeds";
+import { reviewYield } from "@/lib/discovery/seeds";
 import { fallbackSettings, getSettings } from "@/lib/db/settings";
 import { getLatestWorker } from "@/lib/db/workers";
 import { parseHourlyWaitEvent, formatResumeClock } from "@/lib/discovery/pacing";
@@ -15,12 +17,24 @@ import { DroneMark } from "@/components/visual/drone-mark";
 
 export const metadata: Metadata = { title: "Discovery" };
 
-export default async function DiscoveryPage() {
+export default async function DiscoveryPage({
+  searchParams,
+}: {
+  searchParams: Promise<Record<string, string | string[] | undefined>>;
+}) {
+  const params = await searchParams;
+  const range = params.range === "7" ? 7 : params.range === "30" ? 30 : null;
   const settingsResult = await getSettings();
   const settings = settingsResult.ok ? settingsResult.data : fallbackSettings();
   const workerResult = await getLatestWorker();
   const worker = workerResult.ok ? workerResult.data : null;
-  const progress = await getDiscoveryV3Snapshot(settings.timezone);
+  const [progress, seedsResult, sources] = await Promise.all([
+    getDiscoveryV3Snapshot(settings.timezone),
+    listDiscoverySeeds(),
+    discoverySourceStats(range),
+  ]);
+  const seeds = seedsResult.ok ? seedsResult.data : [];
+  const activeSeed = seeds.find((seed) => seed.is_active) ?? null;
   const health = getWorkerHealth({
     status: worker?.status ?? null,
     lastHeartbeatAt: worker?.last_heartbeat_at ?? null,
@@ -94,6 +108,54 @@ export default async function DiscoveryPage() {
           {" "}
           <Link href="/settings" className="text-indigo-700">Edit Discovery settings</Link>
         </p>
+      </section>
+      <section className="mt-4 rounded-xl border border-slate-200 bg-white p-4 text-sm">
+        <h2 className="font-semibold text-slate-900">Discovery Sources</h2>
+        <p className="mt-2">Leading seed: {activeSeed ? `@${activeSeed.instagram_username}` : "None yet"}</p>
+        <p className="mt-1">Inspecting: {worker?.current_username ? `@${worker.current_username}` : "Idle"}</p>
+        <p className="mt-1">Seed yield: {activeSeed ? `${Math.round(reviewYield(activeSeed.profiles_inspected, activeSeed.profiles_reaching_review) * 100)}%` : "—"}</p>
+        <p className="mt-1 text-slate-600">Home Feed usage: {settings.optimization.homeFeedUsage}. Strategy: {settings.optimization.strategy}.</p>
+        <p className="mt-3 text-xs text-slate-500">
+          <Link href="/discovery?range=7">7 days</Link>
+          {" · "}
+          <Link href="/discovery?range=30">30 days</Link>
+          {" · "}
+          <Link href="/discovery">All time</Link>
+        </p>
+        <table className="mt-3 w-full text-left text-sm">
+          <thead>
+            <tr className="text-xs text-slate-500">
+              <th className="py-1 font-medium">Source</th>
+              <th className="py-1 font-medium">Inspected</th>
+              <th className="py-1 font-medium">Review</th>
+              <th className="py-1 font-medium">Review yield</th>
+              <th className="py-1 font-medium">Approved</th>
+              <th className="py-1 font-medium">Approval yield</th>
+            </tr>
+          </thead>
+          <tbody>
+            {sources.map((row) => (
+              <tr key={row.source}>
+                <td className="py-1">{row.source}</td>
+                <td>{row.inspected}</td>
+                <td>{row.review}</td>
+                <td>{Math.round(row.reviewYield * 100)}%</td>
+                <td>{row.approved}</td>
+                <td>{Math.round(row.approvalYield * 100)}%</td>
+              </tr>
+            ))}
+            {sources.length === 0 ? <tr><td className="py-2 text-slate-500" colSpan={6}>Source stats appear after the migration and new inspections.</td></tr> : null}
+          </tbody>
+        </table>
+        <h3 className="mt-4 font-semibold text-slate-900">Top Discovery Seeds</h3>
+        <ul className="mt-2 space-y-1">
+          {seeds.slice(0, 8).map((seed) => (
+            <li key={seed.id}>
+              @{seed.instagram_username} · {seed.profiles_inspected} inspected · {seed.profiles_reaching_review} Review · {Math.round(reviewYield(seed.profiles_inspected, seed.profiles_reaching_review) * 100)}% · {seed.profiles_approved} approved
+            </li>
+          ))}
+          {seeds.length === 0 ? <li className="text-slate-500">Add seeds in Settings → Discovery.</li> : null}
+        </ul>
       </section>
       {status.actual === "STOPPED" || status.actual === "BLOCKED" || status.actual === "WAITING" ? (
         <section className="mt-4 rounded-xl border border-slate-200 bg-white p-4 text-sm">

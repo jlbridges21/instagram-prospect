@@ -22,7 +22,7 @@ export const FIT_LABELS = ["strong_fit", "possible_fit", "skip"] as const;
 
 export type FitLabel = (typeof FIT_LABELS)[number];
 
-export const PROSPECT_SOURCES = ["home_feed", "suggested_accounts", "manual"] as const;
+export const PROSPECT_SOURCES = ["home_feed", "suggested_accounts", "manual", "seed_suggestion"] as const;
 
 export type ProspectSource = (typeof PROSPECT_SOURCES)[number];
 
@@ -86,6 +86,7 @@ export const SOURCE_LABELS: Record<ProspectSource, string> = {
   home_feed: "Home feed",
   suggested_accounts: "Suggested accounts",
   manual: "Manual",
+  seed_suggestion: "Seed suggestion",
 };
 
 export const FOLLOW_UP_STATUS_LABELS: Record<FollowUpStatus, string> = {

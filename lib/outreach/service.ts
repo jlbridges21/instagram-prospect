@@ -1137,6 +1137,10 @@ async function completeSend(admin: Client, job: OutreachJobRow, result: unknown,
     })
     .eq("id", job.prospect_id);
   if (error) return { ok: false as const, error: "The message was recorded, but the prospect could not be updated." };
+  const seedLink = await admin.from("prospects").select("source_seed_id").eq("id", job.prospect_id).maybeSingle();
+  if (!seedLink.error && seedLink.data?.source_seed_id) {
+    await admin.rpc("bump_discovery_seed", { p_id: seedLink.data.source_seed_id, p_contacted: 1 });
+  }
 
   await logActivity(admin, {
     prospectId: job.prospect_id,

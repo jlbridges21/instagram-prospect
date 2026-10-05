@@ -8,6 +8,7 @@ import { rulesFromTargeting } from "@/lib/ai/openai";
 import { qualificationSchema } from "@/lib/ai/schemas";
 import type { QualificationDecision, QualificationInput } from "@/lib/ai/types";
 import { createManualProspect } from "@/lib/prospects/service";
+import { recordQualificationSeedEffects } from "@/lib/discovery/promotion";
 import { fallbackSettings, getSettings } from "@/lib/db/settings";
 import { fallbackTargeting, getTargetingSettings } from "@/lib/db/settings";
 import { requireUser } from "@/lib/supabase/auth";
@@ -53,6 +54,14 @@ export async function qualifyProspectAction(
     actor: user.email ?? "authenticated user",
   });
   if (!result.ok) return result;
+  await recordQualificationSeedEffects(supabase, id, {
+    cached: result.result.cached,
+    qualified: result.result.decision.qualified,
+    fitScore: result.result.decision.fitScore,
+    fitLabel: result.result.decision.fitLabel,
+    status: result.result.decision.status,
+    settings: settings.optimization,
+  }).catch(() => undefined);
   refresh(id);
   return summary(result.result.decision, result.result.cached);
 }

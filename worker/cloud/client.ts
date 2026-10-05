@@ -25,6 +25,23 @@ export type CloudConfig = {
   discoveryRunInspectionLimit: number | null;
   discoveryRunStartedAt: string | null;
   timezone: string;
+  discoverySeeds?: Array<{
+    id: string;
+    username: string;
+    sourceType: "manual" | "auto_promoted" | "system_imported";
+    priority: "low" | "normal" | "high";
+    inspected: number;
+    review: number;
+    consecutiveUses: number;
+  }>;
+  positiveKeywords?: string[];
+  negativeKeywords?: string[];
+  homeFeedUsage?: "low" | "medium" | "high";
+  discoveryStrategy?: "conservative" | "balanced" | "exploratory";
+  yieldStrength?: "low" | "medium" | "high";
+  favorYield?: boolean;
+  minSeedSample?: number;
+  seedCooldownCycles?: number;
 };
 
 export const CONFIG_CACHE_MS = 60_000;
@@ -133,6 +150,15 @@ export class CloudClient {
       discoveryRunInspectionLimit: typeof json.discoveryRunInspectionLimit === "number" ? json.discoveryRunInspectionLimit : null,
       discoveryRunStartedAt: typeof json.discoveryRunStartedAt === "string" ? json.discoveryRunStartedAt : null,
       timezone: typeof json.timezone === "string" && json.timezone ? json.timezone : "America/Chicago",
+      discoverySeeds: Array.isArray(json.discoverySeeds) ? json.discoverySeeds as CloudConfig["discoverySeeds"] : [],
+      positiveKeywords: stringList(json.positiveKeywords),
+      negativeKeywords: stringList(json.negativeKeywords),
+      homeFeedUsage: json.homeFeedUsage === "medium" || json.homeFeedUsage === "high" ? json.homeFeedUsage : "low",
+      discoveryStrategy: json.discoveryStrategy === "conservative" || json.discoveryStrategy === "exploratory" ? json.discoveryStrategy : "balanced",
+      yieldStrength: json.yieldStrength === "low" || json.yieldStrength === "high" ? json.yieldStrength : "medium",
+      favorYield: json.favorYield !== false,
+      minSeedSample: numberOr(json.minSeedSample, 10),
+      seedCooldownCycles: numberOr(json.seedCooldownCycles, 2),
     } satisfies CloudConfig;
     this.configCache = value;
     this.configCachedAt = Date.now();
@@ -172,6 +198,10 @@ export class CloudClient {
 
   async discoveryProgress(body: { inspections?: number; ai?: number; emptyCycles?: number }) {
     return this.request<{ pause: boolean; reason: string | null }>("/api/worker/discovery/progress", body);
+  }
+
+  async bumpSeed(id: string, counts: { discovered?: number; inspected?: number; seen?: number; duplicates?: number; used?: boolean }) {
+    return this.request<{ ok: boolean }>("/api/worker/discovery/seed-stats", { id, ...counts });
   }
 
   async qualifyProspect(prospectId: string) {
@@ -274,4 +304,8 @@ function authError() {
 
 function numberOr(value: unknown, fallback: number) {
   return typeof value === "number" && Number.isFinite(value) ? value : fallback;
+}
+
+function stringList(value: unknown) {
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
 }

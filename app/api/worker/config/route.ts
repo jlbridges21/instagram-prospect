@@ -19,6 +19,10 @@ export async function GET(request: Request) {
       .eq("id", 1)
       .maybeSingle();
   }
+  const [seedResult, keywordResult] = await Promise.all([
+    admin.from("discovery_seeds").select("id, instagram_username, source_type, priority, profiles_inspected, profiles_reaching_review, consecutive_uses, is_active").eq("is_active", true).order("profiles_reaching_review", { ascending: false }).limit(100),
+    admin.from("settings").select("discovery_positive_keywords, discovery_negative_keywords, discovery_home_feed_usage, discovery_strategy, discovery_yield_strength, discovery_favor_yield, discovery_min_seed_sample, discovery_seed_cooldown_cycles").eq("id", 1).maybeSingle(),
+  ]);
   const targetingResult = await admin
     .from("targeting_settings")
     .select("min_followers, max_followers, english_only, prefer_united_states, allow_unknown_location, exclude_already_following, exclude_already_contacted, exclude_hobby_accounts, exclude_meme_accounts, exclude_large_agencies, exclude_unrelated_drone")
@@ -75,6 +79,23 @@ export async function GET(request: Request) {
     discoveryRunInspectionLimit: settings?.discovery_run_inspection_limit ?? null,
     discoveryRunStartedAt: settings?.discovery_run_started_at ?? null,
     timezone: settings && "timezone" in settings && typeof settings.timezone === "string" ? settings.timezone : fallback.timezone,
+    discoverySeeds: seedResult.error ? [] : (seedResult.data ?? []).map((seed) => ({
+      id: seed.id,
+      username: seed.instagram_username,
+      sourceType: seed.source_type,
+      priority: seed.priority,
+      inspected: seed.profiles_inspected,
+      review: seed.profiles_reaching_review,
+      consecutiveUses: seed.consecutive_uses,
+    })),
+    positiveKeywords: keywordResult.data?.discovery_positive_keywords ?? fallback.optimization.positiveKeywords,
+    negativeKeywords: keywordResult.data?.discovery_negative_keywords ?? fallback.optimization.negativeKeywords,
+    homeFeedUsage: keywordResult.data?.discovery_home_feed_usage ?? fallback.optimization.homeFeedUsage,
+    discoveryStrategy: keywordResult.data?.discovery_strategy ?? fallback.optimization.strategy,
+    yieldStrength: keywordResult.data?.discovery_yield_strength ?? fallback.optimization.yieldStrength,
+    favorYield: keywordResult.data?.discovery_favor_yield ?? fallback.optimization.favorYield,
+    minSeedSample: keywordResult.data?.discovery_min_seed_sample ?? fallback.optimization.minSeedSample,
+    seedCooldownCycles: keywordResult.data?.discovery_seed_cooldown_cycles ?? fallback.optimization.seedCooldownCycles,
     workerVersion: "6",
     minSupportedWorkerVersion: "6",
   });

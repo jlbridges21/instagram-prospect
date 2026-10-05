@@ -21,6 +21,10 @@ const prospectSchema = z.object({
   instagram_post_url: z.string().trim().max(500).nullable().optional(),
   instagram_post_thumbnail_url: z.string().trim().max(1000).nullable().optional(),
   source: z.enum(PROSPECT_SOURCES).optional(),
+  source_seed_id: z.string().uuid().nullable().optional(),
+  source_seed_username: z.string().trim().max(30).nullable().optional(),
+  discovery_priority_label: z.string().trim().max(20).nullable().optional(),
+  discovery_priority_reason: z.string().trim().max(500).nullable().optional(),
   follow_relationship: z.enum(["following", "not_following", "requested", "unknown"]).optional(),
 });
 

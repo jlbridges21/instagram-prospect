@@ -20,6 +20,22 @@ export type DiscoverySettings = {
   autoPaused: boolean;
 };
 
+export type DiscoveryOptimization = {
+  autoPromote: boolean;
+  autoPromoteMinScore: number;
+  promoteStrong: boolean;
+  promotePossible: boolean;
+  promoteRequires: "review" | "approved";
+  minSeedSample: number;
+  favorYield: boolean;
+  yieldStrength: "low" | "medium" | "high";
+  homeFeedUsage: "low" | "medium" | "high";
+  strategy: "conservative" | "balanced" | "exploratory";
+  seedCooldownCycles: number;
+  positiveKeywords: string[];
+  negativeKeywords: string[];
+};
+
 export type AppSettings = {
   messageTemplate: string;
   appName: string;
@@ -34,6 +50,7 @@ export type AppSettings = {
   possibleFitMinimum: number;
   outreach: OutreachSettings;
   discovery: DiscoverySettings;
+  optimization: DiscoveryOptimization;
   updatedAt: string | null;
 };
 

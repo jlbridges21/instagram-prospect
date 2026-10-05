@@ -22,6 +22,8 @@ import {
 } from "@/lib/constants/prospects";
 import { getProspectOutreach } from "@/lib/db/outreach";
 import { getProspectActivity } from "@/lib/db/stats";
+import { ProspectSeedToggle } from "@/components/prospects/seed-toggle";
+import { prospectDiscoveryLink, seedExists } from "@/lib/db/seeds";
 import { getProspectById } from "@/lib/db/prospects";
 import { fallbackSettings, getSettings } from "@/lib/db/settings";
 import { prospectOutreachFlags } from "@/lib/outreach/requeue";
@@ -77,6 +79,11 @@ export default async function ProspectDetailPage({
     username: prospect.instagram_username,
   });
   const profileUrl = prospect.profile_url || `https://www.instagram.com/${prospect.instagram_username}/`;
+  const [seeded, discoveryLink] = await Promise.all([
+    seedExists(prospect.instagram_username),
+    prospectDiscoveryLink(prospect.id),
+  ]);
+  const seedUsername = discoveryLink?.source_seed_username ?? null;
   const analysis = qualificationSchema.safeParse(prospect.ai_analysis);
   const when = (value: string | null) => formatDateTime(value, settings.timezone, settings.dateFormat);
   const outreachJobs = outreachResult.ok ? outreachResult.data : [];
@@ -149,7 +156,13 @@ export default async function ProspectDetailPage({
                 label="Source"
                 value={SOURCE_LABELS[prospect.source as ProspectSource] ?? prospect.source}
               />
+              <Fact label="Seed" value={seedUsername ? `@${seedUsername}` : "Not from a seed"} />
+              <Fact label="Discovery priority" value={discoveryLink?.discovery_priority_label || "Not recorded"} />
+              <div className="sm:col-span-2">
+                <Fact label="Why this profile was inspected" value={discoveryLink?.discovery_priority_reason || "No priority notes stored."} />
+              </div>
             </dl>
+            {seeded === null ? null : <ProspectSeedToggle prospectId={prospect.id} username={prospect.instagram_username} seeded={seeded} />}
           </Panel>
 
           <Panel title="Qualification">

@@ -41,6 +41,7 @@ import {
   saveErrorScreenshot,
   sendExactMessage,
 } from "./instagram/actions";
+import { readDom } from "./instagram/read-dom";
 import { AttentionError, NavigationError, SelectorError } from "./instagram/errors";
 import { isExcludedRelationship } from "./instagram/parse";
 import { log } from "./logger";
@@ -785,6 +786,17 @@ export async function runWorker(mode: RunMode) {
               shouldYield: () => config.automationEnabled && (activeSideEffect != null || Date.now() >= outreachDueAt),
               browserLock,
               singleTurn: true,
+              readSeedProfile: async (username) => {
+                const tab = tabs.find((item) => item && !item.isClosed()) ?? null;
+                if (!tab) return null;
+                try {
+                  await tab.goto(`https://www.instagram.com/${username}/`, { waitUntil: "domcontentloaded", timeout: 20000 });
+                  return await readDom(tab);
+                } catch (error) {
+                  log("warn", "seed_profile_unavailable", { username, message: error instanceof Error ? error.message : "unavailable" });
+                  return null;
+                }
+              },
               metrics: efficiency,
               gate: async (tick) => cloud.discoveryProgress(tick).catch(() => null),
               maybeOutreach: async () => {

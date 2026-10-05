@@ -1,4 +1,4 @@
-export type DiscoverySource = "home_feed" | "suggested_accounts";
+export type DiscoverySource = "home_feed" | "suggested_accounts" | "seed_suggestion";
 export type CandidateState = "pending" | "in_progress" | "done" | "skipped";
 
 export type DiscoveryCandidate = {
@@ -8,6 +8,11 @@ export type DiscoveryCandidate = {
   sourcePostUrl: string | null;
   sourceThumbnailUrl: string | null;
   discoveredAt: string;
+  sourceSeedId?: string | null;
+  sourceSeedUsername?: string | null;
+  priorityScore?: number;
+  priorityLabel?: string;
+  priorityReasons?: string[];
 };
 
 type QueueItem = {
@@ -63,13 +68,15 @@ export class CandidateQueue {
   }
 
   claim(tabId: string) {
+    let best: QueueItem | null = null;
     for (const item of this.items.values()) {
       if (item.state !== "pending") continue;
-      item.state = "in_progress";
-      item.tab = tabId;
-      return item.candidate;
+      if (!best || (item.candidate.priorityScore ?? 0) > (best.candidate.priorityScore ?? 0)) best = item;
     }
-    return null;
+    if (!best) return null;
+    best.state = "in_progress";
+    best.tab = tabId;
+    return best.candidate;
   }
 
   complete(username: string, state: "done" | "skipped" = "done") {

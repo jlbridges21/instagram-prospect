@@ -363,13 +363,13 @@ export function SettingsPanel({
             <div className="border-t border-slate-100 pt-4">
               <h2 className="text-sm font-semibold text-slate-900">Discovery</h2>
               <p className="mt-1 text-sm text-slate-500">
-                Discovery can run at any time while enabled. Inspection and AI limits still apply. Suggested Accounts is preferred. Home Feed fills the queue when suggestions are thin. Profile inspection stays at 2 tabs.
+                Discovery can run at any time while enabled. Inspection and AI limits still apply. Seeds, keyword priority, and Home Feed usage are in Discovery Optimization below. Profile inspection stays at one profile per interval.
               </p>
             </div>
             <Toggle checked={discoveryEnabled} onChange={setDiscoveryEnabled} label="Discovery enabled" />
             <Toggle checked={homeFeedEnabled} onChange={setHomeFeedEnabled} label="Home Feed" />
             <Toggle checked={suggestedEnabled} onChange={setSuggestedEnabled} label="Suggested Accounts" />
-            <Field label="Priority">
+            <Field label="Priority" hint="Kept for compatibility. Current workers follow Home Feed usage in Discovery Optimization.">
               <SelectInput value={sourcePriority} onChange={(event) => setSourcePriority(event.target.value as typeof sourcePriority)}>
                 <option value="suggested_first">Suggested Accounts first</option>
                 <option value="home_first">Home Feed first</option>

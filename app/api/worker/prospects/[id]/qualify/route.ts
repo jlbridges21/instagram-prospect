@@ -1,4 +1,5 @@
 import { qualifyStoredProspect } from "@/lib/ai/persist";
+import { recordQualificationSeedEffects } from "@/lib/discovery/promotion";
 import { appSettingsFromRow, targetingFromRow } from "@/lib/db/settings";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { isUuid } from "@/lib/utils/format";
@@ -52,6 +53,15 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
 
   await admin.from("prospects").update({ qualification_error: null }).eq("id", id);
   const decision = qualified.result.decision;
+  const settings = appSettingsFromRow(settingsResult.data);
+  await recordQualificationSeedEffects(admin, id, {
+    cached: qualified.result.cached,
+    qualified: decision.qualified,
+    fitScore: decision.fitScore,
+    fitLabel: decision.fitLabel,
+    status: decision.status,
+    settings: settings.optimization,
+  }).catch(() => undefined);
   return Response.json({
     ok: true,
     skipped: false,

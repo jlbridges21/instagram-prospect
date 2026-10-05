@@ -1,0 +1,33 @@
+export const DEFAULT_POSITIVE_KEYWORDS = [
+  "drone",
+  "aerial",
+  "photography",
+  "photographer",
+  "real estate",
+  "realestate",
+  "media",
+  "video",
+  "videography",
+  "videographer",
+  "fpv",
+  "uav",
+  "aerial media",
+  "property media",
+  "real estate media",
+  "content creator",
+  "production",
+] as const;
+
+export const DEFAULT_DISCOVERY_OPTIMIZATION = {
+  autoPromote: false,
+  autoPromoteMinScore: 75,
+  promoteStrong: true,
+  promotePossible: false,
+  promoteRequires: "review" as const,
+  minSeedSample: 10,
+  favorYield: true,
+  yieldStrength: "medium" as const,
+  homeFeedUsage: "low" as const,
+  strategy: "balanced" as const,
+  seedCooldownCycles: 2,
+};
