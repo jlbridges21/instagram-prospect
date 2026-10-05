@@ -151,7 +151,9 @@ export function DiscoverySeedsPanel({
                 <span className="font-medium text-slate-900">@{seed.instagram_username}</span>
                 <span className="ml-2 text-slate-500">{seed.category || "Uncategorized"} · {labelSource(seed.source_type)} · {seed.is_active ? "Active" : "Disabled"}</span>
                 <span className="mt-1 block text-slate-600">
-                  {seed.profiles_inspected} inspected · {seed.profiles_reaching_review} Review · {percent(reviewYield(seed.profiles_inspected, seed.profiles_reaching_review))} yield
+                  {seed.profiles_inspected === 0 && seed.profiles_reaching_review === 0 && seed.profiles_approved === 0 && seed.profiles_contacted === 0
+                    ? "No seed-sourced prospects yet"
+                    : `${seed.profiles_inspected} inspected · ${seed.profiles_reaching_review} Review · ${percent(reviewYield(seed.profiles_inspected, seed.profiles_reaching_review))} yield`}
                 </span>
               </button>
             </li>

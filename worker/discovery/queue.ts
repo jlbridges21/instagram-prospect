@@ -71,7 +71,7 @@ export class CandidateQueue {
     let best: QueueItem | null = null;
     for (const item of this.items.values()) {
       if (item.state !== "pending") continue;
-      if (!best || (item.candidate.priorityScore ?? 0) > (best.candidate.priorityScore ?? 0)) best = item;
+      if (!best || higherPriority(item, best)) best = item;
     }
     if (!best) return null;
     best.state = "in_progress";
@@ -107,23 +107,35 @@ export class CandidateQueue {
 }
 
 export class SessionUsernameCache {
-  private checked = new Set<string>();
-  private skipped = new Set<string>();
+  private seen = new Set<string>();
 
   has(username: string) {
-    const key = normalizeCandidateUsername(username);
-    return this.checked.has(key) || this.skipped.has(key);
+    return this.seen.has(normalizeCandidateUsername(username));
   }
 
-  remember(username: string, skip: boolean) {
+  remember(username: string, _skip?: boolean) {
     const key = normalizeCandidateUsername(username);
-    this.checked.add(key);
-    if (skip) this.skipped.add(key);
+    if (key) this.seen.add(key);
+  }
+
+  load(usernames: string[]) {
+    for (const username of usernames) this.remember(username);
+  }
+
+  usernames() {
+    return [...this.seen];
   }
 
   get skippedCount() {
-    return this.skipped.size;
+    return this.seen.size;
   }
+}
+
+function higherPriority(item: QueueItem, best: QueueItem) {
+  const score = item.candidate.priorityScore ?? 0;
+  const bestScore = best.candidate.priorityScore ?? 0;
+  if (score !== bestScore) return score > bestScore;
+  return item.candidate.discoveredAt < best.candidate.discoveredAt;
 }
 
 export function unseenUsernames(usernames: string[], cache: SessionUsernameCache, queue: CandidateQueue) {

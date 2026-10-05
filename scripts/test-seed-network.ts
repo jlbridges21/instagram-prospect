@@ -85,7 +85,7 @@ assert.deepEqual(followingUsernames(["/one/", "/two/", "/three/"], "seed", 2), [
 
 async function main() {
 const openList = new Function(`return (${SEED_NETWORK_OPEN_SOURCE})();`) as () => string;
-const readList = new Function(`return (${SEED_NETWORK_READER_SOURCE})(15);`) as () => string[];
+const readList = new Function(`return (${SEED_NETWORK_READER_SOURCE})(15);`) as () => { usernames: string[]; seedSelf: number; reserved: number };
 const browser = await chromium.launch({ channel: "chrome", headless: true });
 const page = await browser.newPage();
 let body = "";
@@ -106,6 +106,21 @@ const clicked = await page.evaluate("window.__clicked");
 assert.equal(opened, "following");
 assert.equal(clicked, "following");
 
+body = `<!doctype html><body>
+  <button id="relationship">Following</button>
+  <a href="#" id="count">163 following</a>
+  <script>
+    window.__clicked = "";
+    document.getElementById("relationship").addEventListener("click", () => { window.__clicked = "relationship"; });
+    document.getElementById("count").addEventListener("click", (event) => { window.__clicked = "count"; event.preventDefault(); });
+  </script>
+</body>`;
+await page.goto("https://www.instagram.com/bigmikethedroneguy/", { waitUntil: "domcontentloaded" });
+const countOpened = await page.evaluate(openList);
+const countClicked = await page.evaluate("window.__clicked");
+assert.equal(countOpened, "following");
+assert.equal(countClicked, "count");
+
 const links = Array.from({ length: 20 }, (_, index) => `<a href="/pilot${index}/">pilot${index}</a>`).join("");
 body = `<!doctype html><body>
   <nav><a href="/navuser/">nav</a></nav>
@@ -121,7 +136,10 @@ body = `<!doctype html><body>
   </div>
 </body>`;
 await page.goto("https://www.instagram.com/bigmikethedroneguy/following/", { waitUntil: "domcontentloaded" });
-const names = await page.evaluate(readList);
+const scanned = await page.evaluate(readList);
+const names = scanned.usernames;
+assert.ok(scanned.seedSelf >= 1);
+assert.ok(scanned.reserved >= 1);
 assert.equal(names.length, 15);
 assert.equal(names.includes("bigmikethedroneguy"), false);
 assert.equal(names.includes("navuser"), false);

@@ -1,7 +1,7 @@
 import { continuousOutreachStep } from "../lib/discovery/policy";
 import { discoveryDue, discoveryStallDecision, inspectionIntervalMs, scheduleNextInspection, startDiscoveryCadence } from "../lib/discovery/cadence";
 import { formatCountdown } from "../lib/ui/countdown";
-import { checkpointHoldDecision, formatHourlyWaitEvent, formatWorkerModes } from "../lib/discovery/pacing";
+import { checkpointHoldDecision, formatHourlyWaitEvent, formatWorkerModes, rollingHourInspectionCount } from "../lib/discovery/pacing";
 import { readHourlyStamps } from "./discovery/hourly-history";
 import { readDiscoveryCadence, writeDiscoveryCadence } from "./discovery/cadence-file";
 import { startOfNextLocalDay } from "../lib/outreach/time";
@@ -43,6 +43,7 @@ import {
   sendExactMessage,
 } from "./instagram/actions";
 import { openSeedFollowing } from "./instagram/open-following";
+import { emptySeedNetworkRead } from "./instagram/seed-network";
 import { openSeedSuggestions } from "./instagram/open-seed";
 import { readDom } from "./instagram/read-dom";
 import { AttentionError, NavigationError, SelectorError } from "./instagram/errors";
@@ -822,13 +823,13 @@ export async function runWorker(mode: RunMode) {
               },
               readSeedNetwork: async (username, limit) => {
                 const tab = tabs.find((item) => item && !item.isClosed()) ?? null;
-                if (!tab) return [];
+                if (!tab) return emptySeedNetworkRead("no profile tab");
                 try {
-                  const opened = await openSeedFollowing(tab, username, limit);
-                  return opened.usernames;
+                  return await openSeedFollowing(tab, username, limit);
                 } catch (error) {
-                  log("warn", "seed_network_unavailable", { username, message: error instanceof Error ? error.message : "unavailable" });
-                  return [];
+                  const message = error instanceof Error ? error.message : "unavailable";
+                  log("warn", "seed_network_unavailable", { username, message });
+                  return emptySeedNetworkRead(message);
                 }
               },
               metrics: efficiency,
@@ -856,7 +857,7 @@ export async function runWorker(mode: RunMode) {
               lastDiscoveryProgressAt = completedAt;
               writeDiscoveryCadence({ nextInspectionAt: discoveryNextAt, lastInspectionAt: completedAt });
               live.lastEvent = formatHourlyWaitEvent({
-                count: stats.seen,
+                count: rollingHourInspectionCount(stats.hour, completedAt),
                 limit: config.maxProfilesPerHour,
                 resumesAt: discoveryNextAt,
               });

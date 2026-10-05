@@ -110,17 +110,18 @@ export function acquisitionDecision(input: {
   if (input.hourlyFull) return { acquire: false, holding: true, reason: "hourly_pace" as const };
   const highWater = Math.max(1, input.highWater);
   const lowWater = Math.min(highWater, Math.max(1, input.lowWater));
-  if (input.holding) {
-    if (input.pending <= lowWater) return { acquire: true, holding: false, reason: null };
-    return { acquire: false, holding: true, reason: "high_water" as const };
-  }
-  if (input.pending >= highWater) return { acquire: false, holding: true, reason: "high_water" as const };
-  return { acquire: true, holding: false, reason: null };
+  if (input.pending <= lowWater) return { acquire: true, holding: false, reason: null };
+  return { acquire: false, holding: true, reason: "high_water" as const };
 }
 
 export function queueThresholds(target: number) {
   const highWater = Math.max(1, target);
-  return { highWater, lowWater: Math.max(1, Math.floor(highWater / 2)) };
+  const lowWater = Math.max(1, Math.min(highWater, Math.round(highWater * 0.375)));
+  return { highWater, lowWater };
+}
+
+export function rollingHourInspectionCount(stamps: number[], now: number) {
+  return hourlyInspectionPace({ stamps, now, limit: Number.MAX_SAFE_INTEGER }).count;
 }
 
 export function formatWorkerModes(input: { discovery: "RUNNING" | "PAUSED" | "WAITING"; outreach: "RUNNING" | "PAUSED" }) {

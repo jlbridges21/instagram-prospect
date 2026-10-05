@@ -4,6 +4,35 @@ export const SEED_NETWORK_SCROLL_LIMIT = 4;
 export const SEED_NETWORK_OPEN_WAIT_MS = 4_000;
 export const SEED_NETWORK_POLL_MS = 300;
 
+export type SeedNetworkRead = {
+  usernames: string[];
+  buttonFound: boolean;
+  dialogOpened: boolean;
+  profileLinksFound: number;
+  normalizedUsernames: number;
+  duplicates: number;
+  reserved: number;
+  seedSelf: number;
+  alreadyKnown: number;
+  reason: string;
+};
+
+export function emptySeedNetworkRead(reason: string, partial?: Partial<SeedNetworkRead>): SeedNetworkRead {
+  return {
+    buttonFound: false,
+    dialogOpened: false,
+    profileLinksFound: 0,
+    normalizedUsernames: 0,
+    duplicates: 0,
+    reserved: 0,
+    seedSelf: 0,
+    alreadyKnown: 0,
+    reason,
+    ...partial,
+    usernames: partial?.usernames ?? [],
+  };
+}
+
 export function followingUsernames(hrefs: string[], owner: string, limit: number) {
   const seen = new Set<string>();
   const names: string[] = [];
@@ -33,6 +62,16 @@ export const SEED_NETWORK_OPEN_SOURCE = `() => {
     links[i].click();
     return "following";
   }
+  function norm(value) { return String(value || "").replace(/\\s+/g, " ").trim(); }
+  var controls = document.querySelectorAll("a, [role='link']");
+  for (var c = 0; c < controls.length; c += 1) {
+    var control = controls[c];
+    if (control.closest && control.closest("nav, [role='navigation'], footer")) continue;
+    var name = norm(control.getAttribute("aria-label") || control.innerText || control.textContent || "");
+    if (!/^[\\d,.]+ following$/i.test(name)) continue;
+    control.click();
+    return "following";
+  }
   return "";
 }`;
 
@@ -60,6 +99,10 @@ export const SEED_NETWORK_READER_SOURCE = `(limit) => {
   var cap = Math.max(0, Math.floor(Number(limit) || 0));
   var names = [];
   var seen = {};
+  var profileLinks = 0;
+  var duplicates = 0;
+  var reservedCount = 0;
+  var seedSelf = 0;
   var nodes = root.querySelectorAll("a[href], h1, h2, h3, span");
   for (var i = 0; i < nodes.length; i += 1) {
     var el = nodes[i];
@@ -67,13 +110,23 @@ export const SEED_NETWORK_READER_SOURCE = `(limit) => {
     var text = String(el.innerText || el.textContent || "").replace(/\\s+/g, " ").trim().toLowerCase();
     if (el.tagName !== "A" && el.children && el.children.length <= 3 && text.length > 0 && text.length < 40 && (text === "suggested for you" || text === "suggested accounts")) break;
     if (el.tagName !== "A") continue;
-    var username = profileHref(el.getAttribute("href") || "", owner);
-    if (!username || seen[username]) continue;
-    seen[username] = 1;
-    names.push(username);
+    profileLinks += 1;
+    var href = el.getAttribute("href") || "";
+    var withoutOwner = profileHref(href, "");
+    if (!withoutOwner) {
+      var path = "";
+      try { path = new URL(href, location.origin).pathname; } catch (error) { path = ""; }
+      var first = (path.split("/").filter(Boolean)[0] || "").toLowerCase();
+      if (reserved[first]) reservedCount += 1;
+      continue;
+    }
+    if (withoutOwner === owner) { seedSelf += 1; continue; }
+    if (seen[withoutOwner]) { duplicates += 1; continue; }
+    seen[withoutOwner] = 1;
+    names.push(withoutOwner);
     if (names.length >= cap) break;
   }
-  return names;
+  return { profileLinks: profileLinks, normalized: names.length, duplicates: duplicates, reserved: reservedCount, seedSelf: seedSelf, usernames: names };
 }`;
 
 export const SEED_NETWORK_SCROLL_SOURCE = `() => {

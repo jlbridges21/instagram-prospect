@@ -102,13 +102,13 @@ export async function runDiscoveryV2(input: {
   browserLock?: { tryAcquire: (owner: "discovery") => boolean; release: (owner: "discovery") => void };
   singleTurn?: boolean;
   readSeedProfile?: (username: string) => Promise<import("../instagram/types").DomSnapshot | null>;
-  readSeedNetwork?: (username: string, limit: number) => Promise<string[]>;
+  readSeedNetwork?: (username: string, limit: number) => Promise<import("../instagram/seed-network").SeedNetworkRead>;
 }) {
   const metrics = input.metrics ?? emptyEfficiency();
   const queue = new CandidateQueue(10);
   let latestConfig: CloudConfig | null = null;
   const cache = new SessionUsernameCache();
-  restoreQueue(queue);
+    restoreQueue(queue, cache);
   const failures = new Map<string, number>(PROFILE_TABS.map((tab) => [tab, 0]));
   const seedUses = new Map<string, number>();
   let stopError: unknown = null;
@@ -153,7 +153,7 @@ export async function runDiscoveryV2(input: {
     latestConfig = await input.cloud.config();
     if (input.singleTurn) {
       const target = latestConfig?.candidateQueueTarget ?? 10;
-      if (queue.pendingCount() < queueThresholds(target).lowWater) await collectLoop();
+      if (queue.pendingCount() <= queueThresholds(target).lowWater) await collectLoop();
       const tab = tabs.find((item) => item.id === input.preferredTab) ?? tabs[0];
       if (tab && queue.pendingCount() > 0) await inspectLoop(tab.id, tab.page);
     } else {
@@ -165,7 +165,7 @@ export async function runDiscoveryV2(input: {
   } catch (error) {
     stopError = error;
   } finally {
-    persistQueue(queue);
+    persistQueue(queue, cache);
     await qualify.drain().catch(() => undefined);
     if (!input.retainTabs) await Promise.all(tabs.map((tab) => tab.page.close().catch(() => undefined)));
   }
@@ -258,7 +258,33 @@ export async function runDiscoveryV2(input: {
     let networkUsernames: string[] = [];
     if (shouldOpenSeedNetwork(suggestions.candidates.length, networkEnabled) && limit > 0 && page) {
       console.log(`Opening seed network for @${seed.username}...`);
-      networkUsernames = await input.readSeedNetwork!(seed.username, limit).catch(() => []);
+      const networkRead = await input.readSeedNetwork!(seed.username, limit).catch((error: unknown) => ({
+        usernames: [] as string[],
+        buttonFound: false,
+        dialogOpened: false,
+        profileLinksFound: 0,
+        normalizedUsernames: 0,
+        duplicates: 0,
+        reserved: 0,
+        seedSelf: 0,
+        alreadyKnown: 0,
+        reason: error instanceof Error ? error.message : "could not open following",
+      }));
+      const freshNetwork = networkRead.usernames.filter((name) => !cache.has(name) && !queue.seen(name));
+      const alreadyKnown = networkRead.usernames.length - freshNetwork.length;
+      for (const line of [
+        `Following button found: ${networkRead.buttonFound ? "yes" : "no"}`,
+        `Following dialog opened: ${networkRead.dialogOpened ? "yes" : "no"}`,
+        `profile links found: ${networkRead.profileLinksFound}`,
+        `normalized usernames: ${networkRead.normalizedUsernames}`,
+        `duplicates: ${networkRead.duplicates}`,
+        `reserved paths: ${networkRead.reserved}`,
+        `seed self: ${networkRead.seedSelf}`,
+        `already known: ${alreadyKnown}`,
+        `usable: ${freshNetwork.length}`,
+      ]) console.log(line);
+      if (freshNetwork.length === 0 && networkRead.reason) console.log(`reason: ${networkRead.reason}`);
+      networkUsernames = freshNetwork;
     }
     const network = seedCollectionResult({
       seedId: seed.id,
@@ -630,22 +656,27 @@ async function readDiscoveryPage(page: Page) {
   return readDom(page);
 }
 
-function restoreQueue(queue: CandidateQueue) {
+function restoreQueue(queue: CandidateQueue, cache: SessionUsernameCache) {
   try {
     const raw = fs.readFileSync(discoveryQueuePath(), "utf8");
-    const parsed = JSON.parse(raw) as { pending?: DiscoveryCandidate[] };
-    for (const candidate of parsed.pending ?? []) queue.enqueue(candidate);
+    const parsed = JSON.parse(raw) as { pending?: DiscoveryCandidate[]; seen?: string[] };
+    cache.load(parsed.seen ?? []);
+    for (const candidate of parsed.pending ?? []) {
+      queue.enqueue(candidate);
+      cache.remember(candidate.username);
+    }
   } catch {
     // A missing queue file is the normal first run.
   }
 }
 
-function persistQueue(queue: CandidateQueue) {
+function persistQueue(queue: CandidateQueue, cache: SessionUsernameCache) {
   try {
     fs.mkdirSync(path.dirname(discoveryQueuePath()), { recursive: true });
+    const seen = [...new Set([...cache.usernames(), ...queue.seenUsernames()])];
     fs.writeFileSync(
       discoveryQueuePath(),
-      JSON.stringify({ pending: queue.pendingCandidates(), seen: queue.seenUsernames() }),
+      JSON.stringify({ pending: queue.pendingCandidates(), seen }),
     );
   } catch {
     // Shutdown persistence is best-effort.
