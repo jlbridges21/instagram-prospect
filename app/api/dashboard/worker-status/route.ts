@@ -1,7 +1,9 @@
 import { parseHourlyWaitEvent } from "@/lib/discovery/pacing";
+import { claimPaceDecision, paceReasonLabel, queueHealth, type PaceJob } from "@/lib/outreach/pace";
 import { parseBrowserHealthEvent } from "@/lib/worker/browser-health";
 import { showInActivity } from "@/lib/status/operations";
 import { createClient } from "@/lib/supabase/server";
+import { startOfTodayIso } from "@/lib/utils/format";
 import { widgetState } from "@/lib/worker/widget-state";
 import { getWorkerHealth } from "@/lib/utils/worker-health";
 import { WORKER_VERSION } from "@/worker/version";
@@ -13,13 +15,14 @@ export async function GET() {
   const { data: userData } = await supabase.auth.getUser();
   if (!userData.user) return Response.json({ online: false }, { status: 401 });
 
-  const [settings, worker, review, events, command, jobs] = await Promise.all([
+  const [settings, worker, review, events, command, jobs, sends] = await Promise.all([
     supabase.from("settings").select("heartbeat_interval_seconds, timezone, discovery_enabled, automation_enabled, discovery_review_target, discovery_stop_reason, max_profiles_per_hour, discovery_run_mode, hourly_maximum, daily_maximum, minimum_action_delay_seconds").eq("id", 1).maybeSingle(),
     supabase.from("worker_instances").select("worker_id, machine_name, status, last_heartbeat_at, current_task, current_username, last_event, attention_reason, browser_connected, instagram_authenticated").order("last_heartbeat_at", { ascending: false }).limit(1).maybeSingle(),
     supabase.from("prospects").select("id", { count: "exact", head: true }).eq("status", "review").in("fit_label", ["strong_fit", "possible_fit"]).eq("is_sample", false),
     supabase.from("worker_events").select("id, event_type, message, metadata, created_at").order("created_at", { ascending: false }).limit(20),
     supabase.from("worker_commands").select("id, command_type, status, error_message, error_code").in("status", ["queued", "running"]).order("created_at", { ascending: false }).limit(1).maybeSingle(),
-    supabase.from("outreach_jobs").select("prospect_id, scheduled_for, status").in("status", ["pending", "retry_wait", "claimed", "running"]).limit(500),
+    supabase.from("outreach_jobs").select("id, prospect_id, job_type, status, scheduled_for, available_at, started_at, created_at, last_error, result").in("status", ["pending", "retry_wait", "claimed", "running", "failed"]).limit(500),
+    supabase.from("outreach_jobs").select("completed_at").eq("job_type", "send_message").eq("status", "completed").not("completed_at", "is", null).order("completed_at", { ascending: false }).limit(120),
   ]);
 
   const row = worker.data;
@@ -46,7 +49,44 @@ export async function GET() {
   });
 
   const timeZone = settings.data?.timezone || "America/Chicago";
-  const queueCount = new Set((jobs.data ?? []).map((job) => job.prospect_id)).size;
+  const today = startOfTodayIso(timeZone);
+  const prospectIds = [...new Set((jobs.data ?? []).map((job) => job.prospect_id))].slice(0, 200);
+  const [sent, contacted, names] = await Promise.all([
+    supabase.from("outreach_jobs").select("id", { count: "exact", head: true }).eq("job_type", "send_message").eq("status", "completed").gte("completed_at", today),
+    supabase.from("prospects").select("id", { count: "exact", head: true }).eq("status", "contacted").eq("is_sample", false),
+    prospectIds.length > 0
+      ? supabase.from("prospects").select("id, instagram_username").in("id", prospectIds)
+      : Promise.resolve({ data: [] as Array<{ id: string; instagram_username: string }> }),
+  ]);
+  const usernames = new Map((names.data ?? []).map((prospect) => [prospect.id, prospect.instagram_username]));
+  const paceJobs: PaceJob[] = (jobs.data ?? []).map((job) => ({
+    id: job.id,
+    prospectId: job.prospect_id,
+    username: usernames.get(job.prospect_id) ?? null,
+    jobType: job.job_type,
+    status: job.status,
+    scheduledFor: job.scheduled_for,
+    availableAt: job.available_at,
+    startedAt: job.started_at,
+    createdAt: job.created_at,
+    result: job.result,
+    lastError: job.last_error,
+  }));
+  const completedSendTimes = (sends.data ?? [])
+    .map((row) => (row.completed_at ? new Date(row.completed_at) : null))
+    .filter((value): value is Date => value !== null);
+  const counts = queueHealth(paceJobs);
+  const pace = claimPaceDecision({
+    now: new Date(),
+    timeZone,
+    minimumSpacingSeconds: settings.data?.minimum_action_delay_seconds ?? 180,
+    hourlyMaximum: settings.data?.hourly_maximum ?? 20,
+    dailyMaximum: settings.data?.daily_maximum ?? 150,
+    completedSendTimes,
+    jobs: paceJobs,
+  });
+  const openJobs = (jobs.data ?? []).filter((job) => job.status === "pending" || job.status === "retry_wait" || job.status === "claimed" || job.status === "running");
+  const queueCount = new Set(openJobs.map((job) => job.prospect_id)).size;
   const nextEligibleAt = (jobs.data ?? [])
     .filter((job) => job.status === "pending" || job.status === "retry_wait")
     .map((job) => job.scheduled_for)
@@ -82,6 +122,16 @@ export async function GET() {
     stopReason: settings.data?.discovery_stop_reason ?? null,
     queueCount,
     nextEligibleAt,
+    paceAt: pace.at?.toISOString() ?? null,
+    paceReason: pace.action === "wait" ? paceReasonLabel(pace.reason) : null,
+    paceUsername: pace.username,
+    remaining: counts.remaining,
+    fresh: counts.fresh,
+    retrying: counts.retrying,
+    failedCount: counts.failed,
+    sentToday: sent.count ?? 0,
+    scheduledToday: openJobs.filter((job) => job.scheduled_for >= today).length,
+    contactedCount: contacted.count ?? 0,
     hourlyMaximum: settings.data?.hourly_maximum ?? 20,
     dailyMaximum: settings.data?.daily_maximum ?? 150,
     minimumSpacingSeconds: settings.data?.minimum_action_delay_seconds ?? 180,

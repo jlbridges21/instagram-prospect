@@ -323,13 +323,26 @@ export type NavigationProvenance = {
   directOpenedFromProfile: boolean;
 };
 
+const RESERVED_PROFILE_PATHS = ["direct", "explore", "accounts", "reels", "stories", "p"];
+
 export function profileUsernameFromHref(href: string) {
   const path = href.split("?")[0].split("#")[0].replace(/^https?:\/\/(www\.)?instagram\.com/i, "");
-  const match = path.match(/^\/([A-Za-z0-9._]{1,30})\/?$/i);
+  const match = path.match(/^\/(?:_u\/)?([A-Za-z0-9._]{1,30})\/?$/i);
   if (!match) return null;
   const name = match[1].toLowerCase();
-  if (["direct", "explore", "accounts", "reels", "stories", "p"].includes(name)) return null;
+  if (RESERVED_PROFILE_PATHS.includes(name)) return null;
   return name;
+}
+
+export function usernameFromProfileRoute(url: string | null | undefined) {
+  if (!url) return null;
+  try {
+    const path = new URL(url, "https://www.instagram.com").pathname;
+    if (/^\/direct\//i.test(path)) return null;
+    return profileUsernameFromHref(path);
+  } catch {
+    return null;
+  }
 }
 
 function sameDisplayName(value: string, displayName: string) {
@@ -337,6 +350,13 @@ function sameDisplayName(value: string, displayName: string) {
   const text = value.trim().toLowerCase();
   if (display.length < 2 || !text) return false;
   return text === display || text === `${display}'s profile picture`;
+}
+
+function exactHeaderUsername(header: string | null | undefined, username: string) {
+  const text = header?.trim() ?? "";
+  const normalized = text.replace(/^@/, "").toLowerCase();
+  if (!text || normalized !== username || !/^[a-z0-9._]{1,30}$/.test(normalized)) return null;
+  return text;
 }
 
 function activeHeader(candidates: RecipientCandidate[]) {
@@ -358,8 +378,17 @@ function uiControlLabel(value: string) {
 }
 
 function profileAriaUsername(value: string) {
-  const match = value.trim().match(/open the profile page of\s+@?([a-z0-9._]{1,30})\b/i);
-  return match ? match[1].toLowerCase() : null;
+  const text = value.trim();
+  const patterns = [
+    /open the profile page of\s+@?([a-z0-9._]{1,30})\b/i,
+    /view\s+(?:the\s+)?profile\s+(?:page\s+)?(?:of\s+)?@?([a-z0-9._]{1,30})\b/i,
+    /^@?([a-z0-9._]{1,30})'s profile$/i,
+  ];
+  for (const pattern of patterns) {
+    const match = text.match(pattern);
+    if (match) return match[1].toLowerCase();
+  }
+  return null;
 }
 
 function identityText(value: string) {
@@ -395,15 +424,18 @@ export function classifyHeaderCandidate(
   const ariaUser = profileAriaUsername(candidate.ariaLabel) || profileAriaUsername(candidate.title);
   const textIdentity = identityText(candidate.text);
   const labelIdentity = identityText(candidate.ariaLabel);
-  const identities = [hrefUser, ariaUser, textIdentity?.username ?? null, labelIdentity?.username ?? null].filter(
-    (value): value is string => Boolean(value),
-  );
-  if (identities.some((value) => value !== target)) {
+  if ((hrefUser && hrefUser !== target) || (ariaUser && ariaUser !== target)) {
     return {
       classification: "identity_conflict",
       reason: hrefUser && hrefUser !== target ? "profile href belongs to another account" : "different participant in the active header",
       match: null,
     };
+  }
+  if (hrefUser === target) return { classification: "identity_match", reason: "profile href matches target", match: "href" };
+  if (ariaUser === target) return { classification: "identity_match", reason: "profile aria-label matches target", match: "aria" };
+  const textNames = [textIdentity?.username ?? null, labelIdentity?.username ?? null].filter((value): value is string => Boolean(value));
+  if (textNames.some((value) => value !== target)) {
+    return { classification: "identity_conflict", reason: "different participant in the active header", match: null };
   }
   if (display) {
     const pictures = [candidate.alt, candidate.title, candidate.ariaLabel]
@@ -413,8 +445,6 @@ export function classifyHeaderCandidate(
       return { classification: "identity_conflict", reason: "different participant in the active header", match: null };
     }
   }
-  if (hrefUser === target) return { classification: "identity_match", reason: "profile href matches target", match: "href" };
-  if (ariaUser === target) return { classification: "identity_match", reason: "profile aria-label matches target", match: "aria" };
   if (textIdentity?.username === target || labelIdentity?.username === target) {
     const at = textIdentity?.kind === "at" || labelIdentity?.kind === "at";
     return {
@@ -441,11 +471,18 @@ export function confirmConversationRecipient(input: {
   displayName?: string | null;
   candidates: RecipientCandidate[];
   provenance: NavigationProvenance;
+  pageUrl?: string | null;
+  conversationHeader?: string | null;
 }) {
   const username = input.username.replace(/^@/, "").toLowerCase();
   const display = input.displayName?.trim() ?? "";
-  const header = activeHeader(input.candidates);
-  const evidence = input.candidates.map((candidate) => {
+  const headerText = exactHeaderUsername(input.conversationHeader, username);
+  const candidates = headerText
+    ? [...input.candidates, { text: headerText, href: "", role: "heading", ariaLabel: "", title: "", alt: "", scope: "active-header" as const }]
+    : input.candidates;
+  const header = activeHeader(candidates);
+  const routeUser = usernameFromProfileRoute(input.pageUrl);
+  const evidence = candidates.map((candidate) => {
     const classified = classifyHeaderCandidate(candidate, username, display);
     return {
       ...candidate,
@@ -460,7 +497,7 @@ export function confirmConversationRecipient(input: {
     input.provenance.messageActionClicked &&
     input.provenance.directOpenedFromProfile &&
     input.provenance.sourceProfileUsername.replace(/^@/, "").toLowerCase() === username;
-  const conflict = evidence.find((item) => item.classification === "identity_conflict");
+  const conflict = evidence.find((item) => item.classification === "identity_conflict") || (routeUser && routeUser !== username ? { reason: "profile route belongs to another account" } : null);
   if (conflict) {
     return {
       confirmed: false as const,
@@ -480,6 +517,9 @@ export function confirmConversationRecipient(input: {
   }
   if (evidence.some((item) => item.reason === "visible username")) {
     return { confirmed: true as const, strategy: "conversation-header-username", evidence, ambiguousReason: null };
+  }
+  if (routeUser === username) {
+    return { confirmed: true as const, strategy: "profile-route-username", evidence, ambiguousReason: null };
   }
   const displayMatched = evidence.some((item) => item.reason === "display name in the active header");
   const avatarMatched = evidence.some((item) => item.reason === "avatar matches the profile display name");
@@ -507,6 +547,99 @@ export function confirmConversationRecipient(input: {
       ? "Composer was found but thread identity was not confirmed."
       : "Conversation recipient could not be confirmed.",
   };
+}
+
+export function classifyMessagingBlock(input: {
+  explicitUnavailable: boolean;
+  messageActionFound: boolean;
+  composerFound: boolean;
+  threadOpened: boolean;
+}) {
+  if (input.explicitUnavailable || !input.messageActionFound) {
+    return {
+      code: "message_unavailable" as const,
+      retryable: false,
+      reason: "Instagram did not offer messaging for this profile. No DM was sent.",
+    };
+  }
+  if (input.threadOpened && !input.composerFound) {
+    return {
+      code: "composer_unavailable" as const,
+      retryable: true,
+      reason: "The message thread opened without a usable composer. No DM was sent.",
+    };
+  }
+  return null;
+}
+
+export function directStructureFingerprint(input: {
+  url: string | null | undefined;
+  composerFound: boolean;
+  candidates: Array<Pick<RecipientCandidate, "tag" | "role" | "href" | "ariaLabel">>;
+}) {
+  let path = "none";
+  try {
+    path = new URL(input.url || "https://www.instagram.com/", "https://www.instagram.com").pathname.replace(/\/direct\/t\/[^/]+/i, "/direct/t/:id");
+  } catch {
+    path = "none";
+  }
+  const shapes = input.candidates
+    .slice(0, 8)
+    .map((candidate) => `${candidate.tag || candidate.role || "node"}:${candidate.href ? "href" : "-"}:${candidate.ariaLabel ? "aria" : "-"}`)
+    .join("|");
+  return `${path}|composer:${input.composerFound ? "yes" : "no"}|${shapes}`;
+}
+
+export function nextIdentityFailure(input: {
+  previousFingerprint: string | null;
+  fingerprint: string;
+  sawHeaderSignals: boolean;
+}) {
+  const same = Boolean(input.previousFingerprint) && input.previousFingerprint === input.fingerprint;
+  if (same) {
+    return {
+      code: "recipient_detection_unresolved" as const,
+      retryable: false,
+      reason: "Recipient detection is unresolved. The Direct layout did not change, so this profile was not opened again.",
+    };
+  }
+  if (!input.sawHeaderSignals) {
+    return {
+      code: "ui_structure_unknown" as const,
+      retryable: true,
+      reason: "The Direct layout did not expose a recipient signal. No DM was sent.",
+    };
+  }
+  return {
+    code: "recipient_confirmation_failed" as const,
+    retryable: true,
+    reason: "Composer was found but thread identity was not confirmed.",
+  };
+}
+
+export function formatIdentityDecision(input: {
+  username: string;
+  pageUrl: string | null;
+  candidates: RecipientCandidate[];
+  composerFound: boolean;
+  confirmed: boolean;
+  strategy: string | null;
+  reason: string | null;
+}) {
+  const expected = input.username.replace(/^@/, "").toLowerCase();
+  const detected = [...new Set(input.candidates.flatMap((candidate) => {
+    const href = profileUsernameFromHref(candidate.href);
+    const aria = profileAriaUsername(candidate.ariaLabel) || profileAriaUsername(candidate.title);
+    return [href, aria].filter((value): value is string => Boolean(value));
+  }))];
+  return [
+    `Expected: @${expected}`,
+    `Detected candidates: ${detected.length ? detected.map((name) => `@${name}`).join(", ") : "[]"}`,
+    `Page: ${input.pageUrl || "unknown"}`,
+    `Composer: ${input.composerFound ? "yes" : "no"}`,
+    `Identity source: ${input.strategy ?? "none"}`,
+    input.confirmed ? "Recipient confirmed." : input.reason || "Recipient not confirmed.",
+  ].join("\n");
 }
 
 export function directSurfaceLine(input: {

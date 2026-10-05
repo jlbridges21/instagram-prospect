@@ -367,6 +367,43 @@ export const READ_DOM_SOURCE = `() => {
       if (recipientCandidates.length >= 12) break;
     }
   }
+  const headerSurfaces = [];
+  if (pane) headerSurfaces.push(pane);
+  if (dialog && headerSurfaces.indexOf(dialog) === -1) headerSurfaces.push(dialog);
+  if (directMain && headerSurfaces.indexOf(directMain) === -1) headerSurfaces.push(directMain);
+  const knownHeader = {};
+  for (const item of recipientCandidates) knownHeader[item.href + "|" + item.ariaLabel] = true;
+  for (const surface of headerSurfaces) {
+    const anchors = [...surface.querySelectorAll("a[href], [role='link']")].slice(0, 60);
+    for (const el of anchors) {
+      if (el.closest && el.closest("nav, [role='navigation']")) continue;
+      const href = (el.getAttribute("href") || "").split("?")[0].split("#")[0].slice(0, 160);
+      const ariaLabel = undouble(el.getAttribute("aria-label") || "").slice(0, 80);
+      const title = undouble(el.getAttribute("title") || "").slice(0, 80);
+      if (!href && !ariaLabel) continue;
+      const rect = el.getBoundingClientRect();
+      if (!rect || rect.width < 1 || rect.height < 1) continue;
+      if (composerBox && rect.top >= composerBox.top - 2) continue;
+      if (composerBox && rect.right < composerBox.left - 120) continue;
+      const key = href + "|" + ariaLabel;
+      if (knownHeader[key]) continue;
+      knownHeader[key] = true;
+      recipientCandidates.push({
+        tag: el.tagName.toLowerCase(),
+        text: directText(el).slice(0, 80),
+        href,
+        role: ((el.getAttribute("role") || "") || "link").toLowerCase(),
+        ariaLabel,
+        title,
+        alt: undouble(el.getAttribute("alt") || "").slice(0, 80),
+        clickable: true,
+        box: { x: Math.round(rect.x), y: Math.round(rect.y), width: Math.round(rect.width), height: Math.round(rect.height) },
+        scope: "active-header",
+      });
+      if (recipientCandidates.length >= 24) break;
+    }
+    if (recipientCandidates.length >= 24) break;
+  }
   const directPath = /\\/direct\\//.test(location.pathname) ? location.pathname.split("?")[0] : "";
   const suggestedProfiles = suggestedProfileCards();
   return {

@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { AutomationControls } from "@/components/outreach/automation-controls";
 import { RecalculateScheduleButton } from "@/components/outreach/recalculate-schedule-button";
+import { OutreachLive } from "@/components/outreach/outreach-live";
 import { QueueBoard } from "@/components/outreach/queue-board";
 import { DatabaseSetup } from "@/components/layout/database-setup";
 import { PageHeader } from "@/components/layout/page-header";
@@ -8,10 +9,9 @@ import { listOutreachJobs, getOutreachSnapshot } from "@/lib/db/outreach";
 import { fallbackSettings, getSettings } from "@/lib/db/settings";
 import { formatDateTime } from "@/lib/utils/format";
 import { getLatestWorker } from "@/lib/db/workers";
-import { attentionKind, formatOutreachAction, formatOutreachStatus, isStateSyncFailure, statusDotClass } from "@/lib/status/operations";
+import { attentionKind, formatOutreachStatus, isStateSyncFailure } from "@/lib/status/operations";
 import { getWorkerHealth } from "@/lib/utils/worker-health";
-import { formatResumeClock } from "@/lib/discovery/pacing";
-import { claimPaceDecision, formatEligibleIn, paceReasonLabel, queueHealth, reflowPlan, type PaceJob } from "@/lib/outreach/pace";
+import { claimPaceDecision, paceReasonLabel, queueHealth, reflowPlan, type PaceJob } from "@/lib/outreach/pace";
 
 export const metadata: Metadata = { title: "Outreach" };
 
@@ -98,32 +98,25 @@ export default async function OutreachPage() {
           {queue.error}
         </div>
       ) : null}
-      <section className="mb-4 rounded-xl border border-slate-200 bg-white p-4 text-sm">
-        <div className="flex items-center gap-2">
-          <span className={`h-2.5 w-2.5 rounded-full ${statusDotClass(outreachStatus.tone)}`} aria-hidden />
-          <h2 className="font-semibold">Outreach {outreachStatus.actual}</h2>
-        </div>
-        <p className="mt-2">Desired: {outreachStatus.desired}</p>
-        <p className="mt-1">{outreachStatus.reason}</p>
-        {outreachStatus.detail ? <p className="mt-1 text-slate-600">{outreachStatus.detail}</p> : null}
-        {pace.username ? <p className="mt-2">Next outreach: @{pace.username}</p> : null}
-        {pace.at ? <p className="mt-1">Eligible in: {formatEligibleIn(pace.at, now)}</p> : null}
-        {pace.action === "wait" ? <p className="mt-1">Reason: {paceReasonLabel(pace.reason)}</p> : null}
-        {outreachStatus.resumesAt ? <p className="mt-1 text-slate-600">{formatResumeClock(outreachStatus.resumesAt, settings.timezone)}</p> : null}
-        <p className="mt-2">{healthCounts.remaining} remaining · {healthCounts.fresh} fresh · {healthCounts.retrying} retrying · {healthCounts.failed} failed or needs attention</p>
-        {outlook.remaining > 0 ? (
-          <p className="mt-2">
-            {outlook.remaining} prospect{outlook.remaining === 1 ? "" : "s"} remaining
-            {outlook.estimatedCompletion ? `. Estimated completion: ~${formatDateTime(outlook.estimatedCompletion.toISOString(), settings.timezone, settings.dateFormat)}` : ""}
-          </p>
-        ) : null}
-        <p className="mt-2">Current Outreach action: {formatOutreachAction({
-          task: worker?.current_task,
-          username: worker?.current_username,
-          waiting: pace.action === "wait" && pace.at ? { reason: paceReasonLabel(pace.reason), eligibleIn: formatEligibleIn(pace.at, now) } : null,
-        })}</p>
-        <p className="mt-3 text-xs text-slate-500">Pause stops new claims and keeps the queue. Stop ends this run the same way and does not cancel pending outreach. Cancel Pending Outreach stays a separate confirmed action in the control above.</p>
-      </section>
+      <OutreachLive
+        actual={outreachStatus.actual}
+        tone={outreachStatus.tone}
+        desired={outreachStatus.desired}
+        reason={outreachStatus.reason}
+        detail={outreachStatus.detail}
+        username={pace.username}
+        paceAt={pace.at?.toISOString() ?? null}
+        paceReason={pace.action === "wait" ? paceReasonLabel(pace.reason) : null}
+        remaining={healthCounts.remaining}
+        fresh={healthCounts.fresh}
+        retrying={healthCounts.retrying}
+        failed={healthCounts.failed}
+        queued={snapshot?.queueProspects ?? healthCounts.remaining}
+        scheduledToday={snapshot?.scheduledToday ?? 0}
+        sentToday={snapshot?.sentToday ?? 0}
+        currentTask={worker?.current_task ?? null}
+        currentUsername={worker?.current_username ?? null}
+      />
       <section className="mb-4 rounded-xl border border-slate-200 bg-white p-4 text-sm">
         <h2 className="font-semibold text-slate-900">Pacing</h2>
         <p className="mt-1 text-xs text-slate-500">Approximate, based on saved settings and completed sends. Discovery can use the gaps between these sends.</p>
@@ -131,20 +124,9 @@ export default async function OutreachPage() {
           <Stat label="Minimum spacing" value={`${settings.outreach.minimumActionDelaySeconds} seconds`} />
           <Stat label="Completed sends per hour" value={String(settings.outreach.hourlyMaximum)} />
           <Stat label="Daily maximum" value={String(settings.outreach.dailyMaximum)} />
-          <Stat label="Next eligible" value={pace.at ? formatDateTime(pace.at.toISOString(), settings.timezone, settings.dateFormat) : "Now or none queued"} />
+          <Stat label="Estimated finish" value={outlook.estimatedCompletion ? formatDateTime(outlook.estimatedCompletion.toISOString(), settings.timezone, settings.dateFormat) : "None queued"} />
         </dl>
       </section>
-      {snapshot ? (
-        <dl className="mb-4 grid grid-cols-2 gap-3 sm:grid-cols-4">
-          <Stat label="Queued prospects" value={String(snapshot.queueProspects)} />
-          <Stat label="Scheduled today" value={String(snapshot.scheduledToday)} />
-          <Stat label="Sent today" value={String(snapshot.sentToday)} />
-          <Stat
-            label="Next eligible action"
-            value={snapshot.nextAt ? formatDateTime(snapshot.nextAt, settings.timezone, settings.dateFormat) : "None"}
-          />
-        </dl>
-      ) : null}
       {queue.ok ? (
         <QueueBoard
           jobs={queue.data.jobs}

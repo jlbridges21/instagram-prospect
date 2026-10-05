@@ -8,6 +8,10 @@ import {
   composerReadyToSend,
   composerTextMatches,
   confirmConversationRecipient,
+  directStructureFingerprint,
+  formatIdentityDecision,
+  classifyMessagingBlock,
+  nextIdentityFailure,
   detectComposer,
   directSurfaceLine,
   formatHeaderInspect,
@@ -608,6 +612,90 @@ assert.equal(
   }),
   "Needs recovery",
 );
+
+const layoutBlank = { ariaLabel: "", title: "", alt: "", scope: "active-header" as const };
+const layoutA = confirmConversationRecipient({
+  username: "sinaysky",
+  displayName: "Sina",
+  candidates: [{ text: "Sina", href: "/sinaysky/", role: "link", ...layoutBlank }],
+  provenance: noProof,
+});
+assert.equal(layoutA.confirmed, true);
+assert.equal(layoutA.strategy, "conversation-header-profile-link");
+const layoutB = confirmConversationRecipient({
+  username: "sinaysky",
+  displayName: "Sina",
+  candidates: [{ text: "Sina", href: "", role: "link", ariaLabel: "Open the profile page of sinaysky", title: "", alt: "", scope: "active-header" }],
+  provenance: noProof,
+});
+assert.equal(layoutB.confirmed, true);
+assert.equal(layoutB.strategy, "conversation-header-aria-username");
+const layoutC = confirmConversationRecipient({
+  username: "sinaysky",
+  displayName: "Sina",
+  candidates: [],
+  provenance: proof,
+  pageUrl: "https://www.instagram.com/direct/t/abc/",
+});
+assert.equal(layoutC.confirmed, false);
+assert.match(formatIdentityDecision({
+  username: "sinaysky",
+  pageUrl: "https://www.instagram.com/direct/t/abc/",
+  candidates: [],
+  composerFound: true,
+  confirmed: false,
+  strategy: null,
+  reason: layoutC.ambiguousReason,
+}), /Detected candidates: \[\]/);
+const layoutD = confirmConversationRecipient({
+  username: "sinaysky",
+  displayName: "Sina",
+  candidates: [{ text: "Other", href: "/other_user/", role: "link", ...layoutBlank }],
+  provenance: proof,
+});
+assert.equal(layoutD.confirmed, false);
+const layoutE = confirmConversationRecipient({
+  username: "sinaysky",
+  displayName: "Sina",
+  candidates: [{ text: "Sina", href: "", role: "heading", ...layoutBlank }],
+  provenance: noProof,
+});
+assert.equal(layoutE.confirmed, false);
+const layoutF = classifyMessagingBlock({
+  explicitUnavailable: true,
+  messageActionFound: false,
+  composerFound: false,
+  threadOpened: false,
+});
+assert.equal(layoutF?.code, "message_unavailable");
+const unknownLayout = nextIdentityFailure({
+  previousFingerprint: null,
+  fingerprint: directStructureFingerprint({ url: "https://www.instagram.com/sinaysky/", composerFound: false, candidates: [] }),
+  sawHeaderSignals: false,
+});
+assert.equal(unknownLayout.code, "ui_structure_unknown");
+const repeated = nextIdentityFailure({
+  previousFingerprint: "same",
+  fingerprint: "same",
+  sawHeaderSignals: false,
+});
+assert.equal(repeated.code, "recipient_detection_unresolved");
+assert.equal(repeated.retryable, false);
+const routeConfirmed = confirmConversationRecipient({
+  username: "sinaysky",
+  candidates: [],
+  provenance: noProof,
+  pageUrl: "https://www.instagram.com/sinaysky/",
+});
+assert.equal(routeConfirmed.confirmed, true);
+assert.equal(routeConfirmed.strategy, "profile-route-username");
+const directRoute = confirmConversationRecipient({
+  username: "sinaysky",
+  candidates: [],
+  provenance: noProof,
+  pageUrl: "https://www.instagram.com/direct/t/999/",
+});
+assert.equal(directRoute.confirmed, false);
 
 console.log("dm and send recovery tests passed");
 }

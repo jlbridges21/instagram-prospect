@@ -5,8 +5,8 @@ import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { toast } from "sonner";
 import { saveDiscoveryPreferences } from "@/lib/actions/discovery";
 import { requestWorkerCommand } from "@/lib/actions/worker-commands";
-import { livePollDelay } from "@/lib/discovery/policy";
-import { formatResumeClock } from "@/lib/discovery/pacing";
+import { LiveCountdown } from "@/components/ui/live-countdown";
+import { subscribeDashboardStatus, type DashboardStatus } from "@/components/worker/status-poll";
 import {
   attentionKind,
   isStateSyncFailure,
@@ -20,30 +20,7 @@ import {
 import { StartDiscoveryButton } from "@/components/worker/start-discovery-button";
 import { StartOutreachButton } from "@/components/worker/start-outreach-button";
 
-type Status = {
-  online: boolean;
-  machineName: string | null;
-  lastHeartbeatAt: string | null;
-  discoveryEnabled: boolean;
-  outreachEnabled: boolean;
-  username: string | null;
-  currentAction: string | null;
-  reviewCount: number;
-  reviewTarget: number | "unlimited";
-  hourlyLimit: number;
-  hourly: { count: number; limit: number; resumesAt: string } | null;
-  stopReason: string | null;
-  queueCount: number;
-  nextEligibleAt?: string | null;
-  hourlyMaximum?: number;
-  dailyMaximum?: number;
-  minimumSpacingSeconds?: number;
-  attentionReason: string | null;
-  browser?: { state: "connected" | "restarting" | "closed" | "failed"; reason: string | null } | null;
-  reportedVersion: string | null;
-  requiredVersion: string;
-  command?: { error_code?: string | null; error_message?: string | null; status?: string } | null;
-};
+type Status = DashboardStatus;
 
 const STORAGE_KEY = "shootportal-worker-widget";
 const WIDGET_EVENT = "shootportal-worker-widget";
@@ -72,37 +49,17 @@ export function WorkerWidget({ timeZone }: { timeZone: string }) {
 
   useEffect(() => {
     let previous = "";
-    let timer = 0;
-    let stopped = false;
-    async function tick() {
-      if (stopped) return;
-      const visible = document.visibilityState === "visible";
-      try {
-        if (visible) {
-          const response = await fetch("/api/dashboard/worker-status", { cache: "no-store" });
-          if (response.ok) {
-            const body = (await response.json()) as Status;
-            setStatus(body);
-            if (!seeded.current) {
-              seeded.current = true;
-              setTarget(String(body.reviewTarget === "unlimited" ? 20 : body.reviewTarget));
-              setPace(String(body.hourlyLimit || 30));
-            }
-            const key = `${body.online}|${body.discoveryEnabled}|${body.outreachEnabled}|${body.attentionReason ?? ""}|${body.currentAction ?? ""}`;
-            if (previous && previous !== key) toast(body.attentionReason || "Worker status changed");
-            previous = key;
-          }
-        }
-      } catch {
-        // The next poll retries.
+    return subscribeDashboardStatus((body) => {
+      setStatus(body);
+      if (!seeded.current) {
+        seeded.current = true;
+        setTarget(String(body.reviewTarget === "unlimited" ? 20 : body.reviewTarget));
+        setPace(String(body.hourlyLimit || 30));
       }
-      timer = window.setTimeout(tick, livePollDelay(visible));
-    }
-    timer = window.setTimeout(tick, 1000);
-    return () => {
-      stopped = true;
-      window.clearTimeout(timer);
-    };
+      const key = `${body.online}|${body.discoveryEnabled}|${body.outreachEnabled}|${body.attentionReason ?? ""}|${body.currentAction ?? ""}`;
+      if (previous && previous !== key) toast(body.attentionReason || "Worker status changed");
+      previous = key;
+    });
   }, []);
 
   function collapse(next: boolean) {
@@ -130,8 +87,8 @@ export function WorkerWidget({ timeZone }: { timeZone: string }) {
     enabled: Boolean(status?.outreachEnabled),
     queueCount: status?.queueCount ?? 0,
     pacingWait:
-      status?.outreachEnabled && status.nextEligibleAt
-        ? { reason: "Waiting for the next scheduled action", nextAt: status.nextEligibleAt }
+      status?.outreachEnabled && status.paceAt && status.paceReason
+        ? { reason: status.paceReason, nextAt: status.paceAt }
         : null,
     acting: status?.currentAction?.startsWith("executing_") === true,
     attention,
@@ -140,8 +97,6 @@ export function WorkerWidget({ timeZone }: { timeZone: string }) {
   });
   const action = formatCurrentAction(status?.currentAction, status?.username);
   const recommendation = recommendedDiagnostic(status?.command?.error_code || status?.command?.error_message);
-  const zone = timeZone || "UTC";
-
   async function send(type: "pause_discovery" | "stop_discovery" | "pause_outreach") {
     setPending(true);
     const result = await requestWorkerCommand(type, {});
@@ -170,7 +125,7 @@ export function WorkerWidget({ timeZone }: { timeZone: string }) {
           <p>{versions.mismatch ? "Worker actions stay disabled until the Windows worker is updated." : discovery.detail}</p>
         </div>
       ) : null}
-      <section className="fixed bottom-4 right-4 z-40 w-[min(24rem,calc(100vw-1.5rem))]" aria-label="Worker control">
+      <section className="fixed bottom-4 right-4 z-40 w-[min(24rem,calc(100vw-1.5rem))]" aria-label="Worker control" data-timezone={timeZone}>
         {open ? (
           <div className="max-h-[70vh] overflow-y-auto rounded-2xl border border-white/10 bg-[#0b1020]/90 p-4 text-sm shadow-[0_20px_60px_rgba(0,0,0,0.45)] backdrop-blur-xl">
             <div className="flex items-center justify-between">
@@ -197,8 +152,9 @@ export function WorkerWidget({ timeZone }: { timeZone: string }) {
             </div>
             <p className="mt-3 text-xs text-slate-500">Current action</p>
             <p>{action}</p>
-            {discovery.resumesAt ? <p className="text-xs text-slate-600">Next profile {formatResumeClock(discovery.resumesAt, zone)}</p> : null}
-            {outreach.resumesAt ? <p className="text-xs text-slate-600">Next eligible action {formatResumeClock(outreach.resumesAt, zone)}</p> : null}
+            {discovery.resumesAt ? <p className="text-xs text-slate-600">Next profile <LiveCountdown targetAt={discovery.resumesAt} /></p> : null}
+            {status?.currentAction?.startsWith("executing_") ? null : status?.paceUsername ? <p className="text-xs text-slate-600">Next @{status.paceUsername.replace(/^@/, "")}</p> : null}
+            {status?.currentAction?.startsWith("executing_") ? null : status?.paceAt ? <p className="text-xs text-slate-600"><LiveCountdown targetAt={status.paceAt} /></p> : null}
             <div className="mt-3 grid grid-cols-2 gap-2 text-xs">
               <label>Review target
                 <input aria-label="Review target" className="mt-1 w-full rounded-lg border border-slate-200 px-2 py-1" value={target} onChange={(event) => setTarget(event.target.value)} />

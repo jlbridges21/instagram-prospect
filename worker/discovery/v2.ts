@@ -90,7 +90,8 @@ export async function runDiscoveryV2(input: {
   maybeOutreach?: () => Promise<void>;
   metrics?: CloudEfficiency;
   gate?: (input: { inspections: number; ai: number; emptyCycles: number }) => Promise<{ pause: boolean; reason: string | null } | null>;
-  profilePages?: [Page, Page];
+  profilePages?: [Page | null, Page | null];
+  preferredTab?: "profile-tab-1" | "profile-tab-2";
   retainTabs?: boolean;
   shouldYield?: () => boolean | Promise<boolean>;
   browserLock?: { tryAcquire: (owner: "discovery") => boolean; release: (owner: "discovery") => void };
@@ -120,9 +121,13 @@ export async function runDiscoveryV2(input: {
       log("warn", "qualification_request_failed", { prospect_id: prospectId, message: error instanceof Error ? error.message : "failed" });
     }
   });
-  const tabs = input.profilePages
-    ? PROFILE_TABS.map((id, index) => ({ id, page: input.profilePages![index] }))
-    : [] as Array<{ id: (typeof PROFILE_TABS)[number]; page: Page }>;
+  const tabs = (input.profilePages
+    ? PROFILE_TABS.map((id, index) => {
+        const page = input.profilePages?.[index];
+        return page ? { id, page } : null;
+      })
+    : [] as Array<{ id: (typeof PROFILE_TABS)[number]; page: Page } | null>)
+    .filter((tab): tab is { id: (typeof PROFILE_TABS)[number]; page: Page } => Boolean(tab));
   try {
     if (!input.profilePages) {
       for (const id of PROFILE_TABS) {
@@ -133,7 +138,7 @@ export async function runDiscoveryV2(input: {
     if (input.singleTurn) {
       const target = latestConfig?.candidateQueueTarget ?? 10;
       if (queue.pendingCount() < queueThresholds(target).lowWater) await collectLoop();
-      const tab = tabs[0];
+      const tab = tabs.find((item) => item.id === input.preferredTab) ?? tabs[0];
       if (tab && queue.pendingCount() > 0) await inspectLoop(tab.id, tab.page);
     } else {
       await Promise.all([

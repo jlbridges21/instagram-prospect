@@ -13,7 +13,6 @@ import {
   executionStates,
   formatBrowserHealthEvent,
   isBrowserClosedMessage,
-  pagesToOpen,
   recoveryDecision,
   restartBrowserAllowed,
   shouldLogBrowserFailure,
@@ -21,6 +20,7 @@ import {
   type BrowserState,
   type SideEffect,
 } from "../lib/worker/browser-health";
+import { BLANK_TAB_LIMIT_MS, browserRestartRequired, profileTabHealth, selectInspectionTab, type ProfileTabId } from "../lib/worker/profile-tabs";
 import { prospectCompletionLine } from "../lib/outreach/completion-log";
 import { JobQuarantine, persistFailure } from "../lib/outreach/failure-sync";
 import { launchBrowser } from "./browser/launch";
@@ -28,7 +28,7 @@ import { createHeartbeatSession, mustHeartbeatBeforeClaim, safeHeartbeatError } 
 import { CloudClient, type CloudConfig, type JobPayload } from "./cloud/client";
 import { emptyEfficiency, formatEfficiency, runDiscoveryV2 } from "./discovery/v2";
 import { loadIdentity } from "./identity";
-import { formatComposerComparison, formatHeaderInspect, formatInitialComposer, sequenceOwnsFollow } from "../lib/outreach/dm";
+import { formatComposerComparison, formatHeaderInspect, formatIdentityDecision, formatInitialComposer, sequenceOwnsFollow } from "../lib/outreach/dm";
 import { dryRunPlan, formatDryRun } from "../lib/outreach/dry-run-plan";
 import { recoverFollowDecision } from "../lib/outreach/follow-confirm";
 import {
@@ -120,7 +120,9 @@ export async function runWorker(mode: RunMode) {
     failed: false,
     attempts: 0,
     discoveryActive: false,
-    profiles: [] as import("playwright").Page[],
+    profiles: [null, null] as Array<import("playwright").Page | null>,
+    blankSince: [null, null] as Array<number | null>,
+    lastProfileTab: null as ProfileTabId | null,
     outreachPage: null as import("playwright").Page | null,
     lastHealthLog: null as string | null,
     generation: 0,
@@ -164,6 +166,17 @@ export async function runWorker(mode: RunMode) {
         );
       }
       console.log("");
+      if ("headerCandidates" in inspection) {
+        console.log(formatIdentityDecision({
+          username: inspectUsernameArg,
+          pageUrl: inspection.directPath || null,
+          candidates: inspection.headerCandidates ?? [],
+          composerFound: inspection.composerFound,
+          confirmed: inspection.recipientConfirmed === true,
+          strategy: inspection.recipientStrategy ?? null,
+          reason: inspection.recipientReason ?? null,
+        }));
+      }
       console.log(`Conversation recipient: ${"recipientConfirmed" in inspection && inspection.recipientConfirmed ? "confirmed" : "not confirmed"}`);
       console.log(`Recipient strategy: ${"recipientStrategy" in inspection && inspection.recipientStrategy ? inspection.recipientStrategy : "none"}`);
       console.log(`Conflicting recipient evidence: ${"conflicting" in inspection && inspection.conflicting ? "yes" : "no"}`);
@@ -340,7 +353,9 @@ export async function runWorker(mode: RunMode) {
     const generation = session.generation;
     await context.close().catch(() => undefined);
     session.closed = true;
-    session.profiles = [];
+    session.profiles = [null, null];
+    session.blankSince = [null, null];
+    session.lastProfileTab = null;
     session.outreachPage = null;
     try {
       const next = await launchBrowser();
@@ -367,18 +382,75 @@ export async function runWorker(mode: RunMode) {
     }
   }
 
+  async function observeProfileTab(page: import("playwright").Page | null, blankSince: number | null) {
+    const now = Date.now();
+    if (!page) return { closed: true, url: null, crashed: false, navigationFailed: false, blankSince, now };
+    try {
+      if (page.isClosed()) return { closed: true, url: null, crashed: false, navigationFailed: false, blankSince, now };
+      return { closed: false, url: page.url(), crashed: false, navigationFailed: false, blankSince, now };
+    } catch {
+      return { closed: false, url: null, crashed: false, navigationFailed: false, blankSince, now };
+    }
+  }
+
   async function ensureProfileTabs() {
-    session.profiles = session.profiles.filter((tab) => !tab.isClosed());
-    const need = pagesToOpen(session.profiles.length);
     if (!contextUsable({ exists: true, closed: session.closed, pagesReadable: pagesReadable() })) {
       session.closed = true;
       return null;
     }
-    for (let index = 0; index < need; index += 1) {
-      session.profiles.push(await context.newPage());
+    const ids: ProfileTabId[] = ["profile-tab-1", "profile-tab-2"];
+    const pages: [import("playwright").Page | null, import("playwright").Page | null] = [null, null];
+    for (let index = 0; index < ids.length; index += 1) {
+      const id = ids[index];
+      const existing = session.profiles[index] ?? null;
+      const observed = await observeProfileTab(existing, session.blankSince[index]);
+      const blankSince = observed.url === "about:blank" || observed.url === ""
+        ? observed.now - BLANK_TAB_LIMIT_MS
+        : null;
+      const health = profileTabHealth({ ...observed, blankSince });
+      if (existing && health.healthy) {
+        pages[index] = existing;
+        continue;
+      }
+      const replacing = Boolean(existing);
+      if (existing) {
+        console.log(`${id} unhealthy: ${health.reason}`);
+        console.log(`Recreating ${id}...`);
+        await existing.close().catch(() => undefined);
+      }
+      try {
+        const created = await context.newPage();
+        session.blankSince[index] = Date.now();
+        const loaded = await created
+          .goto("https://www.instagram.com/", { waitUntil: "domcontentloaded", timeout: 20_000 })
+          .then(() => true)
+          .catch(() => false);
+        const restored = profileTabHealth({
+          ...(await observeProfileTab(created, null)),
+          navigationFailed: !loaded,
+          blankSince: null,
+        });
+        if (!restored.healthy) {
+          console.log(`${id} could not be restored. Discovery will continue with the other profile tab.`);
+          await created.close().catch(() => undefined);
+          session.profiles[index] = null;
+          continue;
+        }
+        session.profiles[index] = created;
+        session.blankSince[index] = null;
+        pages[index] = created;
+        if (replacing) console.log(`${id} restored.`);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "";
+        if (isBrowserClosedMessage(message) || !pagesReadable()) {
+          session.closed = true;
+          return null;
+        }
+        console.log(`${id} could not be restored. Discovery will continue with the other profile tab.`);
+        session.profiles[index] = null;
+      }
     }
-    if (session.profiles.length !== 2) return null;
-    return [session.profiles[0], session.profiles[1]] as [import("playwright").Page, import("playwright").Page];
+    return pages;
   }
 
   async function holdForBrowser(config: CloudConfig) {
@@ -673,9 +745,22 @@ export async function runWorker(mode: RunMode) {
         if (admission.enter && discoveryIsDue && !outreachStillDue) {
           const tabs = await ensureProfileTabs();
           if (!tabs) {
-            session.closed = true;
+            if (browserRestartRequired({ contextConnected: false })) session.closed = true;
             continue;
           }
+          const choice = selectInspectionTab({
+            tabs: [
+              { id: "profile-tab-1", healthy: Boolean(tabs[0] && !tabs[0].isClosed()) },
+              { id: "profile-tab-2", healthy: Boolean(tabs[1] && !tabs[1].isClosed()) },
+            ],
+            lastUsed: session.lastProfileTab,
+          });
+          if (!choice.assign) {
+            console.log("Both profile tabs are unavailable. Discovery will retry without closing Chrome.");
+            await sleep(5_000);
+            continue;
+          }
+          session.lastProfileTab = choice.assign;
           live.task = "discovering_candidates";
           live.instagramAuthenticated = true;
           if (discoveryV2Test) console.log("Discovery V2 test. Outreach stays paused. Inspecting up to 10 profiles.");
@@ -694,6 +779,7 @@ export async function runWorker(mode: RunMode) {
               debug: debug || discoveryOnly,
               inspectionLimit: inspectionCap,
               profilePages: tabs,
+              preferredTab: choice.assign,
               retainTabs: true,
               shouldStop: () => stopping || control.pauseDiscovery || session.closed,
               shouldYield: () => config.automationEnabled && (activeSideEffect != null || Date.now() >= outreachDueAt),
@@ -944,11 +1030,16 @@ async function settleExecution(
     confirmation?: string;
     recoveredWithoutClick?: boolean;
     composerNotFound?: boolean;
+    composerUnavailable?: boolean;
+    messageUnavailable?: boolean;
+    dmUnavailable?: boolean;
     composerTextMismatch?: boolean;
     existingDraftMismatch?: boolean;
     manualReview?: boolean;
     recipientUnconfirmed?: boolean;
     ambiguousReason?: string;
+    failureCode?: string;
+    retryable?: boolean;
   };
   if (
     job.type === "send_message" &&
@@ -958,6 +1049,8 @@ async function settleExecution(
     result.preexistingFollow !== true &&
     result.profileExists !== false &&
     result.composerNotFound !== true &&
+    result.composerUnavailable !== true &&
+    result.messageUnavailable !== true &&
     result.composerTextMismatch !== true &&
     result.existingDraftMismatch !== true &&
     result.manualReview !== true &&
@@ -992,24 +1085,42 @@ async function settleExecution(
     console.log("The composer text did not match the queued message, so it was not sent.");
     return "stop" as const;
   }
-  if (outcome.composerNotFound) {
+  if (outcome.messageUnavailable || outcome.dmUnavailable) {
     await reportFailure(
       cloud,
       workerId,
       job.id,
-      "dm_composer_not_found",
-      `Could not find the message composer for @${job.instagramUsername}.`,
-      true,
+      "message_unavailable",
+      `Instagram did not offer messaging for @${job.instagramUsername}. No DM was sent.`,
+      false,
+      job.instagramUsername,
     );
-    console.log(`Could not find the message composer for @${job.instagramUsername}.`);
+    console.log(`Messaging unavailable for @${job.instagramUsername}.`);
+    console.log("No DM sent.");
+    return "stop" as const;
+  }
+  if (outcome.composerUnavailable || outcome.composerNotFound) {
+    await reportFailure(
+      cloud,
+      workerId,
+      job.id,
+      "composer_unavailable",
+      `The message thread for @${job.instagramUsername} opened without a usable composer. No DM was sent.`,
+      true,
+      job.instagramUsername,
+    );
+    console.log(`Composer unavailable for @${job.instagramUsername}.`);
+    console.log("No DM sent.");
     return "stop" as const;
   }
   if (outcome.recipientUnconfirmed) {
     const reason = outcome.ambiguousReason || "Conversation recipient could not be confirmed.";
-    console.log(`Thread identity not confirmed for @${job.instagramUsername}.`);
+    const code = outcome.failureCode || "recipient_confirmation_failed";
+    const retryable = outcome.retryable !== false;
+    console.log(reason);
     console.log("No DM sent.");
-    console.log("Scheduling retry. This prospect will not be opened again until that retry is saved.");
-    await reportFailure(cloud, workerId, job.id, "recipient_confirmation_failed", reason, true, job.instagramUsername);
+    if (retryable) console.log("Scheduling retry. This prospect will not be opened again until that retry is saved.");
+    await reportFailure(cloud, workerId, job.id, code, reason, retryable, job.instagramUsername);
     return "stop" as const;
   }
   if (outcome.manualReview) {

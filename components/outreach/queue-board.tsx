@@ -1,11 +1,13 @@
 "use client";
 
 import Link from "next/link";
-import { useMemo, useState, useTransition } from "react";
+import { useEffect, useMemo, useRef, useState, useTransition } from "react";
 import { toast } from "sonner";
 import { cancelOutreach, rescheduleOutreachJob, retryOutreachJob } from "@/lib/actions/outreach";
 import type { FitLabel } from "@/lib/constants/prospects";
 import type { Json, OutreachJobRow } from "@/lib/db/types";
+import { livePollDelay } from "@/lib/discovery/policy";
+import { compareQueueJobs, mergeTabJobs, statusesForTab } from "@/lib/outreach/queue-sort";
 import { queueSendStatusLabel } from "@/lib/outreach/dm";
 import { queueFollowStatusLabel } from "@/lib/outreach/follow-confirm";
 import {
@@ -71,8 +73,76 @@ export function QueueBoard({
   const [selected, setSelected] = useState<Row | null>(null);
   const [when, setWhen] = useState("");
   const [pending, startTransition] = useTransition();
+  const [jobRows, setJobRows] = useState(jobs);
+  const [prospectRows, setProspectRows] = useState(prospects);
+  const [held, setHeld] = useState<{ count: number; jobs: OutreachJobRow[]; prospects: QueueProspect[] } | null>(null);
+  const jobRowsRef = useRef(jobs);
 
-  const rows = useMemo(() => buildRows(jobs, prospects), [jobs, prospects]);
+  useEffect(() => {
+    jobRowsRef.current = jobRows;
+  }, [jobRows]);
+
+  useEffect(() => {
+    let alive = true;
+    let timer = 0;
+    const statuses = statusesForTab(tab) ?? ["pending", "retry_wait", "claimed", "running", "failed", "completed", "cancelled"];
+
+    async function load() {
+      try {
+        const response = await fetch(`/api/dashboard/outreach-tab?tab=${tab}`, { cache: "no-store" });
+        if (!response.ok || !alive) return;
+        const body = (await response.json()) as { jobs: OutreachJobRow[]; prospects: QueueProspect[] };
+        const incoming = body.jobs ?? [];
+        const known = new Set(jobRowsRef.current.map((job) => job.id));
+        const added = incoming.filter((job) => !known.has(job.id));
+        const nearTop = window.scrollY < 180;
+        if (!nearTop && added.length > 0 && (tab === "completed" || tab === "failed")) {
+          setHeld({ count: added.length, jobs: incoming, prospects: body.prospects ?? [] });
+          setJobRows((current) => mergeTabJobs(current, incoming.filter((job) => known.has(job.id)), statuses));
+        } else {
+          setHeld(null);
+          setJobRows((current) => mergeTabJobs(current, incoming, statuses));
+        }
+        setProspectRows((current) => {
+          const map = new Map(current.map((prospect) => [prospect.id, prospect]));
+          for (const prospect of body.prospects ?? []) map.set(prospect.id, prospect);
+          return [...map.values()];
+        });
+        setSelected((current) => {
+          if (!current) return current;
+          const next = incoming.find((job) => job.id === current.job.id);
+          return next ? { ...current, job: next } : current;
+        });
+      } catch {
+        // The next poll retries.
+      }
+    }
+
+    function schedule() {
+      timer = window.setTimeout(async () => {
+        await load();
+        if (alive) schedule();
+      }, livePollDelay(document.visibilityState === "visible"));
+    }
+
+    function onVisible() {
+      if (document.visibilityState !== "visible") return;
+      window.clearTimeout(timer);
+      void load().then(() => {
+        if (alive) schedule();
+      });
+    }
+
+    schedule();
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      alive = false;
+      window.clearTimeout(timer);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
+  }, [tab]);
+
+  const rows = useMemo(() => buildRows(jobRows, prospectRows), [jobRows, prospectRows]);
   const workers = [...new Set(rows.map((row) => row.job.claimed_by_worker_id).filter(Boolean))] as string[];
 
   const visible = rows.filter((row) => {
@@ -82,7 +152,7 @@ export function QueueBoard({
     if (day && localDay(row.job.scheduled_for, timeZone) !== day) return false;
     const haystack = `${row.prospect.instagram_username} ${row.prospect.display_name ?? ""}`.toLowerCase();
     return haystack.includes(query.trim().toLowerCase());
-  });
+  }).sort((left, right) => compareQueueJobs(tab, left.job, right.job));
 
   function run(action: () => Promise<{ ok: boolean; error?: string; message?: string }>) {
     startTransition(async () => {
@@ -114,6 +184,19 @@ export function QueueBoard({
           </button>
         ))}
       </div>
+      {held ? (
+        <button
+          type="button"
+          className="mt-3 text-xs font-medium text-indigo-700"
+          onClick={() => {
+            const statuses = statusesForTab(tab) ?? ["pending", "retry_wait", "claimed", "running", "failed", "completed", "cancelled"];
+            setJobRows((current) => mergeTabJobs(current, held.jobs, statuses));
+            setHeld(null);
+          }}
+        >
+          {held.count} new {tab === "failed" ? "failed outreach" : "completed outreach"}
+        </button>
+      ) : null}
 
       <div className="mt-4 grid gap-3 md:grid-cols-4">
         <input

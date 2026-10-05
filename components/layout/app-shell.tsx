@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useState, useSyncExternalStore } from "react";
+import { subscribeDashboardStatus, type DashboardStatus } from "@/components/worker/status-poll";
 import {
   CalendarClock,
   ChartColumn,
@@ -73,7 +74,13 @@ export function AppShell({
   const pathname = usePathname();
   const collapsed = useSyncExternalStore(subscribeSidebar, sidebarCollapsed, () => false);
   const [openPath, setOpenPath] = useState<string | null>(null);
+  const [live, setLive] = useState<DashboardStatus | null>(null);
   const open = openPath === pathname;
+  const reviewLive = live?.reviewCount ?? reviewCount;
+  const reviewValue = live ? `${live.reviewCount} waiting` : strip.reviewDetail;
+  const outreachDetail = live ? `${live.queueCount} queued · ${live.contactedCount ?? 0} contacted` : strip.outreachDetail;
+
+  useEffect(() => subscribeDashboardStatus(setLive), []);
 
   useEffect(() => {
     if (!open) return;
@@ -95,7 +102,7 @@ export function AppShell({
         Skip to content
       </a>
       <aside className={cn("fixed inset-y-0 left-0 z-30 hidden flex-col border-r border-white/10 bg-[#080b12]/90 backdrop-blur-xl lg:flex", collapsed ? "w-[4.75rem]" : "w-64")}>
-        <SidebarContent email={email} pathname={pathname} workerOnline={workerOnline} reviewCount={reviewCount} collapsed={collapsed} onToggle={toggleSidebar} />
+        <SidebarContent email={email} pathname={pathname} workerOnline={workerOnline} reviewCount={reviewLive} collapsed={collapsed} onToggle={toggleSidebar} />
       </aside>
       <div className={cn("transition-[padding]", collapsed ? "lg:pl-[4.75rem]" : "lg:pl-64")}>
         <header className="sticky top-0 z-20 border-b border-white/10 bg-[#05070d]/80 px-4 py-3 backdrop-blur-xl">
@@ -107,8 +114,8 @@ export function AppShell({
           </div>
           <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
             <StatusCard href="/discovery" label="Discovery" value={strip.discovery} detail={strip.discoveryDetail} />
-            <StatusCard href="/review" label="Review" value={strip.reviewDetail} detail="Waiting for a decision" />
-            <StatusCard href="/outreach" label="Outreach" value={strip.outreach} detail={strip.outreachDetail} />
+            <StatusCard href="/review" label="Review" value={reviewValue} detail="Waiting for a decision" />
+            <StatusCard href="/outreach" label="Outreach" value={strip.outreach} detail={outreachDetail} />
             <StatusCard href="/worker" label="Worker" value={workerOnline ? "CONNECTED" : "OFFLINE"} detail={strip.workerDetail} live={workerOnline} />
           </div>
         </header>
@@ -116,7 +123,7 @@ export function AppShell({
           <div className="fixed inset-0 z-40 lg:hidden">
             <button type="button" className="absolute inset-0 bg-black/50" aria-label="Close navigation" onClick={() => setOpenPath(null)} />
             <div className="absolute inset-y-0 left-0 flex w-72 max-w-[85vw] flex-col bg-[#080b12]">
-              <SidebarContent email={email} pathname={pathname} workerOnline={workerOnline} reviewCount={reviewCount} collapsed={false} onNavigate={() => setOpenPath(null)} onToggle={toggleSidebar} />
+              <SidebarContent email={email} pathname={pathname} workerOnline={workerOnline} reviewCount={reviewLive} collapsed={false} onNavigate={() => setOpenPath(null)} onToggle={toggleSidebar} />
             </div>
           </div>
         ) : null}

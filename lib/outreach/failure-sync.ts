@@ -15,6 +15,11 @@ export function isSafeUnsentFailure(result: unknown, lastError: string | null | 
   const code = recordedFailureCode(result);
   if (
     code === "recipient_confirmation_failed" ||
+    code === "recipient_detection_unresolved" ||
+    code === "ui_structure_unknown" ||
+    code === "message_unavailable" ||
+    code === "composer_unavailable" ||
+    code === "dm_unavailable" ||
     code === "dm_composer_not_found" ||
     code === "composer_text_mismatch" ||
     code === "message_send_failed" ||

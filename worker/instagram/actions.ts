@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import type { Page } from "playwright";
+import { clearIdentityFingerprint, readIdentityFingerprint, writeIdentityFingerprint } from "./identity-memory";
 import { debugDir, screenshotDir } from "../paths";
 import { AttentionError, SelectorError } from "./errors";
 import {
@@ -16,6 +17,9 @@ import {
   type ActiveComposerCandidate,
   composerDraftDecision,
   confirmConversationRecipient,
+  directStructureFingerprint,
+  formatIdentityDecision,
+  nextIdentityFailure,
   EXISTING_DRAFT_MISMATCH,
   type NavigationProvenance,
   detectComposer,
@@ -309,16 +313,18 @@ export async function sendExactMessage(
     throw new SelectorError(`@${username} is not followed by this outreach sequence, so the message was not sent.`);
   }
   const dom = await readDom(page);
-  if (messagingUnavailable(dom)) return { sent: false, dmUnavailable: true, profileExists: true };
+  if (messagingUnavailable(dom)) {
+    return { sent: false, dmUnavailable: true, messageUnavailable: true, profileExists: true };
+  }
   const action = selectPrimaryMessageAction(dom.messageActionHits ?? [], dom.usernameBox);
   if (!action.found || !action.hit?.box) {
     await saveComposerDebug(page, username, dom);
-    return { sent: false, composerNotFound: true, sendAttempted: false, profileExists: true };
+    return { sent: false, messageUnavailable: true, sendAttempted: false, profileExists: true };
   }
   const clicked = await clickMessageHit(page, action.hit.box);
   if (!clicked) {
     await saveComposerDebug(page, username, dom);
-    return { sent: false, composerNotFound: true, sendAttempted: false, profileExists: true };
+    return { sent: false, composerUnavailable: true, sendAttempted: false, profileExists: true };
   }
   const opened = await waitForDirect(page, username, current.profile.displayName, message, current.profile.username === username.toLowerCase());
   if (
@@ -338,12 +344,25 @@ export async function sendExactMessage(
     conversationMatches: opened.recipient.confirmed,
   });
   if (decision.action === "review") {
+    if (prior?.sendAttempted === true || opened.recipient.confirmed) {
+      return {
+        sent: false,
+        manualReview: true,
+        ambiguousReason: decision.reason,
+        sendAttempted: true,
+        profileExists: true,
+      };
+    }
+    const identity = identityFailure(username, opened.dom, opened.composerFound);
+    console.log(identity.report);
+    console.log("No DM sent.");
     return {
       sent: false,
-      manualReview: prior?.sendAttempted === true,
-      recipientUnconfirmed: prior?.sendAttempted !== true,
-      ambiguousReason: decision.reason,
-      sendAttempted: prior?.sendAttempted === true,
+      recipientUnconfirmed: true,
+      ambiguousReason: identity.reason,
+      failureCode: identity.code,
+      retryable: identity.retryable,
+      sendAttempted: false,
       profileExists: true,
     };
   }
@@ -352,7 +371,7 @@ export async function sendExactMessage(
   if (!inserted.composerSelected) {
     console.log(inserted.candidatesText);
     await saveComposerDebug(page, username, opened.dom);
-    return { sent: false, composerNotFound: true, sendAttempted: false, profileExists: true };
+    return { sent: false, composerUnavailable: true, sendAttempted: false, profileExists: true };
   }
   if (inserted.draft === "queued-message") {
     console.log("Composer already contains queued message.");
@@ -385,15 +404,55 @@ export async function sendExactMessage(
     }
     if (decisionGate.blockingGate === "followOwnedBySequence") return { sent: false, preexistingFollow: true, profileExists: true };
     if (decisionGate.blockingGate === "recipientConfirmed") {
-      return { sent: false, recipientUnconfirmed: true, sendAttempted: false, ambiguousReason: "Conversation recipient could not be confirmed.", profileExists: true };
+      const identity = identityFailure(username, opened.dom, true);
+      console.log(identity.report);
+      console.log("No DM sent.");
+      return {
+        sent: false,
+        recipientUnconfirmed: true,
+        sendAttempted: false,
+        ambiguousReason: identity.reason,
+        failureCode: identity.code,
+        retryable: identity.retryable,
+        profileExists: true,
+      };
     }
     return { sent: false, composerNotFound: true, sendAttempted: false, profileExists: true };
   }
+  clearIdentityFingerprint(username);
   const send = page.getByRole("button", { name: /^Send$/ });
   await send.click({ timeout: ACTION_TIMEOUT_MS });
   const confirmed = await confirmSend(page, message);
   if (confirmed === "confirmed") return { sent: true, profileExists: true };
   return { sent: false, sendAttempted: true, confirmation: "uncertain" as const, profileExists: true };
+}
+
+function identityFailure(
+  username: string,
+  dom: { url: string; recipientCandidates?: Array<{ tag?: string; role: string; href: string; ariaLabel: string; text: string; title: string; alt: string }> },
+  composerFound: boolean,
+) {
+  const candidates = dom.recipientCandidates ?? [];
+  const fingerprint = directStructureFingerprint({ url: dom.url, composerFound, candidates });
+  const sawHeaderSignals = candidates.some((candidate) => Boolean(candidate.href || candidate.ariaLabel));
+  const next = nextIdentityFailure({
+    previousFingerprint: readIdentityFingerprint(username),
+    fingerprint,
+    sawHeaderSignals,
+  });
+  writeIdentityFingerprint(username, fingerprint);
+  return {
+    ...next,
+    report: formatIdentityDecision({
+      username,
+      pageUrl: dom.url,
+      candidates,
+      composerFound,
+      confirmed: false,
+      strategy: null,
+      reason: next.reason,
+    }),
+  };
 }
 
 const CLICK_MESSAGE_SOURCE = `({ x, y }) => {
@@ -715,6 +774,8 @@ function directSnapshot(
     displayName,
     candidates: dom.recipientCandidates ?? [],
     provenance,
+    pageUrl: dom.url,
+    conversationHeader: dom.conversationHeader,
   });
   return {
     signal,
