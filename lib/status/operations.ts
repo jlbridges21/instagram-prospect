@@ -110,27 +110,15 @@ export function formatDiscoveryStatus(input: {
         : "Resolve it in the Windows Chrome window.",
     };
   }
-  if (input.enabled && input.hourly) {
-    return {
-      desired: "RUNNING",
-      actual: "WAITING",
-      tone: "waiting",
-      label: "WAITING — Hourly inspection limit reached",
-      reason: "Hourly inspection limit reached",
-      detail: `${input.hourly.count} / ${input.hourly.limit} profiles inspected in the rolling hour. Review is ${review}.`,
-      resumesAt: input.hourly.resumesAt,
-      action: null,
-    };
-  }
   if (input.enabled) {
     return {
       desired: "RUNNING",
       actual: "RUNNING",
       tone: "running",
       label: "RUNNING",
-      reason: input.yieldingToOutreach ? "Temporarily yielding to Outreach" : "Discovery is looking for qualified prospects.",
-      detail: input.yieldingToOutreach ? `Worker currently servicing Outreach. Review ${review}.` : `Review ${review}.`,
-      resumesAt: null,
+      reason: input.yieldingToOutreach ? "Temporarily yielding to Outreach" : input.hourly ? "Next profile inspection scheduled" : "Discovery is looking for qualified prospects.",
+      detail: input.hourly ? `${input.hourly.count} inspected in the recent hour. Review ${review}.` : `Review ${review}.`,
+      resumesAt: input.hourly?.resumesAt ?? null,
       action: null,
     };
   }
@@ -228,11 +216,11 @@ export function formatOutreachStatus(input: {
   if (input.enabled && input.pacingWait && !input.acting) {
     return {
       desired: "RUNNING",
-      actual: "WAITING",
-      tone: "waiting",
-      label: `WAITING — ${input.pacingWait.reason}`,
+      actual: "RUNNING",
+      tone: "running",
+      label: "RUNNING",
       reason: input.pacingWait.reason,
-      detail: "Hourly, daily, and spacing limits still apply. Outreach is not limited to a time of day.",
+      detail: "The next prospect waits for spacing, the hourly ceiling, or the daily ceiling.",
       resumesAt: input.pacingWait.nextAt,
       action: null,
     };

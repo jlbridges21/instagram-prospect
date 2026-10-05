@@ -150,7 +150,7 @@ export function reflowPlan(input: {
       dailyMaximum: input.dailyMaximum,
       completedSendTimes: virtual,
     });
-    const iso = slot.at.toISOString();
+    const iso = input.now.toISOString();
     for (const job of jobs) {
       if (job.status !== "pending" || job.startedAt || jobIsUncertain(job)) continue;
       if (job.scheduledFor !== iso) updates.push({ id: job.id, prospectId, scheduledFor: iso });
@@ -184,6 +184,21 @@ export type ClaimPaceDecision = {
   jobIds: string[];
 };
 
+export function queueHealth(jobs: PaceJob[]) {
+  const grouped = new Map<string, PaceJob[]>();
+  for (const job of jobs) grouped.set(job.prospectId, [...(grouped.get(job.prospectId) ?? []), job]);
+  let fresh = 0;
+  let retrying = 0;
+  let failed = 0;
+  for (const prospectJobs of grouped.values()) {
+    const open = prospectJobs.filter((job) => job.status === "pending" || job.status === "retry_wait" || job.status === "claimed" || job.status === "running");
+    if (open.some((job) => job.status === "retry_wait")) retrying += 1;
+    else if (open.length > 0) fresh += 1;
+    else if (prospectJobs.some((job) => job.status === "failed")) failed += 1;
+  }
+  return { remaining: fresh + retrying, fresh, retrying, failed };
+}
+
 export function claimPaceDecision(input: {
   now: Date;
   timeZone: string;
@@ -195,54 +210,77 @@ export function claimPaceDecision(input: {
 }): ClaimPaceDecision {
   const grouped = new Map<string, PaceJob[]>();
   for (const job of input.jobs) grouped.set(job.prospectId, [...(grouped.get(job.prospectId) ?? []), job]);
+  const prospects = [...grouped.entries()].filter(([, jobs]) => !jobs.some((job) => jobIsUncertain(job) || job.status === "running" || job.status === "claimed"));
 
-  for (const [prospectId, jobs] of grouped) {
-    if (jobs.some((job) => jobIsUncertain(job) || job.status === "running" || job.status === "claimed")) continue;
-    const next = jobs
-      .filter((job) => job.status === "pending" || job.status === "retry_wait")
-      .sort((left, right) => left.scheduledFor.localeCompare(right.scheduledFor))[0];
-    if (!next || next.jobType === "verify_profile") continue;
-    const parentDone = jobs.some((job) => job.status === "completed");
-    if (!parentDone) continue;
-    const available = next.availableAt ? new Date(next.availableAt) : new Date(next.scheduledFor);
-    if (next.status === "retry_wait" && available.getTime() > input.now.getTime()) {
-      return {
-        action: "wait" as const,
-        prospectId,
-        username: next.username ?? null,
-        at: available,
-        reason: "scheduled_retry" as const,
-        jobIds: jobs.filter((job) => job.status === "pending" || job.status === "retry_wait").map((job) => job.id),
-      };
-    }
+  const continuation = prospects
+    .map(([prospectId, jobs]) => ({ prospectId, jobs, next: nextOpenJob(jobs) }))
+    .filter((item) => item.next && item.next.status === "pending" && item.next.jobType !== "verify_profile" && item.jobs.some((job) => job.status === "completed"))
+    .sort((left, right) => (left.next?.createdAt ?? "").localeCompare(right.next?.createdAt ?? ""));
+  const firstContinuation = continuation[0];
+  if (firstContinuation?.next) {
+    return claim(firstContinuation.prospectId, firstContinuation.next, input.now);
+  }
+
+  const slot = nextProspectSlot(input);
+  const fresh = prospects
+    .filter(([, jobs]) => prospectCanReflow(jobs))
+    .sort((left, right) => earliestStamp(left[1]) < earliestStamp(right[1]) ? -1 : 1);
+  if (slot.at.getTime() > input.now.getTime() + 1000) {
+    const waiting = fresh[0];
     return {
-      action: "claim" as const,
-      prospectId,
-      username: next.username ?? null,
-      at: input.now,
-      reason: "ready" as const,
-      jobIds: jobs.filter((job) => job.status === "pending").map((job) => job.id),
+      action: "wait",
+      prospectId: waiting?.[0] ?? null,
+      username: waiting?.[1][0]?.username ?? null,
+      at: slot.at,
+      reason: slot.reason,
+      jobIds: waiting?.[1].map((job) => job.id) ?? [],
     };
   }
 
-  const plan = reflowPlan(input);
-  const next = plan.nextAt;
-  if (!next || plan.remaining === 0) {
-    return { action: "idle" as const, prospectId: null, username: null, at: null, reason: "ready" as const, jobIds: [] as string[] };
+  const readyFresh = fresh[0];
+  if (readyFresh) return claim(readyFresh[0], readyFresh[1][0] ?? null, input.now);
+
+  const dueRetries = prospects
+    .map(([prospectId, jobs]) => ({ prospectId, jobs, next: nextOpenJob(jobs) }))
+    .filter((item) => item.next?.status === "retry_wait" && availableAt(item.next, input.now).getTime() <= input.now.getTime())
+    .sort((left, right) => availableAt(left.next, input.now).getTime() - availableAt(right.next, input.now).getTime());
+  const due = dueRetries[0];
+  if (due?.next) return claim(due.prospectId, due.next, input.now);
+
+  const futureRetry = prospects
+    .map(([, jobs]) => nextOpenJob(jobs))
+    .filter((job): job is PaceJob => job?.status === "retry_wait")
+    .map((job) => availableAt(job, input.now))
+    .sort((left, right) => left.getTime() - right.getTime())[0];
+  if (futureRetry && futureRetry.getTime() > input.now.getTime()) {
+    return { action: "wait", prospectId: null, username: null, at: futureRetry, reason: "scheduled_retry", jobIds: [] };
   }
-  const ordered = [...grouped.entries()]
-    .filter(([, jobs]) => prospectCanReflow(jobs))
-    .sort((left, right) => earliestStamp(left[1]) < earliestStamp(right[1]) ? -1 : 1);
-  const prospect = ordered[0];
-  if (!prospect) {
-    return { action: "idle" as const, prospectId: null, username: null, at: null, reason: "ready" as const, jobIds: [] as string[] };
+  if (fresh.length === 0 && dueRetries.length === 0) {
+    return { action: "idle", prospectId: null, username: null, at: null, reason: "ready", jobIds: [] };
   }
-  const username = prospect[1][0]?.username ?? null;
-  const jobIds = prospect[1].map((job) => job.id);
-  if (next.at.getTime() > input.now.getTime() + 1000) {
-    return { action: "wait" as const, prospectId: prospect[0], username, at: next.at, reason: next.reason, jobIds };
-  }
-  return { action: "claim" as const, prospectId: prospect[0], username, at: input.now, reason: "ready" as const, jobIds };
+  return { action: "idle", prospectId: null, username: null, at: null, reason: "ready", jobIds: [] };
+}
+
+function nextOpenJob(jobs: PaceJob[]) {
+  return jobs
+    .filter((job) => job.status === "pending" || job.status === "retry_wait")
+    .sort((left, right) => left.scheduledFor.localeCompare(right.scheduledFor))[0] ?? null;
+}
+
+function availableAt(job: PaceJob | null, now: Date) {
+  if (!job) return now;
+  return new Date(job.availableAt ?? job.scheduledFor);
+}
+
+function claim(prospectId: string, job: PaceJob | null, now: Date): ClaimPaceDecision {
+  return {
+    action: "claim",
+    prospectId,
+    username: job?.username ?? null,
+    at: now,
+    reason: "ready",
+    jobIds: job ? [job.id] : [],
+  };
 }
 
 function latestSend(times: Date[]) {

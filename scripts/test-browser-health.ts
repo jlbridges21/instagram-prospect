@@ -106,7 +106,7 @@ const waiting = formatOutreachStatus({
   browser: "connected",
   pacingWait: { reason: "Waiting for minimum spacing", nextAt: "2026-10-03T07:02:41.000Z" },
 });
-assert.equal(waiting.actual, "WAITING");
+assert.equal(waiting.actual, "RUNNING");
 assert.match(waiting.reason, /minimum spacing/);
 
 assert.equal(restartBrowserAllowed({ online: true, state: "closed", sideEffect: null }).allowed, true);

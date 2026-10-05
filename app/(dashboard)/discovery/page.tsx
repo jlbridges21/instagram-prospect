@@ -72,7 +72,7 @@ export default async function DiscoveryPage() {
         {servicingOutreach ? <p className="mt-2 text-slate-700">Temporarily yielding browser control to Outreach.</p> : null}
         <div className="mt-4 grid gap-4 sm:grid-cols-2">
           <ProgressMetric label="Review target" value={progress.currentReview} max={settings.discovery.reviewTarget} hint="Possible Fit and Strong Fit profiles waiting for a decision." />
-          <ProgressMetric label="Hourly inspections" value={hourly?.count ?? 0} max={hourly?.limit ?? settings.discovery.maxProfilesPerHour} hint="Profile inspections in the rolling hour. This does not limit Follow or DM." />
+          <ProgressMetric label="Profiles per hour" value={settings.discovery.maxProfilesPerHour} max={settings.discovery.maxProfilesPerHour} hint="Cadence only. Discovery inspects one profile per interval." />
           <ProgressMetric label="Daily inspections" value={progress.dailyInspections} max={settings.discovery.dailyInspectionCap} />
           <ProgressMetric label="Daily AI qualifications" value={progress.dailyAi} max={settings.discovery.dailyAiCap} />
           <ProgressMetric label="Session inspections" value={progress.sessionInspections} max={settings.discovery.sessionInspectionCap} />

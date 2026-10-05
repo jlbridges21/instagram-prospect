@@ -109,7 +109,7 @@ const plan = reflowPlan({
   jobs: [...queued, completed, uncertain, pending("hold-verify", "hold", "verify_profile", midnight)],
 });
 assert.deepEqual(plan.updates.map((update) => update.id).sort(), ["f", "s", "v"]);
-assert.equal(plan.updates[0]?.scheduledFor, next.at.toISOString());
+assert.equal(plan.updates[0]?.scheduledFor, bradFinished.toISOString());
 assert.equal(plan.updates.some((update) => update.id === "done" || update.id === "unsure"), false);
 
 const decision = claimPaceDecision({

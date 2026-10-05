@@ -24,6 +24,7 @@ export type CloudConfig = {
   discoveryRunMinutes: number | null;
   discoveryRunInspectionLimit: number | null;
   discoveryRunStartedAt: string | null;
+  timezone: string;
 };
 
 export const CONFIG_CACHE_MS = 60_000;
@@ -131,6 +132,7 @@ export class CloudClient {
       discoveryRunMinutes: typeof json.discoveryRunMinutes === "number" ? json.discoveryRunMinutes : null,
       discoveryRunInspectionLimit: typeof json.discoveryRunInspectionLimit === "number" ? json.discoveryRunInspectionLimit : null,
       discoveryRunStartedAt: typeof json.discoveryRunStartedAt === "string" ? json.discoveryRunStartedAt : null,
+      timezone: typeof json.timezone === "string" && json.timezone ? json.timezone : "America/Chicago",
     } satisfies CloudConfig;
     this.configCache = value;
     this.configCachedAt = Date.now();

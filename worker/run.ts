@@ -1,6 +1,9 @@
 import { continuousOutreachStep } from "../lib/discovery/policy";
-import { checkpointHoldDecision, formatHourlyWait, formatHourlyWaitEvent, formatWorkerModes, getDiscoveryHourlyState, hourlyActual } from "../lib/discovery/pacing";
-import { readHourlyStamps, writeHourlyStamps } from "./discovery/hourly-history";
+import { discoveryDue, inspectionIntervalMs, scheduleNextInspection } from "../lib/discovery/cadence";
+import { checkpointHoldDecision, formatHourlyWaitEvent, formatWorkerModes } from "../lib/discovery/pacing";
+import { readHourlyStamps } from "./discovery/hourly-history";
+import { readDiscoveryCadence, writeDiscoveryCadence } from "./discovery/cadence-file";
+import { startOfNextLocalDay } from "../lib/outreach/time";
 import { BrowserActionLock, nextOrchestratorStep } from "../lib/worker/orchestrator";
 import { discoveryRunShouldStop } from "../lib/worker/commands";
 import {
@@ -232,7 +235,13 @@ export async function runWorker(mode: RunMode) {
     return;
   }
   const stats = { seen: 0, ingested: 0, excluded: 0, qualified: 0, errors: 0, hour: readHourlyStamps() };
-  let hourlyPhase: "running" | "waiting" | "paused" = "paused";
+  const savedCadence = readDiscoveryCadence();
+  let discoveryNextAt = savedCadence.nextInspectionAt;
+  let lastDiscoveryProgressAt = savedCadence.lastInspectionAt ?? 0;
+  let lastOutreachProgressAt = Date.now();
+  let discoveryStallLogged = false;
+  let outreachStallLogged = false;
+  let dailyBlockedUntil = 0;
   let outreachDueAt = 0;
   const efficiency = emptyEfficiency();
   const live = {
@@ -557,44 +566,39 @@ export async function runWorker(mode: RunMode) {
           console.log(`Discovery stopped. Reason: ${runStop.reason}.`);
           continue;
         }
+        backoff = 5_000;
         const outreachDueNow = config.automationEnabled && (activeSideEffect != null || Date.now() >= outreachDueAt);
-        const discoveryPace = getDiscoveryHourlyState({
-          stamps: stats.hour,
-          now: Date.now(),
-          limit: config.maxProfilesPerHour,
-        });
-        stats.hour = discoveryPace.stamps;
-        writeHourlyStamps(stats.hour);
-        const discoveryMode = hourlyActual({ enabled: config.discoveryEnabled, limited: discoveryPace.limited });
-        if (discoveryPace.limited && discoveryPace.nextEligibleAt != null) {
-          live.lastEvent = formatHourlyWaitEvent({
-            count: discoveryPace.count,
-            limit: discoveryPace.limit,
-            resumesAt: discoveryPace.nextEligibleAt,
-          });
-          if (hourlyPhase !== "waiting") {
-            console.log(formatHourlyWait({
-              count: discoveryPace.count,
-              limit: discoveryPace.limit,
-              resumesAt: discoveryPace.nextEligibleAt,
-            }));
-            console.log(formatWorkerModes({
-              discovery: "WAITING",
-              outreach: config.automationEnabled ? "RUNNING" : "PAUSED",
-            }));
-            hourlyPhase = "waiting";
-          }
-        } else if (discoveryMode === "RUNNING" && hourlyPhase === "waiting") {
-          console.log(`Discovery hourly slot available.\nHourly profile inspections: ${discoveryPace.count} / ${discoveryPace.limit}.`);
-          console.log("Discovery actual state: RUNNING");
-          hourlyPhase = "running";
-          if (live.lastEvent?.startsWith("Discovery hourly wait")) live.lastEvent = null;
-        } else if (discoveryMode === "RUNNING") {
-          hourlyPhase = "running";
-          if (live.lastEvent?.startsWith("Discovery hourly wait")) live.lastEvent = null;
-        } else if (discoveryMode === "PAUSED") {
-          hourlyPhase = "paused";
+        const intervalMs = inspectionIntervalMs(config.maxProfilesPerHour);
+        if (Date.now() >= dailyBlockedUntil) dailyBlockedUntil = 0;
+        const discoveryIsDue = config.discoveryEnabled && !control.pauseDiscovery && dailyBlockedUntil === 0 && discoveryDue(Date.now(), discoveryNextAt);
+        if (
+          config.discoveryEnabled &&
+          currentState() === "connected" &&
+          !activeSideEffect &&
+          dailyBlockedUntil === 0 &&
+          Date.now() > discoveryNextAt + intervalMs * 3 &&
+          !discoveryStallLogged
+        ) {
+          discoveryStallLogged = true;
+          console.log("Discovery stalled. Reconciling the inspection schedule.");
+          discoveryNextAt = Date.now();
+          writeDiscoveryCadence({ nextInspectionAt: discoveryNextAt, lastInspectionAt: lastDiscoveryProgressAt || null });
         }
+        if (
+          config.automationEnabled &&
+          currentState() === "connected" &&
+          !activeSideEffect &&
+          outreachDueAt > 0 &&
+          Date.now() > outreachDueAt &&
+          Date.now() > lastOutreachProgressAt + 3 * 60 * 1000 &&
+          !outreachStallLogged
+        ) {
+          outreachStallLogged = true;
+          console.log("Outreach stalled. Reconciling the next prospect.");
+          outreachDueAt = Date.now();
+        }
+        if (discoveryIsDue) discoveryStallLogged = false;
+        if (outreachDueNow) outreachStallLogged = false;
         const step = nextOrchestratorStep({
           now: Date.now(),
           attention: false,
@@ -607,8 +611,8 @@ export async function runWorker(mode: RunMode) {
           },
           discovery: {
             desired: config.discoveryEnabled,
-            eligibleNow: config.discoveryEnabled && !discoveryPace.limited && !control.pauseDiscovery,
-            nextEligibleAt: discoveryPace.nextEligibleAt,
+            eligibleNow: discoveryIsDue,
+            nextEligibleAt: discoveryNextAt,
             inspectionInProgress: false,
           },
         });
@@ -620,6 +624,7 @@ export async function runWorker(mode: RunMode) {
             live.username = outcome.username;
             outreachDueAt = Date.now() + 60_000;
           } else if (outcome.worked) {
+            lastOutreachProgressAt = Date.now();
             outreachDueAt = 0;
             const line = prospectCompletionLine({
               username: outcome.username,
@@ -640,7 +645,7 @@ export async function runWorker(mode: RunMode) {
             });
             if (outcome.reason === "no_queued_jobs") console.log("Outreach queue is empty.");
             else if (outcome.message && outcome.reason !== "state_sync_failed") console.log(outcome.message);
-            if (!config.discoveryEnabled || discoveryPace.limited) {
+            if (!config.discoveryEnabled || !discoveryIsDue) {
               if (outcome.reason !== "state_sync_failed") live.task = outcome.nextAt ? "outreach_spacing_wait" : "idle";
               await beat(cloud, identity, live.task, stats, true, true, live.attention, live.username, live.lastEvent);
               await sleep(Math.min(wait.waitMs, 15_000));
@@ -665,7 +670,7 @@ export async function runWorker(mode: RunMode) {
           sideEffect: activeSideEffect,
         });
         const outreachStillDue = config.automationEnabled && (activeSideEffect != null || Date.now() >= outreachDueAt);
-        if (admission.enter && !discoveryPace.limited && !outreachStillDue) {
+        if (admission.enter && discoveryIsDue && !outreachStillDue) {
           const tabs = await ensureProfileTabs();
           if (!tabs) {
             session.closed = true;
@@ -676,6 +681,7 @@ export async function runWorker(mode: RunMode) {
           if (discoveryV2Test) console.log("Discovery V2 test. Outreach stays paused. Inspecting up to 10 profiles.");
           if (discoveryV3Test) console.log("Discovery V3 test. Outreach stays paused. Inspecting up to 10 profiles. No follow and no DM.");
           session.discoveryActive = true;
+          const seenBefore = stats.seen;
           try {
             await runDiscoveryV2({
               context,
@@ -692,6 +698,7 @@ export async function runWorker(mode: RunMode) {
               shouldStop: () => stopping || control.pauseDiscovery || session.closed,
               shouldYield: () => config.automationEnabled && (activeSideEffect != null || Date.now() >= outreachDueAt),
               browserLock,
+              singleTurn: true,
               metrics: efficiency,
               gate: async (tick) => cloud.discoveryProgress(tick).catch(() => null),
               maybeOutreach: async () => {
@@ -704,6 +711,29 @@ export async function runWorker(mode: RunMode) {
             });
           } finally {
             session.discoveryActive = false;
+            if (stats.seen > seenBefore) {
+              const completedAt = Date.now();
+              discoveryNextAt = scheduleNextInspection({
+                now: completedAt,
+                intervalMs,
+                previousNextAt: discoveryNextAt,
+                completedAt,
+              });
+              lastDiscoveryProgressAt = completedAt;
+              writeDiscoveryCadence({ nextInspectionAt: discoveryNextAt, lastInspectionAt: completedAt });
+              live.lastEvent = formatHourlyWaitEvent({
+                count: stats.seen,
+                limit: config.maxProfilesPerHour,
+                resumesAt: discoveryNextAt,
+              });
+            } else if (typeof live.lastEvent === "string" && live.lastEvent.includes("daily")) {
+              dailyBlockedUntil = startOfNextLocalDay(new Date(), config.timezone).getTime();
+              discoveryNextAt = dailyBlockedUntil;
+              writeDiscoveryCadence({ nextInspectionAt: discoveryNextAt, lastInspectionAt: lastDiscoveryProgressAt || null });
+            } else {
+              discoveryNextAt = Date.now() + Math.min(intervalMs, 60_000);
+              writeDiscoveryCadence({ nextInspectionAt: discoveryNextAt, lastInspectionAt: lastDiscoveryProgressAt || null });
+            }
           }
           if (discoveryV2Test || discoveryV3Test) return;
           continue;
@@ -713,7 +743,7 @@ export async function runWorker(mode: RunMode) {
           if (stats.seen >= inspectionCap) console.log("Session profile limit reached. Waiting.");
           const wakeAt = Math.min(
             outreachDueAt > Date.now() ? outreachDueAt : Date.now() + 15_000,
-            discoveryPace.nextEligibleAt ?? Date.now() + 15_000,
+            discoveryNextAt,
           );
           await sleep(Math.max(1_000, Math.min(15_000, wakeAt - Date.now())));
         }
@@ -743,9 +773,9 @@ export async function runWorker(mode: RunMode) {
           continue;
         }
         const offline = /fetch|network|ECONN|ENOTFOUND|timed out/i.test(message);
-        console.log(offline ? "Cloud connection unavailable. Retrying..." : message);
+        console.log(offline ? "Cloud connection unavailable. Browser stays open. Retrying..." : message);
         log("error", "worker_loop", { message });
-        await saveErrorScreenshot(page, "loop").catch(() => undefined);
+        if (!offline) await saveErrorScreenshot(page, "loop").catch(() => undefined);
         await sleep(backoff);
         backoff = Math.min(backoff * 2, 60_000);
       }

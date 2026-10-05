@@ -11,7 +11,7 @@ import { getLatestWorker } from "@/lib/db/workers";
 import { attentionKind, formatOutreachAction, formatOutreachStatus, isStateSyncFailure, statusDotClass } from "@/lib/status/operations";
 import { getWorkerHealth } from "@/lib/utils/worker-health";
 import { formatResumeClock } from "@/lib/discovery/pacing";
-import { claimPaceDecision, formatEligibleIn, paceReasonLabel, reflowPlan, type PaceJob } from "@/lib/outreach/pace";
+import { claimPaceDecision, formatEligibleIn, paceReasonLabel, queueHealth, reflowPlan, type PaceJob } from "@/lib/outreach/pace";
 
 export const metadata: Metadata = { title: "Outreach" };
 
@@ -61,6 +61,7 @@ export default async function OutreachPage() {
     completedSendTimes,
     jobs: paceJobs,
   };
+  const healthCounts = queueHealth(paceJobs);
   const pace = claimPaceDecision(paceInput);
   const outlook = reflowPlan(paceInput);
   const pacingWait =
@@ -109,6 +110,7 @@ export default async function OutreachPage() {
         {pace.at ? <p className="mt-1">Eligible in: {formatEligibleIn(pace.at, now)}</p> : null}
         {pace.action === "wait" ? <p className="mt-1">Reason: {paceReasonLabel(pace.reason)}</p> : null}
         {outreachStatus.resumesAt ? <p className="mt-1 text-slate-600">{formatResumeClock(outreachStatus.resumesAt, settings.timezone)}</p> : null}
+        <p className="mt-2">{healthCounts.remaining} remaining · {healthCounts.fresh} fresh · {healthCounts.retrying} retrying · {healthCounts.failed} failed or needs attention</p>
         {outlook.remaining > 0 ? (
           <p className="mt-2">
             {outlook.remaining} prospect{outlook.remaining === 1 ? "" : "s"} remaining

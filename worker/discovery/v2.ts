@@ -14,7 +14,6 @@ import { log } from "../logger";
 import { discoveryQueuePath } from "../paths";
 import {
   acquisitionDecision,
-  formatHourlyWaitEvent,
   getDiscoveryHourlyState,
   queueThresholds,
   releaseInspectionSlot,
@@ -95,6 +94,7 @@ export async function runDiscoveryV2(input: {
   retainTabs?: boolean;
   shouldYield?: () => boolean | Promise<boolean>;
   browserLock?: { tryAcquire: (owner: "discovery") => boolean; release: (owner: "discovery") => void };
+  singleTurn?: boolean;
 }) {
   const metrics = input.metrics ?? emptyEfficiency();
   const queue = new CandidateQueue(10);
@@ -108,7 +108,6 @@ export async function runDiscoveryV2(input: {
   let aiSinceGate = 0;
   let emptyCycles = 0;
   let acquisitionHeld = false;
-  let hourlyNoticeAt = 0;
   let exitReason: "hourly" | "yield" | "stopped" | "done" = "done";
   const qualify = new QualificationQueue(3, async (prospectId) => {
       metrics.qualificationRequests += 1;
@@ -131,10 +130,17 @@ export async function runDiscoveryV2(input: {
       }
     }
     latestConfig = await input.cloud.config();
-    await Promise.all([
-      collectLoop(),
-      ...tabs.map((tab) => inspectLoop(tab.id, tab.page)),
-    ]);
+    if (input.singleTurn) {
+      const target = latestConfig?.candidateQueueTarget ?? 10;
+      if (queue.pendingCount() < queueThresholds(target).lowWater) await collectLoop();
+      const tab = tabs[0];
+      if (tab && queue.pendingCount() > 0) await inspectLoop(tab.id, tab.page);
+    } else {
+      await Promise.all([
+        collectLoop(),
+        ...tabs.map((tab) => inspectLoop(tab.id, tab.page)),
+      ]);
+    }
   } catch (error) {
     stopError = error;
   } finally {
@@ -157,12 +163,7 @@ export async function runDiscoveryV2(input: {
         continue;
       }
       queue.setTarget(config.candidateQueueTarget);
-      const pace = hourPace();
-      if (pace.limited) {
-        announceHourly(pace);
-        exitReason = "hourly";
-        return;
-      }
+      hourPace();
       if (await input.shouldYield?.()) {
         exitReason = "yield";
         return;
@@ -256,6 +257,7 @@ export async function runDiscoveryV2(input: {
         await sleep(config.discoveryScrollDelaySeconds * 1000);
       }
       if (!input.shouldYield) await input.maybeOutreach?.().catch(() => undefined);
+      if (input.singleTurn) return;
     }
   }
 
@@ -266,31 +268,30 @@ export async function runDiscoveryV2(input: {
         return;
       }
       const pace = hourPace();
-      if (pace.limited) {
-        announceHourly(pace);
-        exitReason = "hourly";
-        return;
-      }
       const candidate = queue.claim(tabId);
       if (!candidate) {
+        if (input.singleTurn) return;
         await sleep(300);
         continue;
       }
-      const reserved = reserveInspectionSlot({
-        stamps: input.stats.hour,
-        now: Date.now(),
-        limit: pace.limit,
-      });
-      rememberHour(reserved.state.stamps);
-      if (!reserved.ok) {
-        queue.release(candidate.username);
-        announceHourly(reserved.state);
-        exitReason = "hourly";
-        return;
+      const reservedAt = Date.now();
+      if (input.singleTurn) {
+        rememberHour([...input.stats.hour.filter((stamp) => reservedAt - stamp < 60 * 60 * 1000), reservedAt]);
+      } else {
+        const reserved = reserveInspectionSlot({
+          stamps: input.stats.hour,
+          now: reservedAt,
+          limit: pace.limit,
+        });
+        rememberHour(reserved.state.stamps);
+        if (!reserved.ok) {
+          queue.release(candidate.username);
+          continue;
+        }
       }
       if (finished()) {
         queue.release(candidate.username);
-        rememberHour(releaseInspectionSlot(input.stats.hour, reserved.reservedAt));
+        rememberHour(releaseInspectionSlot(input.stats.hour, reservedAt));
         return;
       }
       input.stats.seen += 1;
@@ -305,7 +306,7 @@ export async function runDiscoveryV2(input: {
       });
       if (input.browserLock && !input.browserLock.tryAcquire("discovery")) {
         queue.release(candidate.username);
-        rememberHour(releaseInspectionSlot(input.stats.hour, reserved.reservedAt));
+        rememberHour(releaseInspectionSlot(input.stats.hour, reservedAt));
         exitReason = "yield";
         return;
       }
@@ -335,6 +336,7 @@ export async function runDiscoveryV2(input: {
       } finally {
         input.browserLock?.release("discovery");
       }
+      if (input.singleTurn) return;
     }
   }
 
@@ -409,14 +411,6 @@ export async function runDiscoveryV2(input: {
     return pace;
   }
 
-  function announceHourly(pace: ReturnType<typeof hourPace>) {
-    input.live.task = "discovery_hourly_wait";
-    if (pace.nextEligibleAt == null || hourlyNoticeAt === pace.nextEligibleAt) return;
-    const resumesAt = pace.nextEligibleAt;
-    hourlyNoticeAt = resumesAt;
-    input.live.lastEvent = formatHourlyWaitEvent({ count: pace.count, limit: pace.limit, resumesAt });
-  }
-
   function sessionCap() {
     if (input.inspectionLimit != null) return input.inspectionLimit;
     return latestConfig?.sessionInspectionCap ?? latestConfig?.maxProfilesPerSession ?? 50;
@@ -432,6 +426,7 @@ export async function runDiscoveryV2(input: {
       const result = await input.gate({ inspections, ai, emptyCycles });
       if (result?.pause) {
         pauseReason = result.reason;
+        input.live.lastEvent = result.reason;
         console.log(`Discovery paused. Reason: ${result.reason ?? "stopped"}.`);
       }
     } catch {

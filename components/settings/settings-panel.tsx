@@ -11,6 +11,7 @@ import {
   saveWorkerSettings,
 } from "@/lib/actions/settings";
 import { DEFAULT_MESSAGE_TEMPLATE } from "@/lib/constants/message";
+import { formatInspectionInterval } from "@/lib/discovery/cadence";
 import { renderOutreachMessage } from "@/lib/utils/message";
 import {
   BROWSERS,
@@ -377,10 +378,10 @@ export function SettingsPanel({
             <Field label="Candidate queue target" hint="5 to 25. Default 10.">
               <TextInput inputMode="numeric" value={queueTarget} onChange={(event) => setQueueTarget(event.target.value)} />
             </Field>
-            <Field label="Profile inspection concurrency" hint="Fixed at 2.">
-              <TextInput value="2" readOnly />
+            <Field label="Profile inspection concurrency" hint="One profile is inspected per interval. Two tabs stay open.">
+              <TextInput value="1 per interval" readOnly />
             </Field>
-            <Field label="Hourly profile inspection pace" hint={`Controls profile inspection only. Does not control Follow or DM pacing. Current: ${maxHour || "30"} profiles per rolling 60 minutes.`}>
+            <Field label="Profiles per hour" hint={`Runs approximately one profile ${formatInspectionInterval(Number(maxHour) || 30)}. This sets the cadence. The daily maximum is only a ceiling.`}>
               <div className="mt-1.5 flex flex-wrap gap-2">
                 {["20", "30", "40"].map((value) => (
                   <button key={value} type="button" className={maxHour === value ? "rounded-lg bg-indigo-600 px-3 py-1 text-sm text-white" : "rounded-lg border border-slate-200 px-3 py-1 text-sm"} onClick={() => setMaxHour(value)}>

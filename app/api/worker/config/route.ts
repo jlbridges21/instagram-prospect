@@ -10,7 +10,7 @@ export async function GET(request: Request) {
   const admin = createAdminClient();
   if (!admin) return workerError(500, "Worker API is not configured.");
 
-  const settingsColumns = "worker_enabled, heartbeat_interval_seconds, max_active_workers, preferred_browser, automation_enabled, discovery_enabled, max_profiles_per_session, max_profiles_per_hour, discovery_scroll_delay_seconds, discovery_duplicate_cooldown_days, home_feed_enabled, suggested_accounts_enabled, discovery_source_priority, candidate_queue_target, profile_inspection_concurrency, discovery_review_target, discovery_session_inspection_cap, discovery_daily_inspection_cap, discovery_daily_ai_cap, discovery_stop_reason, discovery_run_mode, discovery_run_minutes, discovery_run_inspection_limit, discovery_run_started_at";
+  const settingsColumns = "worker_enabled, heartbeat_interval_seconds, max_active_workers, preferred_browser, automation_enabled, discovery_enabled, max_profiles_per_session, max_profiles_per_hour, discovery_scroll_delay_seconds, discovery_duplicate_cooldown_days, home_feed_enabled, suggested_accounts_enabled, discovery_source_priority, candidate_queue_target, profile_inspection_concurrency, discovery_review_target, discovery_session_inspection_cap, discovery_daily_inspection_cap, discovery_daily_ai_cap, discovery_stop_reason, discovery_run_mode, discovery_run_minutes, discovery_run_inspection_limit, discovery_run_started_at, timezone";
   let settingsResult = await admin.from("settings").select(settingsColumns).eq("id", 1).maybeSingle();
   if (settingsResult.error && /home_feed_enabled|discovery_source_priority|candidate_queue_target|discovery_review_target|discovery_run_mode/i.test(settingsResult.error.message)) {
     settingsResult = await admin
@@ -74,6 +74,7 @@ export async function GET(request: Request) {
     discoveryRunMinutes: settings?.discovery_run_minutes ?? null,
     discoveryRunInspectionLimit: settings?.discovery_run_inspection_limit ?? null,
     discoveryRunStartedAt: settings?.discovery_run_started_at ?? null,
+    timezone: settings && "timezone" in settings && typeof settings.timezone === "string" ? settings.timezone : fallback.timezone,
     workerVersion: "6",
     minSupportedWorkerVersion: "6",
   });

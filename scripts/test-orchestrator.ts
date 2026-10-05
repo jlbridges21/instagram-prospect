@@ -92,8 +92,8 @@ const outreach = formatOutreachStatus({
   attention: null,
   acting: true,
 });
-assert.equal(discovery.actual, "WAITING");
-assert.match(discovery.reason, /Hourly inspection/);
+assert.equal(discovery.actual, "RUNNING");
+assert.match(discovery.reason, /Next profile inspection/);
 assert.equal(outreach.actual, "RUNNING");
 assert.doesNotMatch(formatOutreachAction({
   task: "discovery_hourly_wait",
