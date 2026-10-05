@@ -18,6 +18,7 @@
     "worker:test": "tsx scripts/test-instagram.ts",
     "agent:debug": "tsx scripts/agent.ts -- --debug",
     "agent:inspect": "tsx scripts/agent-inspect.ts",
+    "agent:inspect-seed": "tsx scripts/agent-inspect-seed.ts",
     "agent:inspect-dm": "tsx scripts/agent.ts --inspect-dm",
     "agent:recheck": "tsx scripts/agent-recheck.ts",
     "outreach:reconcile": "tsx scripts/reconcile-outreach.ts",

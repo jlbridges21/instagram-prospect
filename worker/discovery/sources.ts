@@ -1,4 +1,5 @@
 import type { FeedCandidate } from "../instagram/types";
+import { isInstagramProfileHref } from "../instagram/profile-href";
 import { normalizeCandidateUsername, type DiscoveryCandidate, type DiscoverySource } from "./queue";
 
 export type SourcePriority = "suggested_first" | "home_first";
@@ -53,13 +54,5 @@ export function collectSuggestedUsernames(sections: Array<{ heading: string; hre
 }
 
 export function usernameFromSuggestedHref(href: string) {
-  try {
-    const path = new URL(href, "https://www.instagram.com").pathname;
-    const part = (path.split("/").filter(Boolean)[0] ?? "").toLowerCase();
-    if (!part || /^(explore|reels|p|reel|stories|direct|accounts|about|legal)$/.test(part)) return "";
-    if (!/^[a-z0-9._]{1,30}$/.test(part)) return "";
-    return part;
-  } catch {
-    return "";
-  }
+  return isInstagramProfileHref(href) ?? "";
 }

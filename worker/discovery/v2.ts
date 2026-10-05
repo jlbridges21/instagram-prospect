@@ -6,6 +6,8 @@ import { QualificationQueue } from "./qualify-queue";
 import { CandidateQueue, SessionUsernameCache, chunkUsernames, unseenUsernames, type DiscoveryCandidate } from "./queue";
 import { scoreCandidate } from "../../lib/discovery/candidate-priority";
 import { inspectionSeedId, pickSeed, prospectAttribution, seedCollectionResult, seedStatForCandidate } from "../../lib/discovery/seeds";
+import { applyEmptySeedCooldowns } from "../instagram/seed-page";
+import { clearEmptySeed, readEmptySeedCooldowns, rememberEmptySeed } from "./seed-cooldowns";
 import { pickCollectionSource } from "../../lib/discovery/source-ranking";
 import { prioritizeCandidates } from "./sources";
 import { AttentionError } from "../instagram/errors";
@@ -219,14 +221,15 @@ export async function runDiscoveryV2(input: {
 
   async function candidatesFromSeed(config: CloudConfig, seeds: Parameters<typeof pickSeed>[0]["seeds"]) {
     if (!input.readSeedProfile) return null;
+    const now = new Date();
     const seed = pickSeed({
-      seeds,
+      seeds: applyEmptySeedCooldowns(seeds, readEmptySeedCooldowns(now.getTime()), now.getTime()),
       minSample: config.minSeedSample ?? 10,
       favorYield: config.favorYield !== false,
       yieldStrength: config.yieldStrength ?? "medium",
       strategy: config.discoveryStrategy ?? "balanced",
       cooldownCycles: config.seedCooldownCycles ?? 2,
-      now: new Date(),
+      now,
       random: Math.random,
       tuning: config.tuning,
     });
@@ -242,9 +245,12 @@ export async function runDiscoveryV2(input: {
       usernames: found.map((item) => item.username),
     });
     await input.cloud.bumpSeed(seed.id, { used: true, seen: collected.candidates.length }).catch(() => undefined);
+    if (page && collected.fallback) rememberEmptySeed(seed.username);
+    if (page && !collected.fallback) clearEmptySeed(seed.username);
     if (collected.fallback) {
       console.log(`Seed @${seed.username} produced no usable candidates.`);
       console.log("Falling back to Suggested Accounts.");
+      if (page) console.log(`Cooling down @${seed.username} for 45 minutes.`);
       return null;
     }
     const mature = seed.inspected >= (config.minSeedSample ?? 10);
