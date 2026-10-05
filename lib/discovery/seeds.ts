@@ -1,3 +1,5 @@
+import { IMMATURE_YIELD, RANK_BASE, YIELD_ORIGIN, clampTuning, explorationPercent, yieldWeight } from "@/lib/discovery/defaults";
+
 export type SeedSourceType = "manual" | "auto_promoted" | "system_imported";
 export type SeedPriority = "low" | "normal" | "high";
 export type DiscoveryStrategy = "conservative" | "balanced" | "exploratory";
@@ -73,14 +75,14 @@ export function seedIsCooling(seed: RankableSeed, now: Date) {
   return new Date(seed.cooldownUntil).getTime() > now.getTime();
 }
 
-export function seedRank(seed: RankableSeed, input: { minSample: number; favorYield: boolean; yieldStrength: YieldStrength }) {
+export function seedRank(seed: RankableSeed, input: { minSample: number; favorYield: boolean; yieldStrength: YieldStrength; tuning?: unknown }) {
   const mature = seed.inspected >= Math.max(1, input.minSample);
-  const yieldRate = mature ? reviewYield(seed.inspected, seed.review) : 0.5;
-  const strength = input.yieldStrength === "high" ? 40 : input.yieldStrength === "low" ? 12 : 24;
-  const yieldBonus = input.favorYield && mature ? (yieldRate - 0.2) * strength : 0;
-  const manual = seed.priority === "high" ? 16 : seed.priority === "low" ? -16 : 0;
-  const repeatPenalty = seed.consecutiveUses * 10;
-  return { score: 20 + yieldBonus + manual - repeatPenalty, mature, yieldRate };
+  const yieldRate = mature ? reviewYield(seed.inspected, seed.review) : IMMATURE_YIELD;
+  const bonus = yieldWeight(input.yieldStrength, input.tuning);
+  const yieldBonus = input.favorYield && mature ? (yieldRate - YIELD_ORIGIN) * bonus : 0;
+  const manual = manualPriorityValue(seed.priority, input.tuning);
+  const repeatPenalty = seed.consecutiveUses * recentUsePenalty(input.tuning);
+  return { score: RANK_BASE + yieldBonus + manual - repeatPenalty, mature, yieldRate };
 }
 
 export function pickSeed(input: {
@@ -92,10 +94,11 @@ export function pickSeed(input: {
   cooldownCycles: number;
   now: Date;
   random: () => number;
+  tuning?: unknown;
 }) {
   const available = input.seeds.filter((seed) => seed.active && !seedIsCooling(seed, input.now));
   if (available.length === 0) return null;
-  const exploreRate = input.strategy === "conservative" ? 0.15 : input.strategy === "exploratory" ? 0.4 : 0.25;
+  const exploreRate = explorationPercent(input.strategy, input.tuning) / 100;
   const fresh = available.filter((seed) => seed.inspected < input.minSample);
   const proven = available.filter((seed) => seed.inspected >= input.minSample);
   const explore = input.random() < exploreRate && fresh.length > 0;
@@ -125,6 +128,17 @@ export function shouldAutoPromote(input: {
   if (input.fitLabel === "strong_fit" && input.promoteStrong) return true;
   if (input.fitLabel === "possible_fit" && input.promotePossible) return true;
   return false;
+}
+
+function manualPriorityValue(priority: SeedPriority, tuning: unknown) {
+  const value = clampTuning(tuning);
+  if (priority === "high") return value.manualPriorityHigh;
+  if (priority === "low") return value.manualPriorityLow;
+  return value.manualPriorityNormal;
+}
+
+function recentUsePenalty(tuning: unknown) {
+  return clampTuning(tuning).recentUsePenalty;
 }
 
 function weightedPick<T>(items: T[], weight: (item: T) => number, random: number) {

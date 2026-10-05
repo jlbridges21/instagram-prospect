@@ -126,6 +126,7 @@ export type SettingsRow = {
   discovery_seed_cooldown_cycles?: number;
   discovery_positive_keywords?: string[] | null;
   discovery_negative_keywords?: string[] | null;
+  discovery_tuning?: Json | null;
   updated_at: string;
 };
 
@@ -523,6 +524,14 @@ export type Database = {
           p_send_at: string;
         };
         Returns: Json;
+      };
+      sync_discovery_seed_prospect: {
+        Args: { p_prospect_id: string };
+        Returns: undefined;
+      };
+      record_discovery_seed_inspection: {
+        Args: { p_seed_id: string; p_prospect_id: string };
+        Returns: undefined;
       };
       bump_discovery_seed: {
         Args: {

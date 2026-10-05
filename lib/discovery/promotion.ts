@@ -29,8 +29,8 @@ export async function recordQualificationSeedEffects(
     .maybeSingle();
   if (prospect.error || !prospect.data) return { promoted: false as const };
   const row = prospect.data;
-  if (!input.cached && row.source_seed_id && (input.status === "review" || input.qualified)) {
-    await supabase.rpc("bump_discovery_seed", { p_id: row.source_seed_id, p_review: 1 }).then(() => undefined, () => undefined);
+  if (row.source_seed_id) {
+    await supabase.rpc("sync_discovery_seed_prospect", { p_prospect_id: row.id }).then(() => undefined, () => undefined);
   }
   const approved = ["approved", "contacted", "replied", "follow_up", "demo_booked", "converted"].includes(row.status);
   const promote = shouldAutoPromote({

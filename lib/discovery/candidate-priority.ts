@@ -1,3 +1,4 @@
+import { HIGH_YIELD_MINIMUM, PRIORITY_HIGH_AT, PRIORITY_MEDIUM_AT, clampTuning } from "@/lib/discovery/defaults";
 import type { SeedPriority } from "@/lib/discovery/seeds";
 
 export type PriorityLabel = "High" | "Medium" | "Low";
@@ -11,12 +12,14 @@ export function scoreCandidate(input: {
   text?: string | null;
   positiveKeywords: string[];
   negativeKeywords: string[];
+  tuning?: unknown;
 }) {
-  let score = input.source === "seed" ? 18 : input.source === "suggested_accounts" ? 8 : 2;
+  const tuning = clampTuning(input.tuning);
+  let score = input.source === "seed" ? tuning.sourceBaseSeed : input.source === "suggested_accounts" ? tuning.sourceBaseSuggested : tuning.sourceBaseHome;
   const reasons: string[] = [];
   if (input.source === "seed" && input.seedUsername) {
-    if (input.seedMature && (input.seedYield ?? 0) >= 0.2) {
-      score += 16;
+    if (input.seedMature && (input.seedYield ?? 0) >= HIGH_YIELD_MINIMUM) {
+      score += tuning.highYieldCandidateBonus;
       reasons.push(`from high-yield seed @${input.seedUsername}`);
     } else {
       reasons.push(`from seed @${input.seedUsername}`);
@@ -27,22 +30,24 @@ export function scoreCandidate(input: {
     reasons.push("from Home Feed");
   }
   if (input.seedPriority === "high") {
-    score += 10;
+    score += tuning.manualPriorityHigh;
     reasons.push("manual seed priority is high");
   } else if (input.seedPriority === "low") {
-    score -= 8;
+    score += tuning.manualPriorityLow;
     reasons.push("manual seed priority is low");
+  } else if (input.seedPriority === "normal") {
+    score += tuning.manualPriorityNormal;
   }
   const text = (input.text ?? "").toLowerCase();
   for (const keyword of input.positiveKeywords) {
     if (keywordMatches(text, keyword)) {
-      score += 6;
+      score += tuning.positiveKeywordBonus;
       reasons.push(`matched “${keyword.trim()}”`);
     }
   }
   for (const keyword of input.negativeKeywords) {
     if (keywordMatches(text, keyword)) {
-      score -= 8;
+      score -= tuning.negativeKeywordPenalty;
       reasons.push(`lowered by “${keyword.trim()}”`);
     }
   }
@@ -50,8 +55,8 @@ export function scoreCandidate(input: {
 }
 
 export function priorityLabel(score: number): PriorityLabel {
-  if (score >= 24) return "High";
-  if (score >= 10) return "Medium";
+  if (score >= PRIORITY_HIGH_AT) return "High";
+  if (score >= PRIORITY_MEDIUM_AT) return "Medium";
   return "Low";
 }
 

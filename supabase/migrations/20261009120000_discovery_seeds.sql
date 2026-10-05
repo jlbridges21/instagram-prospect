@@ -60,7 +60,31 @@ alter table public.settings
   add column if not exists discovery_strategy text not null default 'balanced',
   add column if not exists discovery_seed_cooldown_cycles integer not null default 2,
   add column if not exists discovery_positive_keywords text[] not null default array['drone','aerial','photography','photographer','real estate','realestate','media','video','videography','videographer','fpv','uav','aerial media','property media','real estate media','content creator','production'],
-  add column if not exists discovery_negative_keywords text[] not null default array[]::text[];
+  add column if not exists discovery_negative_keywords text[] not null default array[]::text[],
+  add column if not exists discovery_tuning jsonb not null default '{
+    "positiveKeywordBonus": 6,
+    "negativeKeywordPenalty": 8,
+    "manualPriorityLow": -16,
+    "manualPriorityNormal": 0,
+    "manualPriorityHigh": 16,
+    "recentUsePenalty": 10,
+    "explorationConservative": 15,
+    "explorationBalanced": 25,
+    "explorationExploratory": 40,
+    "homeFeedLow": 10,
+    "homeFeedMedium": 25,
+    "homeFeedHigh": 45,
+    "seedShareConservative": 85,
+    "seedShareBalanced": 70,
+    "seedShareExploratory": 50,
+    "yieldWeightLow": 12,
+    "yieldWeightMedium": 24,
+    "yieldWeightHigh": 40,
+    "highYieldCandidateBonus": 16,
+    "sourceBaseSeed": 18,
+    "sourceBaseSuggested": 8,
+    "sourceBaseHome": 2
+  }'::jsonb;
 
 alter table public.settings drop constraint if exists settings_discovery_promote_requires_check;
 alter table public.settings
@@ -111,3 +135,136 @@ $$;
 
 revoke all on function public.bump_discovery_seed(uuid, integer, integer, integer, integer, integer, integer, integer, boolean) from public;
 grant execute on function public.bump_discovery_seed(uuid, integer, integer, integer, integer, integer, integer, integer, boolean) to service_role;
+
+create table if not exists public.discovery_seed_events (
+  seed_id uuid not null references public.discovery_seeds(id) on delete cascade,
+  prospect_id uuid not null references public.prospects(id) on delete cascade,
+  event_type text not null check (event_type in ('inspected', 'review', 'approved', 'contacted')),
+  created_at timestamptz not null default now(),
+  primary key (prospect_id, event_type)
+);
+
+create index if not exists discovery_seed_events_seed_idx on public.discovery_seed_events (seed_id);
+
+alter table public.discovery_seed_events enable row level security;
+drop policy if exists discovery_seed_events_authenticated on public.discovery_seed_events;
+create policy discovery_seed_events_authenticated on public.discovery_seed_events
+  for all to authenticated using (true) with check (true);
+
+create or replace function public.adjust_discovery_seed_counter(p_seed_id uuid, p_event text, p_delta integer)
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  update public.discovery_seeds
+  set
+    profiles_inspected = greatest(0, profiles_inspected + case when p_event = 'inspected' then p_delta else 0 end),
+    profiles_reaching_review = greatest(0, profiles_reaching_review + case when p_event = 'review' then p_delta else 0 end),
+    profiles_approved = greatest(0, profiles_approved + case when p_event = 'approved' then p_delta else 0 end),
+    profiles_contacted = greatest(0, profiles_contacted + case when p_event = 'contacted' then p_delta else 0 end),
+    updated_at = now()
+  where id = p_seed_id;
+end;
+$$;
+
+create or replace function public.record_discovery_seed_inspection(p_seed_id uuid, p_prospect_id uuid)
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  insert into public.discovery_seed_events (seed_id, prospect_id, event_type)
+  values (p_seed_id, p_prospect_id, 'inspected');
+  perform public.adjust_discovery_seed_counter(p_seed_id, 'inspected', 1);
+exception when unique_violation then
+  return;
+end;
+$$;
+
+create or replace function public.sync_discovery_seed_prospect(p_prospect_id uuid)
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_seed uuid;
+  v_status text;
+  v_event text;
+  v_wanted text[] := array[]::text[];
+  rec record;
+begin
+  select source_seed_id, status into v_seed, v_status
+  from public.prospects
+  where id = p_prospect_id;
+  if v_seed is null then
+    return;
+  end if;
+  if v_status in ('review', 'approved', 'contacted', 'replied', 'follow_up', 'demo_booked', 'converted') then
+    v_wanted := v_wanted || 'review';
+  end if;
+  if v_status in ('approved', 'contacted', 'replied', 'follow_up', 'demo_booked', 'converted') then
+    v_wanted := v_wanted || 'approved';
+  end if;
+  if v_status in ('contacted', 'replied', 'follow_up', 'demo_booked', 'converted') then
+    v_wanted := v_wanted || 'contacted';
+  end if;
+
+  for rec in
+    select seed_id, event_type from public.discovery_seed_events
+    where prospect_id = p_prospect_id
+      and event_type <> 'inspected'
+      and not (event_type = any (v_wanted))
+  loop
+    delete from public.discovery_seed_events
+    where prospect_id = p_prospect_id and event_type = rec.event_type;
+    perform public.adjust_discovery_seed_counter(rec.seed_id, rec.event_type, -1);
+  end loop;
+
+  foreach v_event in array v_wanted loop
+    begin
+      insert into public.discovery_seed_events (seed_id, prospect_id, event_type)
+      values (v_seed, p_prospect_id, v_event);
+      perform public.adjust_discovery_seed_counter(v_seed, v_event, 1);
+    exception when unique_violation then
+      null;
+    end;
+  end loop;
+end;
+$$;
+
+create or replace function public.release_discovery_seed_prospect()
+returns trigger
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  rec record;
+begin
+  for rec in
+    select seed_id, event_type from public.discovery_seed_events where prospect_id = old.id
+  loop
+    perform public.adjust_discovery_seed_counter(rec.seed_id, rec.event_type, -1);
+  end loop;
+  delete from public.discovery_seed_events where prospect_id = old.id;
+  return old;
+end;
+$$;
+
+drop trigger if exists prospects_release_discovery_seed on public.prospects;
+create trigger prospects_release_discovery_seed
+  before delete on public.prospects
+  for each row execute function public.release_discovery_seed_prospect();
+
+revoke all on function public.adjust_discovery_seed_counter(uuid, text, integer) from public;
+revoke all on function public.record_discovery_seed_inspection(uuid, uuid) from public;
+revoke all on function public.sync_discovery_seed_prospect(uuid) from public;
+revoke all on function public.release_discovery_seed_prospect() from public;
+grant execute on function public.adjust_discovery_seed_counter(uuid, text, integer) to service_role;
+grant execute on function public.record_discovery_seed_inspection(uuid, uuid) to service_role;
+grant execute on function public.sync_discovery_seed_prospect(uuid) to service_role, authenticated;
+grant execute on function public.release_discovery_seed_prospect() to service_role;

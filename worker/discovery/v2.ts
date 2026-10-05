@@ -179,6 +179,7 @@ export async function runDiscoveryV2(input: {
       homeUsage: config.homeFeedUsage ?? "low",
       strategy: config.discoveryStrategy ?? "balanced",
       random: Math.random(),
+      tuning: config.tuning,
     });
     if (choice === "seed") {
       const fromSeed = await candidatesFromSeed(config, seeds);
@@ -219,6 +220,7 @@ export async function runDiscoveryV2(input: {
       cooldownCycles: config.seedCooldownCycles ?? 2,
       now: new Date(),
       random: Math.random,
+      tuning: config.tuning,
     });
     if (!seed) return null;
     for (const known of seeds) seedUses.set(known.id, known.id === seed.id ? (seedUses.get(known.id) ?? 0) + 1 : 0);
@@ -242,6 +244,7 @@ export async function runDiscoveryV2(input: {
           text: item.username,
           positiveKeywords: config.positiveKeywords ?? [],
           negativeKeywords: config.negativeKeywords ?? [],
+          tuning: config.tuning,
         });
         return {
           username: item.username,
@@ -462,7 +465,9 @@ export async function runDiscoveryV2(input: {
       ...prospectAttribution(candidate),
       follow_relationship: profile.relationship,
     });
-    if (candidate.sourceSeedId) await input.cloud.bumpSeed(candidate.sourceSeedId, seedStatForCandidate("inspected")).catch(() => undefined);
+    if (candidate.sourceSeedId && ingested.prospectId) {
+      await input.cloud.recordSeedInspection(candidate.sourceSeedId, ingested.prospectId).catch(() => undefined);
+    }
     console.log(`@${candidate.username} cloud: ${ingested.created ? "created" : ingested.reason ?? "updated"}`);
     if (ingested.created) {
       input.stats.ingested += 1;
@@ -593,6 +598,7 @@ function withPriority(candidate: DiscoveryCandidate, config: CloudConfig): Disco
     text: candidate.username,
     positiveKeywords: config.positiveKeywords ?? [],
     negativeKeywords: config.negativeKeywords ?? [],
+    tuning: config.tuning,
   });
   return { ...candidate, priorityScore: priority.score, priorityLabel: priority.label, priorityReasons: priority.reasons };
 }

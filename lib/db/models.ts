@@ -1,4 +1,5 @@
 import type { DateFormat, PreferredBrowser } from "@/lib/constants/settings";
+import type { DiscoveryTuning } from "@/lib/discovery/defaults";
 import type { OutreachSettings } from "@/lib/outreach/types";
 
 export type DiscoverySettings = {
@@ -34,6 +35,7 @@ export type DiscoveryOptimization = {
   seedCooldownCycles: number;
   positiveKeywords: string[];
   negativeKeywords: string[];
+  tuning: DiscoveryTuning;
 };
 
 export type AppSettings = {

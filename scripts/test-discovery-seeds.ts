@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import { scoreCandidate } from "../lib/discovery/candidate-priority";
+import { clampTuning, recommendedTuning } from "../lib/discovery/defaults";
+import { recordInspection, releaseProspect, syncStatus, type SeedCounters } from "../lib/discovery/seed-counts";
 import {
   normalizeSeedUsername,
   pickSeed,
@@ -146,5 +148,77 @@ assert.match(sql, /create table if not exists public\.discovery_seeds/);
 assert.match(sql, /discovery_auto_promote boolean not null default false/);
 assert.match(sql, /source_seed_id/);
 assert.match(sql, /seed_suggestion/);
+assert.match(sql, /discovery_tuning/);
+assert.match(sql, /primary key \(prospect_id, event_type\)/);
+assert.match(sql, /unique_violation/);
+assert.match(sql, /sync_discovery_seed_prospect/);
+assert.match(sql, /release_discovery_seed_prospect/);
+assert.equal(fs.readFileSync("lib/db/seeds.ts", "utf8").includes(".limit(2000)"), false);
+assert.match(fs.readFileSync("lib/db/seeds.ts", "utf8"), /count: "exact"/);
+
+const customPositive = scoreCandidate({ source: "suggested_accounts", text: "drone photographer", positiveKeywords: ["drone"], negativeKeywords: [], tuning: { positiveKeywordBonus: 20 } });
+const defaultPositive = scoreCandidate({ source: "suggested_accounts", text: "drone photographer", positiveKeywords: ["drone"], negativeKeywords: [] });
+assert.equal(customPositive.score - defaultPositive.score, 14);
+
+const customNegative = scoreCandidate({ source: "suggested_accounts", text: "drone giveaway", positiveKeywords: [], negativeKeywords: ["giveaway"], tuning: { negativeKeywordPenalty: 3 } });
+const defaultNegative = scoreCandidate({ source: "suggested_accounts", text: "drone giveaway", positiveKeywords: [], negativeKeywords: ["giveaway"] });
+assert.equal(defaultNegative.score - customNegative.score, -5);
+
+const fresh = seed({ id: "fresh", inspected: 0 });
+const provenSeed = seed({ id: "proven", inspected: 20, review: 8 });
+const alwaysFresh = pickSeed({
+  seeds: [fresh, provenSeed],
+  minSample: 10,
+  favorYield: true,
+  yieldStrength: "medium",
+  strategy: "balanced",
+  cooldownCycles: 2,
+  now,
+  random: () => 0,
+  tuning: { explorationBalanced: 100 },
+});
+const neverFresh = pickSeed({
+  seeds: [fresh, provenSeed],
+  minSample: 10,
+  favorYield: true,
+  yieldStrength: "medium",
+  strategy: "balanced",
+  cooldownCycles: 2,
+  now,
+  random: () => 0,
+  tuning: { explorationBalanced: 0 },
+});
+assert.equal(alwaysFresh?.id, "fresh");
+assert.equal(neverFresh?.id, "proven");
+
+assert.equal(pickCollectionSource({ hasSeeds: true, homeEnabled: true, suggestedEnabled: true, homeUsage: "low", strategy: "balanced", random: 0, tuning: { homeFeedLow: 0, seedShareBalanced: 100 } }), "seed");
+assert.equal(pickCollectionSource({ hasSeeds: true, homeEnabled: true, suggestedEnabled: true, homeUsage: "low", strategy: "balanced", random: 0, tuning: { homeFeedLow: 100 } }), "home_feed");
+assert.equal(pickCollectionSource({ hasSeeds: true, homeEnabled: true, suggestedEnabled: true, homeUsage: "low", strategy: "balanced", random: 0.5, tuning: { homeFeedLow: 0, seedShareBalanced: 0 } }), "suggested_accounts");
+assert.equal(pickCollectionSource({ hasSeeds: true, homeEnabled: true, suggestedEnabled: true, homeUsage: "medium", strategy: "exploratory", random: 0.4, tuning: { homeFeedMedium: 30, seedShareExploratory: 80 } }), "seed");
+
+assert.deepEqual(clampTuning(undefined), recommendedTuning());
+assert.deepEqual(clampTuning({}), recommendedTuning());
+assert.equal(clampTuning({ homeFeedLow: 250, explorationBalanced: Number.NaN, positiveKeywordBonus: "no" }).homeFeedLow, 100);
+assert.equal(clampTuning({ homeFeedLow: 250, explorationBalanced: Number.NaN, positiveKeywordBonus: "no" }).explorationBalanced, 25);
+assert.equal(clampTuning({ homeFeedLow: 250, explorationBalanced: Number.NaN, positiveKeywordBonus: "no" }).positiveKeywordBonus, 6);
+assert.deepEqual(recommendedTuning(), clampTuning(recommendedTuning()));
+
+const empty: SeedCounters = { inspected: 0, review: 0, approved: 0, contacted: 0 };
+const inspectedOnce = recordInspection(empty, new Set());
+const inspectedTwice = recordInspection(inspectedOnce.counters, inspectedOnce.recorded);
+assert.equal(inspectedTwice.applied, false);
+assert.equal(inspectedTwice.counters.inspected, 1);
+const reviewed = syncStatus(inspectedTwice.counters, inspectedTwice.recorded, "review");
+const reviewedAgain = syncStatus(reviewed.counters, reviewed.recorded, "review");
+assert.equal(reviewedAgain.counters.review, 1);
+const approved = syncStatus(reviewedAgain.counters, reviewedAgain.recorded, "approved");
+assert.equal(approved.counters.review, 1);
+assert.equal(approved.counters.approved, 1);
+const contacted = syncStatus(approved.counters, approved.recorded, "contacted");
+assert.equal(contacted.counters.contacted, 1);
+assert.equal(contacted.counters.approved, 1);
+const skipped = syncStatus(contacted.counters, contacted.recorded, "skipped");
+assert.deepEqual(skipped.counters, { inspected: 1, review: 0, approved: 0, contacted: 0 });
+assert.deepEqual(releaseProspect(contacted.counters, contacted.recorded), empty);
 
 console.log("discovery seed tests passed", counts);

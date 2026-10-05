@@ -9,6 +9,8 @@ const bodySchema = z.object({
   seen: z.number().int().min(0).max(100).optional(),
   duplicates: z.number().int().min(0).max(50).optional(),
   used: z.boolean().optional(),
+  prospectId: z.string().uuid().optional(),
+  event: z.literal("inspected").optional(),
 });
 
 export const runtime = "nodejs";
@@ -19,6 +21,14 @@ export async function POST(request: Request) {
   if (!admin) return workerError(500, "Worker API is not configured.");
   const parsed = bodySchema.safeParse(await request.json().catch(() => null));
   if (!parsed.success) return workerError(400, "Invalid seed stats.");
+  if (parsed.data.event === "inspected" && parsed.data.prospectId) {
+    const recorded = await admin.rpc("record_discovery_seed_inspection", {
+      p_seed_id: parsed.data.id,
+      p_prospect_id: parsed.data.prospectId,
+    });
+    if (recorded.error) return Response.json({ ok: true, recorded: false });
+    return Response.json({ ok: true, recorded: true });
+  }
   const { error } = await admin.rpc("bump_discovery_seed", {
     p_id: parsed.data.id,
     p_discovered: parsed.data.discovered ?? 0,

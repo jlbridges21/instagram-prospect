@@ -21,7 +21,7 @@ export async function GET(request: Request) {
   }
   const [seedResult, keywordResult] = await Promise.all([
     admin.from("discovery_seeds").select("id, instagram_username, source_type, priority, profiles_inspected, profiles_reaching_review, consecutive_uses, is_active").eq("is_active", true).order("profiles_reaching_review", { ascending: false }).limit(100),
-    admin.from("settings").select("discovery_positive_keywords, discovery_negative_keywords, discovery_home_feed_usage, discovery_strategy, discovery_yield_strength, discovery_favor_yield, discovery_min_seed_sample, discovery_seed_cooldown_cycles").eq("id", 1).maybeSingle(),
+    admin.from("settings").select("discovery_positive_keywords, discovery_negative_keywords, discovery_home_feed_usage, discovery_strategy, discovery_yield_strength, discovery_favor_yield, discovery_min_seed_sample, discovery_seed_cooldown_cycles, discovery_tuning").eq("id", 1).maybeSingle(),
   ]);
   const targetingResult = await admin
     .from("targeting_settings")
@@ -96,6 +96,7 @@ export async function GET(request: Request) {
     favorYield: keywordResult.data?.discovery_favor_yield ?? fallback.optimization.favorYield,
     minSeedSample: keywordResult.data?.discovery_min_seed_sample ?? fallback.optimization.minSeedSample,
     seedCooldownCycles: keywordResult.data?.discovery_seed_cooldown_cycles ?? fallback.optimization.seedCooldownCycles,
+    tuning: keywordResult.data?.discovery_tuning ?? fallback.optimization.tuning,
     workerVersion: "6",
     minSupportedWorkerVersion: "6",
   });

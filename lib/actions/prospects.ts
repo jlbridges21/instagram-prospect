@@ -184,13 +184,8 @@ async function updateStatus(ids: string[], status: "approved" | "skipped"): Prom
     }
     return { ok: false, error: result.error };
   }
-  if (status === "approved") {
-    const links = await supabase.from("prospects").select("source_seed_id").in("id", result.updated.map((prospect) => prospect.id));
-    if (!links.error) {
-      for (const row of links.data ?? []) {
-        if (row.source_seed_id) await supabase.rpc("bump_discovery_seed", { p_id: row.source_seed_id, p_approved: 1 });
-      }
-    }
+  for (const prospect of result.updated) {
+    await supabase.rpc("sync_discovery_seed_prospect", { p_prospect_id: prospect.id }).then(() => undefined, () => undefined);
   }
   revalidateProspectPaths(result.updated.map((prospect) => prospect.id));
   return { ok: true, message: result.message };

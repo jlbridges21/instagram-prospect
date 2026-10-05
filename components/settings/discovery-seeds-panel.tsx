@@ -10,7 +10,7 @@ import {
   saveSeedsBulk,
   setSeedsActive,
 } from "@/lib/actions/seeds";
-import { DEFAULT_POSITIVE_KEYWORDS } from "@/lib/discovery/defaults";
+import { DEFAULT_DISCOVERY_TUNING, DEFAULT_POSITIVE_KEYWORDS, explorationPercent, homeFeedPercent, seedSharePercent, type DiscoveryTuning } from "@/lib/discovery/defaults";
 import { approvalYield, reviewYield } from "@/lib/discovery/seeds";
 import type { DiscoveryOptimization } from "@/lib/db/models";
 import type { DiscoverySeedRow } from "@/lib/db/types";
@@ -47,6 +47,9 @@ export function DiscoverySeedsPanel({
     });
   }, [seeds, query, sort]);
   const open = seeds.find((seed) => seed.id === openId) ?? null;
+  function setTuning(key: keyof DiscoveryTuning, value: number) {
+    setForm({ ...form, tuning: { ...form.tuning, [key]: value } });
+  }
 
   function run(action: () => Promise<{ ok: boolean; error?: string; message?: string }>) {
     setError("");
@@ -139,6 +142,50 @@ export function DiscoverySeedsPanel({
         >
           Save optimization
         </button>
+        <details className="mt-4 rounded-lg border border-slate-200 p-3">
+          <summary className="cursor-pointer text-sm font-medium text-slate-900">Advanced Discovery Tuning</summary>
+          <p className="mt-2 text-sm text-slate-600">Most users should leave these at the recommended defaults.</p>
+          <div className="mt-3 rounded-lg bg-slate-50 p-3 text-sm text-slate-700">
+            <p>{labelStrategy(form.strategy)}: under-tested seed exploration {explorationPercent(form.strategy, form.tuning)}%. Seed-based collection preference {seedSharePercent(form.strategy, form.tuning)}%.</p>
+            <p className="mt-1">Home Feed {form.homeFeedUsage}: {homeFeedPercent(form.homeFeedUsage, form.tuning)}%.</p>
+          </div>
+          <div className="mt-3 grid gap-3 text-sm sm:grid-cols-2">
+            <NumberField label="Positive keyword bonus" value={form.tuning.positiveKeywordBonus} onChange={(value) => setTuning("positiveKeywordBonus", value)} />
+            <NumberField label="Negative keyword penalty" value={form.tuning.negativeKeywordPenalty} onChange={(value) => setTuning("negativeKeywordPenalty", value)} />
+            <NumberField label="Manual seed priority, Low" value={form.tuning.manualPriorityLow} onChange={(value) => setTuning("manualPriorityLow", value)} />
+            <NumberField label="Manual seed priority, Normal" value={form.tuning.manualPriorityNormal} onChange={(value) => setTuning("manualPriorityNormal", value)} />
+            <NumberField label="Manual seed priority, High" value={form.tuning.manualPriorityHigh} onChange={(value) => setTuning("manualPriorityHigh", value)} />
+            <NumberField label="Recent-use penalty" value={form.tuning.recentUsePenalty} onChange={(value) => setTuning("recentUsePenalty", value)} />
+            <NumberField label="Exploration share, Conservative %" value={form.tuning.explorationConservative} onChange={(value) => setTuning("explorationConservative", value)} />
+            <NumberField label="Exploration share, Balanced %" value={form.tuning.explorationBalanced} onChange={(value) => setTuning("explorationBalanced", value)} />
+            <NumberField label="Exploration share, Exploratory %" value={form.tuning.explorationExploratory} onChange={(value) => setTuning("explorationExploratory", value)} />
+            <NumberField label="Home Feed share, Low %" value={form.tuning.homeFeedLow} onChange={(value) => setTuning("homeFeedLow", value)} />
+            <NumberField label="Home Feed share, Medium %" value={form.tuning.homeFeedMedium} onChange={(value) => setTuning("homeFeedMedium", value)} />
+            <NumberField label="Home Feed share, High %" value={form.tuning.homeFeedHigh} onChange={(value) => setTuning("homeFeedHigh", value)} />
+            <NumberField label="Seed preference, Conservative %" value={form.tuning.seedShareConservative} onChange={(value) => setTuning("seedShareConservative", value)} />
+            <NumberField label="Seed preference, Balanced %" value={form.tuning.seedShareBalanced} onChange={(value) => setTuning("seedShareBalanced", value)} />
+            <NumberField label="Seed preference, Exploratory %" value={form.tuning.seedShareExploratory} onChange={(value) => setTuning("seedShareExploratory", value)} />
+            <NumberField label="Yield strength weight, Low" value={form.tuning.yieldWeightLow} onChange={(value) => setTuning("yieldWeightLow", value)} />
+            <NumberField label="Yield strength weight, Medium" value={form.tuning.yieldWeightMedium} onChange={(value) => setTuning("yieldWeightMedium", value)} />
+            <NumberField label="Yield strength weight, High" value={form.tuning.yieldWeightHigh} onChange={(value) => setTuning("yieldWeightHigh", value)} />
+            <NumberField label="High-yield candidate bonus" value={form.tuning.highYieldCandidateBonus} onChange={(value) => setTuning("highYieldCandidateBonus", value)} />
+            <NumberField label="Seed source baseline" value={form.tuning.sourceBaseSeed} onChange={(value) => setTuning("sourceBaseSeed", value)} />
+            <NumberField label="Suggested Accounts baseline" value={form.tuning.sourceBaseSuggested} onChange={(value) => setTuning("sourceBaseSuggested", value)} />
+            <NumberField label="Home Feed baseline" value={form.tuning.sourceBaseHome} onChange={(value) => setTuning("sourceBaseHome", value)} />
+          </div>
+          <button
+            type="button"
+            className="mt-3 rounded-lg border border-slate-200 px-3 py-2 text-sm"
+            disabled={pending || migrationNeeded}
+            onClick={() => {
+              const tuning = { ...DEFAULT_DISCOVERY_TUNING };
+              setForm({ ...form, tuning });
+              run(() => saveDiscoveryOptimization({ ...form, tuning, positiveKeywords: lines(positive), negativeKeywords: lines(negative) }));
+            }}
+          >
+            Reset to recommended defaults
+          </button>
+        </details>
         <button type="button" className="ml-2 mt-4 rounded-lg border border-slate-200 px-3 py-2 text-sm" disabled={pending} onClick={() => {
           if (window.confirm("Promote existing Strong Fit prospects that are in Review or Approved? Existing seeds stay unchanged.")) run(() => promoteExistingQualified());
         }}>
@@ -252,6 +299,12 @@ function lines(value: string) {
 
 function percent(value: number) {
   return `${Math.round(value * 100)}%`;
+}
+
+function labelStrategy(value: string) {
+  if (value === "conservative") return "Conservative";
+  if (value === "exploratory") return "Exploratory";
+  return "Balanced";
 }
 
 function labelSource(value: string) {

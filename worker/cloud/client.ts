@@ -1,3 +1,4 @@
+import { clampTuning, type DiscoveryTuning } from "../../lib/discovery/defaults";
 import { AUTH_FAILURE_MESSAGE } from "../version";
 
 export type CloudConfig = {
@@ -42,6 +43,7 @@ export type CloudConfig = {
   favorYield?: boolean;
   minSeedSample?: number;
   seedCooldownCycles?: number;
+  tuning?: DiscoveryTuning;
 };
 
 export const CONFIG_CACHE_MS = 60_000;
@@ -159,6 +161,7 @@ export class CloudClient {
       favorYield: json.favorYield !== false,
       minSeedSample: numberOr(json.minSeedSample, 10),
       seedCooldownCycles: numberOr(json.seedCooldownCycles, 2),
+      tuning: clampTuning(json.tuning),
     } satisfies CloudConfig;
     this.configCache = value;
     this.configCachedAt = Date.now();
@@ -198,6 +201,10 @@ export class CloudClient {
 
   async discoveryProgress(body: { inspections?: number; ai?: number; emptyCycles?: number }) {
     return this.request<{ pause: boolean; reason: string | null }>("/api/worker/discovery/progress", body);
+  }
+
+  async recordSeedInspection(seedId: string, prospectId: string) {
+    return this.request<{ ok: boolean }>("/api/worker/discovery/seed-stats", { id: seedId, prospectId, event: "inspected" });
   }
 
   async bumpSeed(id: string, counts: { discovered?: number; inspected?: number; seen?: number; duplicates?: number; used?: boolean }) {

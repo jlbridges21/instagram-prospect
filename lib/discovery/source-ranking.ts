@@ -1,3 +1,4 @@
+import { homeFeedPercent, seedSharePercent } from "@/lib/discovery/defaults";
 import type { DiscoveryStrategy } from "@/lib/discovery/seeds";
 
 export type CollectionSource = "seed" | "suggested_accounts" | "home_feed";
@@ -10,9 +11,10 @@ export function pickCollectionSource(input: {
   homeUsage: HomeFeedUsage;
   strategy: DiscoveryStrategy;
   random: number;
+  tuning?: unknown;
 }) {
-  const homeWeight = input.homeUsage === "high" ? 0.45 : input.homeUsage === "medium" ? 0.25 : 0.1;
-  const seedShare = input.strategy === "conservative" ? 0.85 : input.strategy === "exploratory" ? 0.5 : 0.7;
+  const homeWeight = homeFeedPercent(input.homeUsage, input.tuning) / 100;
+  const seedShare = seedSharePercent(input.strategy, input.tuning) / 100;
   const roll = Math.min(0.999999, Math.max(0, input.random));
   if (input.homeEnabled && roll < homeWeight) return "home_feed" as const;
   const seedCutoff = homeWeight + (1 - homeWeight) * seedShare;

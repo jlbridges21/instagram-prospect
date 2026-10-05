@@ -18,7 +18,7 @@ import { DEFAULT_MESSAGE_TEMPLATE } from "@/lib/constants/message";
 import { DEFAULT_OUTREACH_SETTINGS, normalizeClock, normalizeDays } from "@/lib/outreach/defaults";
 import type { OutreachSettings } from "@/lib/outreach/types";
 import { databaseErrorMessage, isMissingRelation } from "@/lib/db/errors";
-import { DEFAULT_DISCOVERY_OPTIMIZATION, DEFAULT_POSITIVE_KEYWORDS } from "@/lib/discovery/defaults";
+import { DEFAULT_DISCOVERY_OPTIMIZATION, DEFAULT_POSITIVE_KEYWORDS, clampTuning } from "@/lib/discovery/defaults";
 import type { AppSettings, DataResult, DiscoveryOptimization, DiscoverySettings, TargetingSettings } from "@/lib/db/models";
 import type { SettingsRow, TargetingSettingsRow } from "@/lib/db/types";
 import { createClient } from "@/lib/supabase/server";
@@ -84,6 +84,7 @@ export function optimizationFromRow(row: SettingsRow): DiscoveryOptimization {
     seedCooldownCycles: row.discovery_seed_cooldown_cycles ?? DEFAULT_DISCOVERY_OPTIMIZATION.seedCooldownCycles,
     positiveKeywords: row.discovery_positive_keywords ?? [...DEFAULT_POSITIVE_KEYWORDS],
     negativeKeywords: row.discovery_negative_keywords ?? [],
+    tuning: clampTuning(row.discovery_tuning),
   };
 }
 
@@ -160,7 +161,7 @@ export function fallbackSettings(): AppSettings {
     possibleFitMinimum: DEFAULT_POSSIBLE_FIT_MINIMUM,
     outreach: DEFAULT_OUTREACH_SETTINGS,
     discovery: DEFAULT_DISCOVERY_SETTINGS,
-    optimization: { ...DEFAULT_DISCOVERY_OPTIMIZATION, positiveKeywords: [...DEFAULT_POSITIVE_KEYWORDS], negativeKeywords: [] },
+    optimization: { ...DEFAULT_DISCOVERY_OPTIMIZATION, positiveKeywords: [...DEFAULT_POSITIVE_KEYWORDS], negativeKeywords: [], tuning: clampTuning(undefined) },
     updatedAt: null,
   };
 }
