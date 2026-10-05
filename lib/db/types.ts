@@ -124,6 +124,8 @@ export type SettingsRow = {
   discovery_home_feed_usage?: "low" | "medium" | "high";
   discovery_strategy?: "conservative" | "balanced" | "exploratory";
   discovery_seed_cooldown_cycles?: number;
+  discovery_seed_network_enabled?: boolean;
+  discovery_seed_network_sample?: number;
   discovery_positive_keywords?: string[] | null;
   discovery_negative_keywords?: string[] | null;
   discovery_tuning?: Json | null;

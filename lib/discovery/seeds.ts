@@ -40,15 +40,24 @@ export function seedStatForCandidate(event: "duplicate_skipped" | "inspected" | 
   return { inspected: 0, duplicates: 0, discovered: 1 };
 }
 
-export function seedCollectionResult(input: { seedId: string; seedUsername: string; usernames: string[] }) {
+export const SEEDED_DISCOVERY_SOURCES = ["seed_suggestion", "seed_network"] as const;
+export type SeededDiscoverySource = (typeof SEEDED_DISCOVERY_SOURCES)[number];
+
+export function seedCollectionResult(input: {
+  seedId: string;
+  seedUsername: string;
+  usernames: string[];
+  source?: SeededDiscoverySource;
+}) {
   const owner = input.seedUsername.replace(/^@/, "").trim().toLowerCase();
+  const source = input.source ?? "seed_suggestion";
   const usable = [...new Set(input.usernames.map((name) => name.replace(/^@/, "").trim().toLowerCase()).filter((name) => name && name !== owner))];
   if (usable.length === 0) return { fallback: true as const, candidates: [] as const };
   return {
     fallback: false as const,
     candidates: usable.map((username) => ({
       username,
-      source: "seed_suggestion" as const,
+      source,
       sourceSeedId: input.seedId,
       sourceSeedUsername: owner,
     })),
@@ -56,9 +65,45 @@ export function seedCollectionResult(input: { seedId: string; seedUsername: stri
 }
 
 export function inspectionSeedId(candidate: { source: string; sourceSeedId?: string | null }) {
-  if (candidate.source !== "seed_suggestion") return null;
+  if (candidate.source !== "seed_suggestion" && candidate.source !== "seed_network") return null;
   const id = candidate.sourceSeedId?.trim();
   return id || null;
+}
+
+export const SEED_NETWORK_SAMPLE_MIN = 5;
+export const SEED_NETWORK_SAMPLE_MAX = 30;
+export const SEED_NETWORK_SAMPLE_DEFAULT = 15;
+
+export function clampSeedNetworkSample(value: number) {
+  if (!Number.isFinite(value)) return SEED_NETWORK_SAMPLE_DEFAULT;
+  return Math.min(SEED_NETWORK_SAMPLE_MAX, Math.max(SEED_NETWORK_SAMPLE_MIN, Math.round(value)));
+}
+
+export function seedNetworkTake(input: { configured: number; queueRoom: number }) {
+  if (input.queueRoom <= 0) return 0;
+  return Math.min(clampSeedNetworkSample(input.configured), input.queueRoom);
+}
+
+export function shouldOpenSeedNetwork(suggestionCount: number, enabled: boolean) {
+  return suggestionCount === 0 && enabled;
+}
+
+export function chooseSeedNeighborhood(input: {
+  suggestionCount: number;
+  networkEnabled: boolean;
+  networkCount: number;
+  profileOpened: boolean;
+}) {
+  if (input.suggestionCount > 0) {
+    return { path: "seed_suggestion" as const, openNetwork: false, fallback: false, cooldown: false };
+  }
+  if (!input.networkEnabled) {
+    return { path: "fallback" as const, openNetwork: false, fallback: true, cooldown: input.profileOpened };
+  }
+  if (input.networkCount > 0) {
+    return { path: "seed_network" as const, openNetwork: true, fallback: false, cooldown: false };
+  }
+  return { path: "fallback" as const, openNetwork: true, fallback: true, cooldown: input.profileOpened };
 }
 
 export function prospectAttribution(candidate: {

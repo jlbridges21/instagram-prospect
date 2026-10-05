@@ -30,6 +30,8 @@ export const DEFAULT_DISCOVERY_OPTIMIZATION = {
   homeFeedUsage: "low" as const,
   strategy: "balanced" as const,
   seedCooldownCycles: 2,
+  seedNetworkEnabled: true,
+  seedNetworkSample: 15,
 };
 
 export const DEFAULT_DISCOVERY_TUNING = {

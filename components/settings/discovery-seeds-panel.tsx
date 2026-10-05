@@ -175,6 +175,9 @@ export function DiscoverySeedsPanel({
           <SelectField label="Home Feed usage" value={form.homeFeedUsage} options={[["low", "Low"], ["medium", "Medium"], ["high", "High"]]} onChange={(homeFeedUsage) => setForm({ ...form, homeFeedUsage })} />
           <SelectField label="Discovery strategy" value={form.strategy} options={[["conservative", "Conservative"], ["balanced", "Balanced"], ["exploratory", "Exploratory"]]} onChange={(strategy) => setForm({ ...form, strategy })} />
           <NumberField label="Seed reuse cooldown (consecutive cycles)" value={form.seedCooldownCycles} onChange={(seedCooldownCycles) => setForm({ ...form, seedCooldownCycles })} />
+          <Toggle label="Seed network fallback" checked={form.seedNetworkEnabled} onChange={(seedNetworkEnabled) => setForm({ ...form, seedNetworkEnabled })} />
+          <NumberField label="Accounts to sample per seed" value={form.seedNetworkSample} onChange={(seedNetworkSample) => setForm({ ...form, seedNetworkSample })} />
+          <p className="text-sm text-slate-600 sm:col-span-2">When a seed profile has no related accounts, Discovery samples that account&apos;s Following list. Suggested accounts are still used when both are empty.</p>
         </div>
         <button
           type="button"

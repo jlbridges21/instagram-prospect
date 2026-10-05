@@ -2,7 +2,7 @@
 
 import { revalidatePath } from "next/cache";
 import { DEFAULT_DISCOVERY_OPTIMIZATION, DEFAULT_POSITIVE_KEYWORDS, clampTuning, type DiscoveryTuning } from "@/lib/discovery/defaults";
-import { normalizeSeedUsername, uniqueSeedUsernames, type SeedPriority, type SeedSourceType } from "@/lib/discovery/seeds";
+import { clampSeedNetworkSample, normalizeSeedUsername, uniqueSeedUsernames, type SeedPriority, type SeedSourceType } from "@/lib/discovery/seeds";
 import { requireUser } from "@/lib/supabase/auth";
 
 export type SeedActionResult = { ok: true; message?: string } | { ok: false; error: string };
@@ -127,6 +127,8 @@ export async function saveDiscoveryOptimization(input: {
   homeFeedUsage: "low" | "medium" | "high";
   strategy: "conservative" | "balanced" | "exploratory";
   seedCooldownCycles: number;
+  seedNetworkEnabled: boolean;
+  seedNetworkSample: number;
   positiveKeywords: string[];
   negativeKeywords: string[];
   tuning: DiscoveryTuning;
@@ -144,6 +146,8 @@ export async function saveDiscoveryOptimization(input: {
     discovery_home_feed_usage: input.homeFeedUsage,
     discovery_strategy: input.strategy,
     discovery_seed_cooldown_cycles: clamp(input.seedCooldownCycles, 1, 10, DEFAULT_DISCOVERY_OPTIMIZATION.seedCooldownCycles),
+    discovery_seed_network_enabled: input.seedNetworkEnabled,
+    discovery_seed_network_sample: clampSeedNetworkSample(input.seedNetworkSample),
     discovery_positive_keywords: cleanKeywords(input.positiveKeywords),
     discovery_negative_keywords: cleanKeywords(input.negativeKeywords),
     discovery_tuning: clampTuning(input.tuning),
@@ -202,7 +206,7 @@ export async function resetDiscoveryKeywords(): Promise<SeedActionResult> {
 
 async function currentOptimization() {
   const { supabase } = await requireUser();
-  const row = await supabase.from("settings").select("discovery_auto_promote, discovery_auto_promote_min_score, discovery_promote_strong, discovery_promote_possible, discovery_promote_requires, discovery_min_seed_sample, discovery_favor_yield, discovery_yield_strength, discovery_home_feed_usage, discovery_strategy, discovery_seed_cooldown_cycles, discovery_positive_keywords, discovery_negative_keywords, discovery_tuning").eq("id", 1).maybeSingle();
+  const row = await supabase.from("settings").select("discovery_auto_promote, discovery_auto_promote_min_score, discovery_promote_strong, discovery_promote_possible, discovery_promote_requires, discovery_min_seed_sample, discovery_favor_yield, discovery_yield_strength, discovery_home_feed_usage, discovery_strategy, discovery_seed_cooldown_cycles, discovery_seed_network_enabled, discovery_seed_network_sample, discovery_positive_keywords, discovery_negative_keywords, discovery_tuning").eq("id", 1).maybeSingle();
   const data = row.data;
   return {
     autoPromote: data?.discovery_auto_promote ?? DEFAULT_DISCOVERY_OPTIMIZATION.autoPromote,
@@ -216,6 +220,8 @@ async function currentOptimization() {
     homeFeedUsage: data?.discovery_home_feed_usage ?? DEFAULT_DISCOVERY_OPTIMIZATION.homeFeedUsage,
     strategy: data?.discovery_strategy ?? DEFAULT_DISCOVERY_OPTIMIZATION.strategy,
     seedCooldownCycles: data?.discovery_seed_cooldown_cycles ?? DEFAULT_DISCOVERY_OPTIMIZATION.seedCooldownCycles,
+    seedNetworkEnabled: data?.discovery_seed_network_enabled ?? DEFAULT_DISCOVERY_OPTIMIZATION.seedNetworkEnabled,
+    seedNetworkSample: clampSeedNetworkSample(data?.discovery_seed_network_sample ?? DEFAULT_DISCOVERY_OPTIMIZATION.seedNetworkSample),
     positiveKeywords: data?.discovery_positive_keywords ?? [...DEFAULT_POSITIVE_KEYWORDS],
     negativeKeywords: data?.discovery_negative_keywords ?? [],
     tuning: clampTuning(data?.discovery_tuning),

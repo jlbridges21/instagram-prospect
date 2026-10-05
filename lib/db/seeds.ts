@@ -35,6 +35,7 @@ export async function listDiscoverySeeds(): Promise<DataResult<DiscoverySeedRow[
 
 const SOURCE_GROUPS = [
   ["seed_suggestion", "Seed suggestions"],
+  ["seed_network", "Seed network"],
   ["suggested_accounts", "Suggested Accounts"],
   ["home_feed", "Home Feed"],
 ] as const;

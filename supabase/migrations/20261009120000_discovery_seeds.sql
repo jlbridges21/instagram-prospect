@@ -36,7 +36,7 @@ create index if not exists discovery_seeds_username_idx on public.discovery_seed
 alter table public.prospects drop constraint if exists prospects_source_check;
 alter table public.prospects
   add constraint prospects_source_check
-  check (source in ('home_feed', 'suggested_accounts', 'manual', 'seed_suggestion'));
+  check (source in ('home_feed', 'suggested_accounts', 'manual', 'seed_suggestion', 'seed_network'));
 
 alter table public.prospects
   add column if not exists source_seed_id uuid references public.discovery_seeds(id) on delete set null,
@@ -59,6 +59,8 @@ alter table public.settings
   add column if not exists discovery_home_feed_usage text not null default 'low',
   add column if not exists discovery_strategy text not null default 'balanced',
   add column if not exists discovery_seed_cooldown_cycles integer not null default 2,
+  add column if not exists discovery_seed_network_enabled boolean not null default true,
+  add column if not exists discovery_seed_network_sample integer not null default 15,
   add column if not exists discovery_positive_keywords text[] not null default array['drone','aerial','photography','photographer','real estate','realestate','media','video','videography','videographer','fpv','uav','aerial media','property media','real estate media','content creator','production'],
   add column if not exists discovery_negative_keywords text[] not null default array[]::text[],
   add column if not exists discovery_tuning jsonb not null default '{

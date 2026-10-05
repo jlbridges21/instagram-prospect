@@ -42,6 +42,7 @@ import {
   saveErrorScreenshot,
   sendExactMessage,
 } from "./instagram/actions";
+import { openSeedFollowing } from "./instagram/open-following";
 import { openSeedSuggestions } from "./instagram/open-seed";
 import { readDom } from "./instagram/read-dom";
 import { AttentionError, NavigationError, SelectorError } from "./instagram/errors";
@@ -817,6 +818,17 @@ export async function runWorker(mode: RunMode) {
                 } catch (error) {
                   log("warn", "seed_profile_unavailable", { username, message: error instanceof Error ? error.message : "unavailable" });
                   return null;
+                }
+              },
+              readSeedNetwork: async (username, limit) => {
+                const tab = tabs.find((item) => item && !item.isClosed()) ?? null;
+                if (!tab) return [];
+                try {
+                  const opened = await openSeedFollowing(tab, username, limit);
+                  return opened.usernames;
+                } catch (error) {
+                  log("warn", "seed_network_unavailable", { username, message: error instanceof Error ? error.message : "unavailable" });
+                  return [];
                 }
               },
               metrics: efficiency,

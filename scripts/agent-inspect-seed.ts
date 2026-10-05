@@ -17,11 +17,20 @@ async function main() {
   }
   const { launchBrowser } = await import("../worker/browser/launch");
   const { openSeedSuggestions } = await import("../worker/instagram/open-seed");
+  const { openSeedFollowing } = await import("../worker/instagram/open-following");
+  const { SEED_NETWORK_SAMPLE_DEFAULT } = await import("../lib/discovery/seeds");
   const { context, page } = await launchBrowser();
   try {
-    const opened = await openSeedSuggestions(page, owner);
-    if (opened.usernames.length === 0) console.log("No candidate usernames.");
-    else for (const name of opened.usernames) console.log(`@${name}`);
+    const suggestions = await openSeedSuggestions(page, owner);
+    const network = await openSeedFollowing(page, owner, SEED_NETWORK_SAMPLE_DEFAULT);
+    console.log("Profile suggestions:");
+    console.log(String(suggestions.usernames.length));
+    console.log("Following network:");
+    console.log(`${network.usernames.length} usable usernames`);
+    if (network.usernames.length > 0) {
+      console.log("Sample:");
+      for (const name of network.usernames) console.log(`@${name}`);
+    }
     console.log("Inspect finished. Nothing was saved, qualified, followed, or messaged.");
   } finally {
     await context.close().catch(() => undefined);

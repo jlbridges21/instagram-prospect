@@ -445,7 +445,7 @@ async function rememberSuppression(
 
 function sourceLabel(source: ProspectSource | undefined) {
   if (source === "suggested_accounts") return "Suggested accounts";
-  if (source === "seed_suggestion") return "a Discovery Seed";
+  if (source === "seed_suggestion" || source === "seed_network") return "a Discovery Seed";
   if (source === "manual") return "manual entry";
   return "Home feed";
 }

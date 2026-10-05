@@ -5,7 +5,7 @@ import type { CloudClient, CloudConfig } from "../cloud/client";
 import { QualificationQueue } from "./qualify-queue";
 import { CandidateQueue, SessionUsernameCache, chunkUsernames, unseenUsernames, type DiscoveryCandidate } from "./queue";
 import { scoreCandidate } from "../../lib/discovery/candidate-priority";
-import { inspectionSeedId, pickSeed, prospectAttribution, seedCollectionResult, seedStatForCandidate } from "../../lib/discovery/seeds";
+import { inspectionSeedId, pickSeed, prospectAttribution, seedCollectionResult, seedNetworkTake, seedStatForCandidate, shouldOpenSeedNetwork, type SeededDiscoverySource } from "../../lib/discovery/seeds";
 import { applyEmptySeedCooldowns } from "../instagram/seed-page";
 import { clearEmptySeed, readEmptySeedCooldowns, rememberEmptySeed } from "./seed-cooldowns";
 import { pickCollectionSource } from "../../lib/discovery/source-ranking";
@@ -102,6 +102,7 @@ export async function runDiscoveryV2(input: {
   browserLock?: { tryAcquire: (owner: "discovery") => boolean; release: (owner: "discovery") => void };
   singleTurn?: boolean;
   readSeedProfile?: (username: string) => Promise<import("../instagram/types").DomSnapshot | null>;
+  readSeedNetwork?: (username: string, limit: number) => Promise<string[]>;
 }) {
   const metrics = input.metrics ?? emptyEfficiency();
   const queue = new CandidateQueue(10);
@@ -239,26 +240,61 @@ export async function runDiscoveryV2(input: {
     console.log("Opening seed suggestions...");
     const page = await input.readSeedProfile(seed.username);
     const found = page ? suggestedCandidates(page) : [];
-    const collected = seedCollectionResult({
+    const suggestions = seedCollectionResult({
       seedId: seed.id,
       seedUsername: seed.username,
       usernames: found.map((item) => item.username),
+      source: "seed_suggestion",
     });
-    await input.cloud.bumpSeed(seed.id, { used: true, seen: collected.candidates.length }).catch(() => undefined);
-    if (page && collected.fallback) rememberEmptySeed(seed.username);
-    if (page && !collected.fallback) clearEmptySeed(seed.username);
-    if (collected.fallback) {
-      console.log(`Seed @${seed.username} produced no usable candidates.`);
-      console.log("Falling back to Suggested Accounts.");
-      if (page) console.log(`Cooling down @${seed.username} for 45 minutes.`);
-      return null;
+    if (!suggestions.fallback) {
+      if (page) clearEmptySeed(seed.username);
+      await input.cloud.bumpSeed(seed.id, { used: true, seen: suggestions.candidates.length }).catch(() => undefined);
+      return packSeedCandidates(seed, config, suggestions.candidates, new Map(found.map((item) => [item.username, item])));
     }
+    console.log("No usable profile suggestions.");
+    const room = queueThresholds(config.candidateQueueTarget).highWater - queue.pendingCount();
+    const limit = seedNetworkTake({ configured: config.seedNetworkSample ?? 15, queueRoom: room });
+    const networkEnabled = config.seedNetworkEnabled !== false && Boolean(input.readSeedNetwork);
+    let networkUsernames: string[] = [];
+    if (shouldOpenSeedNetwork(suggestions.candidates.length, networkEnabled) && limit > 0 && page) {
+      console.log(`Opening seed network for @${seed.username}...`);
+      networkUsernames = await input.readSeedNetwork!(seed.username, limit).catch(() => []);
+    }
+    const network = seedCollectionResult({
+      seedId: seed.id,
+      seedUsername: seed.username,
+      usernames: networkUsernames,
+      source: "seed_network",
+    });
+    if (!network.fallback) {
+      clearEmptySeed(seed.username);
+      const session = unseenUsernames(network.candidates.map((item) => item.username), cache, queue);
+      console.log(`Collected ${network.candidates.length} accounts from Following.`);
+      console.log(`${session.fresh.length} new candidates after dedupe.`);
+      await input.cloud.bumpSeed(seed.id, { used: true, seen: network.candidates.length }).catch(() => undefined);
+      return packSeedCandidates(seed, config, network.candidates, new Map());
+    }
+    const exhausted = Boolean(page) && !(networkEnabled && limit === 0);
+    if (exhausted) rememberEmptySeed(seed.username);
+    if (networkEnabled && page && limit > 0) console.log("Seed network produced no usable candidates.");
+    console.log("Falling back to Suggested Accounts.");
+    if (exhausted) console.log(`Cooling down @${seed.username} for 45 minutes.`);
+    await input.cloud.bumpSeed(seed.id, { used: true, seen: 0 }).catch(() => undefined);
+    return null;
+  }
+
+  function packSeedCandidates(
+    seed: { id: string; username: string; inspected: number; review: number; priority: "low" | "normal" | "high" },
+    config: CloudConfig,
+    candidates: Array<{ username: string; source: SeededDiscoverySource; sourceSeedId: string; sourceSeedUsername: string }>,
+    urls: Map<string, { profileUrl?: string; postUrl?: string | null }>,
+  ) {
     const mature = seed.inspected >= (config.minSeedSample ?? 10);
     const yieldRate = seed.inspected > 0 ? seed.review / seed.inspected : 0;
-    const byUsername = new Map(found.map((item) => [item.username, item]));
+    const sourceLabel = candidates[0]?.source === "seed_network" ? "Seed network" : "Seed suggestions";
     return {
-      sourceLabel: "Seed suggestions",
-      ordered: collected.candidates.map((item) => {
+      sourceLabel,
+      ordered: candidates.map((item) => {
         const priority = scoreCandidate({
           source: "seed",
           seedUsername: seed.username,
@@ -270,7 +306,7 @@ export async function runDiscoveryV2(input: {
           negativeKeywords: config.negativeKeywords ?? [],
           tuning: config.tuning,
         });
-        const match = byUsername.get(item.username);
+        const match = urls.get(item.username);
         return {
           username: item.username,
           profileUrl: match?.profileUrl ?? `https://www.instagram.com/${item.username}/`,
@@ -360,7 +396,7 @@ export async function runDiscoveryV2(input: {
               queued += 1;
               console.log(`Queued @${prioritized.username}`);
               console.log(`Source: ${prioritized.source}`);
-              if (prioritized.source === "seed_suggestion" && prioritized.sourceSeedUsername) console.log(`Seed: @${prioritized.sourceSeedUsername}`);
+              if ((prioritized.source === "seed_suggestion" || prioritized.source === "seed_network") && prioritized.sourceSeedUsername) console.log(`Seed: @${prioritized.sourceSeedUsername}`);
               log("info", "candidate_queued", { username: prioritized.username, source: prioritized.source, seed: prioritized.sourceSeedUsername ?? null });
               if (inspectionSeedId(prioritized)) await input.cloud.bumpSeed(prioritized.sourceSeedId ?? "", seedStatForCandidate("queued")).catch(() => undefined);
             }
@@ -434,7 +470,7 @@ export async function runDiscoveryV2(input: {
       input.live.username = candidate.username;
       console.log(`Inspecting @${candidate.username}`);
       console.log(`Source: ${candidate.source}`);
-      if (candidate.source === "seed_suggestion" && candidate.sourceSeedUsername) console.log(`Seed: @${candidate.sourceSeedUsername}`);
+      if ((candidate.source === "seed_suggestion" || candidate.source === "seed_network") && candidate.sourceSeedUsername) console.log(`Seed: @${candidate.sourceSeedUsername}`);
       log("info", tabId === "profile-tab-1" ? "candidate_claimed_tab_a" : "candidate_claimed_tab_b", {
         username: candidate.username,
       });
@@ -623,7 +659,7 @@ function isAttention(error: unknown) {
 function withPriority(candidate: DiscoveryCandidate, config: CloudConfig): DiscoveryCandidate {
   if (candidate.priorityScore != null) return candidate;
   const priority = scoreCandidate({
-    source: candidate.source === "seed_suggestion" ? "seed" : candidate.source,
+    source: candidate.source === "seed_suggestion" || candidate.source === "seed_network" ? "seed" : candidate.source,
     seedUsername: candidate.sourceSeedUsername,
     text: candidate.username,
     positiveKeywords: config.positiveKeywords ?? [],

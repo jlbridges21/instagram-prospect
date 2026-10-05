@@ -1,4 +1,5 @@
 import { clampTuning, type DiscoveryTuning } from "../../lib/discovery/defaults";
+import { clampSeedNetworkSample } from "../../lib/discovery/seeds";
 import { AUTH_FAILURE_MESSAGE } from "../version";
 
 export type CloudConfig = {
@@ -43,6 +44,8 @@ export type CloudConfig = {
   favorYield?: boolean;
   minSeedSample?: number;
   seedCooldownCycles?: number;
+  seedNetworkEnabled?: boolean;
+  seedNetworkSample?: number;
   tuning?: DiscoveryTuning;
 };
 
@@ -161,6 +164,8 @@ export class CloudClient {
       favorYield: json.favorYield !== false,
       minSeedSample: numberOr(json.minSeedSample, 10),
       seedCooldownCycles: numberOr(json.seedCooldownCycles, 2),
+      seedNetworkEnabled: json.seedNetworkEnabled !== false,
+      seedNetworkSample: clampSeedNetworkSample(numberOr(json.seedNetworkSample, 15)),
       tuning: clampTuning(json.tuning),
     } satisfies CloudConfig;
     this.configCache = value;

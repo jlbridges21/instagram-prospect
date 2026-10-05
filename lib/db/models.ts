@@ -33,6 +33,8 @@ export type DiscoveryOptimization = {
   homeFeedUsage: "low" | "medium" | "high";
   strategy: "conservative" | "balanced" | "exploratory";
   seedCooldownCycles: number;
+  seedNetworkEnabled: boolean;
+  seedNetworkSample: number;
   positiveKeywords: string[];
   negativeKeywords: string[];
   tuning: DiscoveryTuning;

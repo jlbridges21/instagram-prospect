@@ -19,6 +19,7 @@ import { DEFAULT_OUTREACH_SETTINGS, normalizeClock, normalizeDays } from "@/lib/
 import type { OutreachSettings } from "@/lib/outreach/types";
 import { databaseErrorMessage, isMissingRelation } from "@/lib/db/errors";
 import { DEFAULT_DISCOVERY_OPTIMIZATION, DEFAULT_POSITIVE_KEYWORDS, clampTuning } from "@/lib/discovery/defaults";
+import { clampSeedNetworkSample } from "@/lib/discovery/seeds";
 import type { AppSettings, DataResult, DiscoveryOptimization, DiscoverySettings, TargetingSettings } from "@/lib/db/models";
 import type { SettingsRow, TargetingSettingsRow } from "@/lib/db/types";
 import { createClient } from "@/lib/supabase/server";
@@ -82,6 +83,8 @@ export function optimizationFromRow(row: SettingsRow): DiscoveryOptimization {
     homeFeedUsage: home === "medium" || home === "high" ? home : "low",
     strategy: strategy === "conservative" || strategy === "exploratory" ? strategy : "balanced",
     seedCooldownCycles: row.discovery_seed_cooldown_cycles ?? DEFAULT_DISCOVERY_OPTIMIZATION.seedCooldownCycles,
+    seedNetworkEnabled: row.discovery_seed_network_enabled ?? DEFAULT_DISCOVERY_OPTIMIZATION.seedNetworkEnabled,
+    seedNetworkSample: clampSeedNetworkSample(row.discovery_seed_network_sample ?? DEFAULT_DISCOVERY_OPTIMIZATION.seedNetworkSample),
     positiveKeywords: row.discovery_positive_keywords ?? [...DEFAULT_POSITIVE_KEYWORDS],
     negativeKeywords: row.discovery_negative_keywords ?? [],
     tuning: clampTuning(row.discovery_tuning),

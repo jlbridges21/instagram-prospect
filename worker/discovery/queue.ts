@@ -1,4 +1,4 @@
-export type DiscoverySource = "home_feed" | "suggested_accounts" | "seed_suggestion";
+export type DiscoverySource = "home_feed" | "suggested_accounts" | "seed_suggestion" | "seed_network";
 export type CandidateState = "pending" | "in_progress" | "done" | "skipped";
 
 export type DiscoveryCandidate = {
