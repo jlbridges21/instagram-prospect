@@ -164,7 +164,7 @@ export function WorkerWidget({ timeZone }: { timeZone: string }) {
   return (
     <>
       {attention || versions.mismatch ? (
-        <div className="fixed inset-x-0 top-14 z-30 border-b border-red-200 bg-red-50 px-4 py-2 text-sm text-red-900 lg:left-60" role="status">
+        <div className="fixed inset-x-0 top-36 z-30 border-b border-red-400/30 bg-red-500/15 px-4 py-2 text-sm text-red-100 lg:left-64" role="status">
           <p className="font-semibold">{versions.mismatch ? "Worker update required" : "Instagram needs attention"}</p>
           <p>{versions.mismatch ? versions.message : discovery.reason}</p>
           <p>{versions.mismatch ? "Worker actions stay disabled until the Windows worker is updated." : discovery.detail}</p>
@@ -172,7 +172,7 @@ export function WorkerWidget({ timeZone }: { timeZone: string }) {
       ) : null}
       <section className="fixed bottom-4 right-4 z-40 w-[min(24rem,calc(100vw-1.5rem))]" aria-label="Worker control">
         {open ? (
-          <div className="max-h-[70vh] overflow-y-auto rounded-2xl border border-slate-200 bg-white p-4 text-sm shadow-lg">
+          <div className="max-h-[70vh] overflow-y-auto rounded-2xl border border-white/10 bg-[#0b1020]/90 p-4 text-sm shadow-[0_20px_60px_rgba(0,0,0,0.45)] backdrop-blur-xl">
             <div className="flex items-center justify-between">
               <p className="font-semibold text-slate-900">Worker</p>
               <span className={`h-2.5 w-2.5 rounded-full ${statusDotClass(status?.online ? (attention ? "blocked" : "running") : "offline")}`} aria-hidden />
@@ -240,14 +240,14 @@ export function WorkerWidget({ timeZone }: { timeZone: string }) {
             </div>
           </div>
         ) : (
-          <button type="button" className="w-full rounded-xl border border-slate-200 bg-white p-3 text-left text-sm shadow-sm focus-visible:outline focus-visible:outline-2 focus-visible:outline-indigo-600" onClick={() => collapse(true)} aria-expanded={open}>
-            <span className="flex items-center gap-2 font-medium text-slate-900">
+          <button type="button" className="w-full rounded-2xl border border-white/10 bg-[#0b1020]/90 p-3 text-left text-sm shadow-[0_16px_40px_rgba(0,0,0,0.4)] backdrop-blur-xl" onClick={() => collapse(true)} aria-expanded={open}>
+            <span className="flex items-center gap-2 font-medium text-slate-50">
               <span className={`h-2 w-2 rounded-full ${statusDotClass(status?.online ? (attention ? "blocked" : "running") : "offline")}`} aria-hidden />
               {status?.online ? "Worker Connected" : "Worker Offline"}
             </span>
-            <span className="mt-2 block text-xs text-slate-600">Discovery: {discovery.actual}</span>
-            <span className="block text-xs text-slate-600">Outreach: {outreach.actual}</span>
-            <span className="mt-1 block truncate text-xs text-slate-800">{action}</span>
+            <span className="mt-2 block truncate text-xs text-slate-300">Current: {action}</span>
+            <span className="block text-xs text-slate-400">Discovery: {discovery.actual}</span>
+            <span className="block text-xs text-slate-400">Outreach: {outreach.actual}</span>
           </button>
         )}
       </section>

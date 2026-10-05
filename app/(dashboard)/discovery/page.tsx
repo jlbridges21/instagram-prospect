@@ -11,6 +11,7 @@ import { parseHourlyWaitEvent, formatResumeClock } from "@/lib/discovery/pacing"
 import { attentionKind, formatCurrentAction, formatDiscoveryStatus, outreachOwnsWorker, statusDotClass } from "@/lib/status/operations";
 import { parseBrowserHealthEvent } from "@/lib/worker/browser-health";
 import { getWorkerHealth } from "@/lib/utils/worker-health";
+import { DroneMark } from "@/components/visual/drone-mark";
 
 export const metadata: Metadata = { title: "Discovery" };
 
@@ -56,9 +57,12 @@ export default async function DiscoveryPage() {
         action={<StartDiscoveryButton disabled={!online} reviewCount={progress.currentReview} />}
       />
       <section className="rounded-xl border border-slate-200 bg-white p-4 text-sm">
-        <div className="flex items-center gap-2">
-          <span className={`h-2.5 w-2.5 rounded-full ${statusDotClass(status.tone)}`} aria-hidden />
-          <h2 className="font-semibold text-slate-900">Discovery {status.actual}</h2>
+        <div className="flex items-center justify-between gap-3">
+          <div className="flex items-center gap-2">
+            <span className={`h-2.5 w-2.5 rounded-full ${statusDotClass(status.tone)}`} aria-hidden />
+            <h2 className="font-semibold text-slate-900">Discovery {status.actual}</h2>
+          </div>
+          <DroneMark className="h-14 w-14" />
         </div>
         <p className="mt-2 text-slate-700">Desired: {status.desired}</p>
         <p className="mt-1 text-slate-700">{status.reason}</p>

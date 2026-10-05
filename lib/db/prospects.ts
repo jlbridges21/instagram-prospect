@@ -246,11 +246,50 @@ export async function getReviewTodayCounts(timeZone: string) {
   };
 }
 
+export type LocatedProspect = {
+  id: string;
+  instagram_username: string;
+  display_name: string | null;
+  profile_picture_url: string | null;
+  follower_count: number | null;
+  fit_label: ProspectRow["fit_label"];
+  fit_score: number | null;
+  status: ProspectRow["status"];
+  location_text: string | null;
+  category: string | null;
+  source?: string | null;
+  follow_relationship?: string | null;
+};
+
+export async function getLocatedProspects(limit = 300): Promise<DataResult<LocatedProspect[]>> {
+  const supabase = await createClient();
+  const { data, error } = await supabase
+    .from("prospects")
+    .select("id, instagram_username, display_name, profile_picture_url, follower_count, fit_label, fit_score, status, location_text, category")
+    .not("location_text", "is", null)
+    .order("discovered_at", { ascending: false, nullsFirst: false })
+    .limit(limit);
+  if (error) return { ok: false, error: databaseErrorMessage(error), missingTable: isMissingRelation(error) };
+  return { ok: true, data: (data ?? []) as LocatedProspect[] };
+}
+
+export async function getProspectCard(username: string | null): Promise<LocatedProspect | null> {
+  const normalized = username?.replace(/^@/, "").trim();
+  if (!normalized) return null;
+  const supabase = await createClient();
+  const { data } = await supabase
+    .from("prospects")
+    .select("id, instagram_username, display_name, profile_picture_url, follower_count, fit_label, fit_score, status, location_text, category, source, follow_relationship")
+    .eq("instagram_username", normalized)
+    .maybeSingle();
+  return (data as LocatedProspect | null) ?? null;
+}
+
 export async function getRecentProspects(limit = 6): Promise<DataResult<ProspectRow[]>> {
   const supabase = await createClient();
   const { data, error } = await supabase
     .from("prospects")
-    .select("id, instagram_username, display_name, first_name, profile_picture_url, follower_count, fit_score, fit_label, status, discovered_at")
+    .select("id, instagram_username, display_name, first_name, profile_picture_url, follower_count, fit_score, fit_label, status, discovered_at, location_text, category, source")
     .order("discovered_at", { ascending: false, nullsFirst: false })
     .limit(limit);
 

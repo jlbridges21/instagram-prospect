@@ -309,7 +309,7 @@ export function ProspectsTable({
         </div>
       ) : null}
       {selected.length > 0 ? (
-        <div className="sticky top-16 z-20 mb-3 flex flex-wrap items-center justify-between gap-2 rounded-xl border border-slate-200 bg-white px-4 py-3 shadow-sm">
+        <div className="fixed bottom-24 left-1/2 z-30 flex w-[min(52rem,calc(100%-2rem))] -translate-x-1/2 flex-wrap items-center justify-between gap-2 rounded-2xl border border-white/10 bg-[#0b1020]/95 px-4 py-3 shadow-[0_16px_50px_rgba(0,0,0,0.45)]">
           <p className="text-sm text-slate-700">{allFiltered ? matchCount : selected.length} selected</p>
           <div className="flex flex-wrap gap-2">
             <AnalyzeSelectedButton
@@ -330,7 +330,7 @@ export function ProspectsTable({
                 Skip selected
               </Button>
             ) : null}
-            <Button size="sm" variant="secondary" disabled={pending} onClick={() => setConfirmDelete(selected)}>
+            <Button size="sm" variant="danger" disabled={pending} onClick={() => setConfirmDelete(selected)}>
               Delete selected
             </Button>
             {query && matchCount > rows.length && selected.length === rows.length && !allFiltered ? (

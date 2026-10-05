@@ -52,7 +52,7 @@ export function OutreachProgress({
               className={cn(
                 "mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-[11px] font-semibold",
                 state === "done" && "bg-indigo-600 text-white",
-                state === "current" && "bg-indigo-50 text-indigo-700 ring-1 ring-indigo-200",
+                state === "current" && "bg-cyan-400/20 text-cyan-200 shadow-[0_0_16px_rgba(34,211,238,0.45)] ring-1 ring-cyan-300/40",
                 state === "wait" && "bg-slate-100 text-slate-400",
                 state === "stop" && "bg-amber-100 text-amber-800",
               )}
