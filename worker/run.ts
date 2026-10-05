@@ -1,5 +1,6 @@
 import { continuousOutreachStep } from "../lib/discovery/policy";
-import { discoveryDue, inspectionIntervalMs, scheduleNextInspection } from "../lib/discovery/cadence";
+import { discoveryDue, discoveryStallDecision, inspectionIntervalMs, scheduleNextInspection, startDiscoveryCadence } from "../lib/discovery/cadence";
+import { formatCountdown } from "../lib/ui/countdown";
 import { checkpointHoldDecision, formatHourlyWaitEvent, formatWorkerModes } from "../lib/discovery/pacing";
 import { readHourlyStamps } from "./discovery/hourly-history";
 import { readDiscoveryCadence, writeDiscoveryCadence } from "./discovery/cadence-file";
@@ -254,6 +255,9 @@ export async function runWorker(mode: RunMode) {
   let lastDiscoveryProgressAt = savedCadence.lastInspectionAt ?? 0;
   let lastOutreachProgressAt = Date.now();
   let discoveryStallLogged = false;
+  let discoveryOverdueSince = 0;
+  let discoveryRetryAt = 0;
+  let discoverySlotLogged = false;
   let outreachStallLogged = false;
   let dailyBlockedUntil = 0;
   let outreachDueAt = 0;
@@ -616,12 +620,22 @@ export async function runWorker(mode: RunMode) {
           continue;
         }
         if (offered && !discoveryOnly) {
-          const command = offered;
+          const command: { commandId: string; type: string; payload: unknown } = offered;
           offered = null;
           await runDashboardCommand(cloud, page, identity, stats, live, command, control).catch((error) => {
             console.log(error instanceof Error ? error.message : "The dashboard command failed.");
           });
           cloud.invalidateConfig();
+          if (command.type === "start_discovery" && control.browserConnected()) {
+            const started = startDiscoveryCadence({ now: Date.now(), nextInspectionAt: discoveryNextAt });
+            discoveryNextAt = started.nextInspectionAt;
+            discoveryOverdueSince = 0;
+            discoveryStallLogged = false;
+            discoveryRetryAt = 0;
+            discoverySlotLogged = false;
+            writeDiscoveryCadence({ nextInspectionAt: discoveryNextAt, lastInspectionAt: lastDiscoveryProgressAt || null });
+            if (!started.prompt) console.log(`Next inspection: ${formatCountdown(discoveryNextAt, Date.now())}`);
+          }
           continue;
         }
         const freshConfig = await cloud.config();
@@ -643,20 +657,23 @@ export async function runWorker(mode: RunMode) {
         const outreachDueNow = config.automationEnabled && (activeSideEffect != null || Date.now() >= outreachDueAt);
         const intervalMs = inspectionIntervalMs(config.maxProfilesPerHour);
         if (Date.now() >= dailyBlockedUntil) dailyBlockedUntil = 0;
-        const discoveryIsDue = config.discoveryEnabled && !control.pauseDiscovery && dailyBlockedUntil === 0 && discoveryDue(Date.now(), discoveryNextAt);
-        if (
-          config.discoveryEnabled &&
-          currentState() === "connected" &&
-          !activeSideEffect &&
-          dailyBlockedUntil === 0 &&
-          Date.now() > discoveryNextAt + intervalMs * 3 &&
-          !discoveryStallLogged
-        ) {
+        const discoveryBlocked = !config.discoveryEnabled || control.pauseDiscovery || dailyBlockedUntil > Date.now() || currentState() !== "connected" || activeSideEffect != null;
+        const stall = discoveryStallDecision({
+          now: Date.now(),
+          nextInspectionAt: discoveryNextAt,
+          intervalMs,
+          blocked: discoveryBlocked,
+          overdueSince: discoveryOverdueSince,
+        });
+        discoveryOverdueSince = stall.overdueSince;
+        if (stall.stalled && !discoveryStallLogged) {
           discoveryStallLogged = true;
           console.log("Discovery stalled. Reconciling the inspection schedule.");
           discoveryNextAt = Date.now();
+          discoveryOverdueSince = 0;
           writeDiscoveryCadence({ nextInspectionAt: discoveryNextAt, lastInspectionAt: lastDiscoveryProgressAt || null });
         }
+        const discoveryIsDue = config.discoveryEnabled && !control.pauseDiscovery && dailyBlockedUntil === 0 && discoveryDue(Date.now(), discoveryNextAt) && Date.now() >= discoveryRetryAt;
         if (
           config.automationEnabled &&
           currentState() === "connected" &&
@@ -768,6 +785,10 @@ export async function runWorker(mode: RunMode) {
           if (discoveryV3Test) console.log("Discovery V3 test. Outreach stays paused. Inspecting up to 10 profiles. No follow and no DM.");
           session.discoveryActive = true;
           const seenBefore = stats.seen;
+          if (!discoverySlotLogged) {
+            discoverySlotLogged = true;
+            console.log("Discovery inspection slot due.");
+          }
           try {
             await runDiscoveryV2({
               context,
@@ -811,6 +832,8 @@ export async function runWorker(mode: RunMode) {
             session.discoveryActive = false;
             if (stats.seen > seenBefore) {
               const completedAt = Date.now();
+              discoveryRetryAt = 0;
+              discoverySlotLogged = false;
               discoveryNextAt = scheduleNextInspection({
                 now: completedAt,
                 intervalMs,
@@ -824,13 +847,14 @@ export async function runWorker(mode: RunMode) {
                 limit: config.maxProfilesPerHour,
                 resumesAt: discoveryNextAt,
               });
+              console.log(`Discovery inspection completed: @${live.username ?? "profile"}`);
+              console.log(`Next inspection: ${formatCountdown(discoveryNextAt, completedAt)}`);
             } else if (typeof live.lastEvent === "string" && live.lastEvent.includes("daily")) {
               dailyBlockedUntil = startOfNextLocalDay(new Date(), config.timezone).getTime();
               discoveryNextAt = dailyBlockedUntil;
               writeDiscoveryCadence({ nextInspectionAt: discoveryNextAt, lastInspectionAt: lastDiscoveryProgressAt || null });
             } else {
-              discoveryNextAt = Date.now() + Math.min(intervalMs, 60_000);
-              writeDiscoveryCadence({ nextInspectionAt: discoveryNextAt, lastInspectionAt: lastDiscoveryProgressAt || null });
+              discoveryRetryAt = Date.now() + Math.min(intervalMs, 15_000);
             }
           }
           if (discoveryV2Test || discoveryV3Test) return;

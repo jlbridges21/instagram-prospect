@@ -29,3 +29,28 @@ export function scheduleNextInspection(input: {
 export function discoveryDue(now: number, nextInspectionAt: number) {
   return now >= nextInspectionAt;
 }
+
+export function discoveryGraceMs(intervalMs: number) {
+  return Math.max(60_000, intervalMs * 3);
+}
+
+export function startDiscoveryCadence(input: { now: number; nextInspectionAt: number }) {
+  if (input.nextInspectionAt > input.now) return { nextInspectionAt: input.nextInspectionAt, prompt: false };
+  return { nextInspectionAt: input.now, prompt: true };
+}
+
+export function discoveryStallDecision(input: {
+  now: number;
+  nextInspectionAt: number;
+  intervalMs: number;
+  blocked: boolean;
+  overdueSince: number;
+}) {
+  if (input.blocked || input.now < input.nextInspectionAt) {
+    return { stalled: false, overdueSince: 0 };
+  }
+  const overdueSince = input.overdueSince > 0 ? input.overdueSince : input.now;
+  const grace = discoveryGraceMs(input.intervalMs);
+  const stalled = input.now > input.nextInspectionAt + grace && input.now >= overdueSince + grace;
+  return { stalled, overdueSince };
+}

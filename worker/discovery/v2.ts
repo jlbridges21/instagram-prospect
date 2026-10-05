@@ -405,7 +405,7 @@ export async function runDiscoveryV2(input: {
       if (sinceGate >= 5) await consultGate();
       input.live.task = "inspecting_profiles";
       input.live.username = candidate.username;
-      console.log(`${tabId} → @${candidate.username}`);
+      console.log(`Inspecting @${candidate.username}`);
       log("info", tabId === "profile-tab-1" ? "candidate_claimed_tab_a" : "candidate_claimed_tab_b", {
         username: candidate.username,
       });

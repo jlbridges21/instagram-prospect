@@ -1,10 +1,34 @@
 import assert from "node:assert/strict";
-import { discoveryDue, inspectionIntervalMs, scheduleNextInspection } from "../lib/discovery/cadence";
+import { discoveryDue, discoveryStallDecision, inspectionIntervalMs, scheduleNextInspection, startDiscoveryCadence } from "../lib/discovery/cadence";
+import { formatCountdown } from "../lib/ui/countdown";
 import { claimPaceDecision, type PaceJob } from "../lib/outreach/pace";
 
 assert.equal(inspectionIntervalMs(30), 120_000);
 assert.equal(inspectionIntervalMs(60), 60_000);
+assert.equal(inspectionIntervalMs(20), 180_000);
 assert.equal(inspectionIntervalMs(10), 360_000);
+assert.equal(formatCountdown(120_000, 0), "2m 00s");
+assert.equal(formatCountdown(360_000, 0), "6m 00s");
+
+const noon = Date.parse("2026-10-05T17:00:00.000Z");
+assert.equal(scheduleNextInspection({ now: noon, intervalMs: inspectionIntervalMs(30), previousNextAt: noon, completedAt: noon }), noon + 120_000);
+assert.equal(scheduleNextInspection({ now: noon, intervalMs: inspectionIntervalMs(10), previousNextAt: noon, completedAt: noon }), noon + 360_000);
+
+const onePm = Date.parse("2026-10-05T18:00:00.000Z");
+const twoMinutesLater = onePm + 120_000;
+assert.deepEqual(discoveryStallDecision({ now: onePm, nextInspectionAt: twoMinutesLater, intervalMs: 120_000, blocked: false, overdueSince: 0 }), { stalled: false, overdueSince: 0 });
+const overdue = discoveryStallDecision({ now: onePm + 120_000, nextInspectionAt: onePm, intervalMs: 120_000, blocked: false, overdueSince: 0 });
+assert.equal(overdue.stalled, false);
+const stillOverdue = discoveryStallDecision({ now: onePm + 120_000 + 360_000, nextInspectionAt: onePm, intervalMs: 120_000, blocked: false, overdueSince: overdue.overdueSince });
+assert.equal(stillOverdue.stalled, true);
+assert.equal(discoveryStallDecision({ now: onePm + 10 * 60_000, nextInspectionAt: onePm, intervalMs: 120_000, blocked: true, overdueSince: onePm }).stalled, false);
+
+const prompt = startDiscoveryCadence({ now: onePm, nextInspectionAt: onePm - 30 * 60_000 });
+assert.equal(prompt.prompt, true);
+assert.equal(prompt.nextInspectionAt, onePm);
+const waiting = startDiscoveryCadence({ now: onePm, nextInspectionAt: twoMinutesLater });
+assert.equal(waiting.prompt, false);
+assert.equal(waiting.nextInspectionAt, twoMinutesLater);
 
 const start = Date.parse("2026-10-05T17:00:00.000Z");
 let next = start;

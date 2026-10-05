@@ -9,10 +9,11 @@ import { discoverySourceStats, listDiscoverySeeds } from "@/lib/db/seeds";
 import { reviewYield } from "@/lib/discovery/seeds";
 import { fallbackSettings, getSettings } from "@/lib/db/settings";
 import { getLatestWorker } from "@/lib/db/workers";
-import { parseHourlyWaitEvent, formatResumeClock } from "@/lib/discovery/pacing";
+import { parseHourlyWaitEvent } from "@/lib/discovery/pacing";
 import { attentionKind, formatCurrentAction, formatDiscoveryStatus, outreachOwnsWorker, statusDotClass } from "@/lib/status/operations";
 import { parseBrowserHealthEvent } from "@/lib/worker/browser-health";
 import { getWorkerHealth } from "@/lib/utils/worker-health";
+import { NextInspectionCountdown } from "@/components/discovery/next-inspection";
 import { DroneMark } from "@/components/visual/drone-mark";
 
 export const metadata: Metadata = { title: "Discovery" };
@@ -81,7 +82,7 @@ export default async function DiscoveryPage({
         <p className="mt-2 text-slate-700">Desired: {status.desired}</p>
         <p className="mt-1 text-slate-700">{status.reason}</p>
         {status.detail ? <p className="mt-1 text-slate-600">{status.detail}</p> : null}
-        {status.resumesAt ? <p className="mt-2">Next profile slot opens at {formatResumeClock(status.resumesAt, settings.timezone)}. One older inspection leaves the rolling hour at that time. The full allowance does not reset at once.</p> : null}
+        <NextInspectionCountdown initialAt={status.resumesAt} enabled={settings.discovery.enabled} />
         {status.action ? <p className="mt-2 text-slate-800">{status.action}</p> : null}
         {servicingOutreach ? <p className="mt-2 text-slate-700">Temporarily yielding browser control to Outreach.</p> : null}
         <div className="mt-4 grid gap-4 sm:grid-cols-2">
