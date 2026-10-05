@@ -1,4 +1,9 @@
+"use client";
+
+import { useState } from "react";
 import Link from "next/link";
+import { SlidersHorizontal } from "lucide-react";
+import { AddProspectButton } from "@/components/prospects/add-prospect-dialog";
 import {
   FIT_LABELS,
   FIT_LABELS_TEXT,
@@ -11,8 +16,10 @@ import {
 import type { ProspectQuery } from "@/lib/db/prospects";
 import { PROSPECT_TABS, type ProspectTabId } from "@/lib/prospects/tabs";
 import { prospectSearchString } from "@/lib/utils/prospect-search";
+import { FILTER_PANEL_DEFAULT_OPEN, activeFilterCount, filterButtonLabel, toggleFilterPanel } from "@/lib/prospects/filter-panel";
 import { SelectInput, TextInput } from "@/components/ui/field";
 import { buttonClasses } from "@/components/ui/button";
+import { cn } from "@/lib/utils/cn";
 
 export function ProspectFilters({
   query,
@@ -24,10 +31,13 @@ export function ProspectFilters({
   counts?: Partial<Record<ProspectTabId, number>>;
 }) {
   const tab = PROSPECT_TABS.find((item) => item.id === query.view) ?? PROSPECT_TABS[0];
+  const [open, setOpen] = useState(FILTER_PANEL_DEFAULT_OPEN);
+  const active = activeFilterCount(query);
 
   return (
-    <div className="mb-4">
-      <div className="mb-2 flex gap-2 overflow-x-auto pb-1" role="tablist" aria-label="Prospect workflow">
+    <div className="mb-3">
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+      <div className="flex min-w-0 gap-2 overflow-x-auto pb-1" role="tablist" aria-label="Prospect workflow">
         {PROSPECT_TABS.map((view) => (
           <Link
             key={view.id}
@@ -52,10 +62,32 @@ export function ProspectFilters({
           All
         </Link>
       </div>
-      <p className="mb-3 text-sm text-slate-500">{tab.help}</p>
+      <div className="flex shrink-0 items-center justify-end gap-2">
+        <button
+          type="button"
+          aria-expanded={open}
+          aria-controls="prospect-filters"
+          onClick={() => setOpen((current) => toggleFilterPanel(current))}
+          className={cn(buttonClasses("secondary", "md"), (open || active > 0) && "ring-2 ring-indigo-400/70")}
+        >
+          <SlidersHorizontal className="h-4 w-4" aria-hidden />
+          {filterButtonLabel(open, active)}
+        </button>
+        <AddProspectButton />
+      </div>
+      </div>
+      <p className="mt-2 text-sm text-slate-500">{tab.help}</p>
+      <div
+        id="prospect-filters"
+        className={cn(
+          "grid transition-[grid-template-rows,opacity] duration-200 ease-out motion-reduce:transition-none",
+          open ? "mt-3 grid-rows-[1fr] opacity-100" : "grid-rows-[0fr] opacity-0",
+        )}
+      >
+      <div className="min-h-0 overflow-hidden" inert={open ? undefined : true}>
     <form
       method="get"
-      className="mb-4 grid gap-3 rounded-xl border border-slate-200 bg-white p-4 md:grid-cols-2 xl:grid-cols-4"
+      className="grid gap-3 rounded-xl border border-slate-200 bg-white p-4 md:grid-cols-2 xl:grid-cols-4"
     >
       {query.view !== "review" ? <input type="hidden" name="view" value={query.view} /> : null}
       <label className="block md:col-span-2 xl:col-span-2">
@@ -140,6 +172,8 @@ export function ProspectFilters({
         </Link>
       </div>
     </form>
+      </div>
+      </div>
     </div>
   );
 }

@@ -1,5 +1,4 @@
 import type { Metadata } from "next";
-import { AddProspectButton } from "@/components/prospects/add-prospect-dialog";
 import { DatabaseSetup } from "@/components/layout/database-setup";
 import { PageHeader } from "@/components/layout/page-header";
 import { ProspectFilters, ProspectPagination } from "@/components/prospects/prospect-filters";
@@ -99,7 +98,6 @@ export default async function ProspectsPage({
             ? `${count} profile${count === 1 ? "" : "s"} in the workspace.`
             : "Profiles discovered for outreach."
         }
-        action={<AddProspectButton />}
       />
       {!pageResult.ok && pageResult.missingTable ? (
         <DatabaseSetup message={pageResult.error} />

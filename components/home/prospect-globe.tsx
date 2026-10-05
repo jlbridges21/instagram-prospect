@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { FIT_LABELS_TEXT, SOURCE_LABELS, STATUS_LABELS, isProspectSource, type FitLabel, type ProspectStatus } from "@/lib/constants/prospects";
 import { GLOBE_NODE_CAP, GLOBE_NODE_CAP_NARROW, type GlobeProspect } from "@/lib/visual/globe";
 import { Avatar } from "@/components/ui/avatar";
@@ -17,27 +17,58 @@ export function ProspectGlobe({
   review: number;
   contacted: number;
 }) {
-  const [webgl, setWebgl] = useState<boolean | null>(null);
-  const [narrow, setNarrow] = useState(false);
+  const [webgl, setWebgl] = useState(webglSupported);
+  const narrow = useSyncExternalStore(subscribeNarrow, narrowSnapshot, () => false);
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [override, setOverride] = useState<{ base: GlobeProspect[]; rows: GlobeProspect[] } | null>(null);
+  const sample = override?.base === prospects ? override.rows : prospects;
   const root = useRef<HTMLDivElement>(null);
   const markers = useRef<HTMLDivElement>(null);
-  const visible = useMemo(
-    () => prospects.slice(0, narrow ? GLOBE_NODE_CAP_NARROW : GLOBE_NODE_CAP),
-    [prospects, narrow],
-  );
-  const selected = visible.find((prospect) => prospect.id === selectedId) ?? null;
 
   useEffect(() => {
-    const canvas = document.createElement("canvas");
-    const supported = Boolean(canvas.getContext("webgl2") || canvas.getContext("webgl"));
-    setWebgl(supported);
-    const media = window.matchMedia("(max-width: 719px)");
-    const apply = () => setNarrow(media.matches);
-    apply();
-    media.addEventListener("change", apply);
-    return () => media.removeEventListener("change", apply);
-  }, []);
+    function onChange() {
+      void fetch("/api/dashboard/network", { cache: "no-store" })
+        .then(async (response) => {
+          if (!response.ok) return;
+          const body = (await response.json()) as {
+            prospects?: Array<{
+              id: string;
+              username: string;
+              display_name: string;
+              profile_image_url: string | null;
+              fit_label: string | null;
+              fit_score: number | null;
+              status: string;
+              source: string | null;
+            }>;
+          };
+          if (!Array.isArray(body.prospects)) return;
+          setOverride({
+            base: prospects,
+            rows: body.prospects.map((prospect) => ({
+            id: prospect.id,
+            username: prospect.username,
+            name: prospect.display_name,
+            pictureUrl: prospect.profile_image_url,
+            fitLabel: prospect.fit_label,
+            fitScore: prospect.fit_score,
+            status: prospect.status,
+            source: prospect.source,
+            discoveredAt: null,
+          })),
+          });
+        })
+        .catch(() => undefined);
+    }
+    window.addEventListener("shootportal-prospects-changed", onChange);
+    return () => window.removeEventListener("shootportal-prospects-changed", onChange);
+  }, [prospects]);
+
+  const visible = useMemo(
+    () => sample.slice(0, narrow ? GLOBE_NODE_CAP_NARROW : GLOBE_NODE_CAP),
+    [sample, narrow],
+  );
+  const selected = visible.find((prospect) => prospect.id === selectedId) ?? null;
 
   useEffect(() => {
     if (!webgl || !root.current || !markers.current) return;
@@ -74,6 +105,26 @@ export function ProspectGlobe({
       {selected ? <ProspectCard prospect={selected} onClose={() => setSelectedId(null)} /> : null}
     </div>
   );
+}
+
+function webglSupported() {
+  if (typeof document === "undefined") return false;
+  try {
+    const canvas = document.createElement("canvas");
+    return Boolean(canvas.getContext("webgl2") || canvas.getContext("webgl"));
+  } catch {
+    return false;
+  }
+}
+
+function subscribeNarrow(onChange: () => void) {
+  const media = window.matchMedia("(max-width: 719px)");
+  media.addEventListener("change", onChange);
+  return () => media.removeEventListener("change", onChange);
+}
+
+function narrowSnapshot() {
+  return window.matchMedia("(max-width: 719px)").matches;
 }
 
 function GlobeFallback({

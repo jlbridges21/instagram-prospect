@@ -1,16 +1,15 @@
 import type { Metadata } from "next";
 import { RecentActivity } from "@/components/dashboard/recent-activity";
-import { OverviewStage, type OverviewPin, type OverviewProspect } from "@/components/home/overview-stage";
+import { OverviewStage, type OverviewProspect } from "@/components/home/overview-stage";
 import { LiveProspectSync } from "@/components/prospects/live-sync";
 import { DatabaseSetup } from "@/components/layout/database-setup";
 import { getDiscoveryV3Snapshot } from "@/lib/db/discovery";
 import { getOutreachSnapshot } from "@/lib/db/outreach";
 import { getRecentActivity } from "@/lib/db/stats";
-import { getLocatedProspects, getProspectCard, getProspectTabCounts, getRecentProspects } from "@/lib/db/prospects";
+import { getNetworkSample, getProspectCard, getProspectTabCounts, getRecentProspects } from "@/lib/db/prospects";
 import { fallbackSettings, getSettings } from "@/lib/db/settings";
 import { getLatestWorker } from "@/lib/db/workers";
 import type { ProspectRow } from "@/lib/db/types";
-import { locateUsPlace, projectUsPlace } from "@/lib/geo/us-places";
 import { formatRelativeTime } from "@/lib/utils/format";
 import { getWorkerHealth } from "@/lib/utils/worker-health";
 import { attentionKind, formatCurrentAction, formatDiscoveryStatus, formatOutreachStatus, isStateSyncFailure } from "@/lib/status/operations";
@@ -26,14 +25,14 @@ function nameOf(row: Pick<ProspectRow, "display_name" | "first_name" | "instagra
 export default async function OverviewPage() {
   const settingsResult = await getSettings();
   const settings = settingsResult.ok ? settingsResult.data : fallbackSettings();
-  const [recentResult, activityResult, workerResult, outreach, locatedResult] = await Promise.all([
+  const [recentResult, activityResult, workerResult, outreach, networkResult] = await Promise.all([
     getRecentProspects(8),
     getRecentActivity(),
     getLatestWorker(),
     getOutreachSnapshot(settings.timezone),
-    getLocatedProspects(),
+    getNetworkSample(),
   ]);
-  const failures = [settingsResult, recentResult, activityResult, workerResult, locatedResult].flatMap((result) => (result.ok ? [] : [result]));
+  const failures = [settingsResult, recentResult, activityResult, workerResult, networkResult].flatMap((result) => (result.ok ? [] : [result]));
   const missing = failures.find((result) => result.missingTable);
   const failure = failures.find((result) => !result.missingTable);
   const worker = workerResult.ok ? workerResult.data : null;
@@ -93,26 +92,7 @@ export default async function OverviewPage() {
         relationship: card.follow_relationship ?? null,
       }
     : null;
-  const pins: OverviewPin[] = [];
-  for (const row of locatedResult.ok ? locatedResult.data : []) {
-    const place = locateUsPlace(row.location_text);
-    if (!place) continue;
-    const point = projectUsPlace(place);
-    pins.push({
-      id: row.id,
-      username: row.instagram_username,
-      name: row.display_name || row.instagram_username,
-      pictureUrl: row.profile_picture_url,
-      followers: row.follower_count,
-      fitLabel: row.fit_label,
-      fitScore: row.fit_score,
-      status: row.status,
-      place: place.label,
-      category: row.category,
-      x: point.x,
-      y: point.y,
-    });
-  }
+  const network = networkResult.ok ? networkResult.data.prospects : [];
   const queue: OverviewProspect[] = (recentResult.ok ? recentResult.data : []).map((prospect) => ({
     id: prospect.id,
     username: prospect.instagram_username,
@@ -154,7 +134,10 @@ export default async function OverviewPage() {
           connected: online,
           action: formatCurrentAction(worker?.current_task, worker?.current_username),
         }}
-        pins={pins}
+        network={network}
+        networkTotal={networkResult.ok ? networkResult.data.total : network.length}
+        reviewCount={counts.review}
+        contactedCount={counts.contacted}
         pipeline={[
           { label: "Suppressed", count: counts.suppressed },
           { label: "Review", count: counts.review },

@@ -23,6 +23,7 @@ export function LiveProspectSync({ notice = false }: { notice?: boolean }) {
           if (response.ok) {
             const body = (await response.json()) as { changed?: boolean; cursor?: string; workerTask?: string | null; workerEvent?: string | null };
             if (body.cursor) cursor = body.cursor;
+            if (body.changed) window.dispatchEvent(new CustomEvent("shootportal-prospects-changed"));
             const nextKey = `${body.workerTask ?? ""}|${body.workerEvent ?? ""}`;
             const statusChanged = workerKey !== "" && nextKey !== workerKey;
             workerKey = nextKey;

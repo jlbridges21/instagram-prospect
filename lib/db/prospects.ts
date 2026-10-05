@@ -12,6 +12,7 @@ import { databaseErrorMessage, isMissingRelation } from "@/lib/db/errors";
 import type { DataResult } from "@/lib/db/models";
 import type { ProspectRow } from "@/lib/db/types";
 import { createClient } from "@/lib/supabase/server";
+import { GLOBE_NODE_CAP, selectGlobeProspects, type GlobeProspect } from "@/lib/visual/globe";
 import { sanitizeSearch, startOfTodayIso } from "@/lib/utils/format";
 
 export type ProspectView = "active" | "review" | "approved" | "outreach" | "contacted" | "excluded" | "suppressed" | "all";
@@ -271,6 +272,54 @@ export async function getLocatedProspects(limit = 300): Promise<DataResult<Locat
     .limit(limit);
   if (error) return { ok: false, error: databaseErrorMessage(error), missingTable: isMissingRelation(error) };
   return { ok: true, data: (data ?? []) as LocatedProspect[] };
+}
+
+const NETWORK_COLUMNS = "id, instagram_username, display_name, profile_picture_url, fit_label, fit_score, status, source, discovered_at";
+
+type NetworkRow = {
+  id: string;
+  instagram_username: string;
+  display_name: string | null;
+  profile_picture_url: string | null;
+  fit_label: ProspectRow["fit_label"];
+  fit_score: number | null;
+  status: ProspectRow["status"];
+  source: string | null;
+  discovered_at: string | null;
+};
+
+export async function getNetworkSample(cap = GLOBE_NODE_CAP): Promise<DataResult<{ prospects: GlobeProspect[]; total: number }>> {
+  const supabase = await createClient();
+  const [review, approved, contacted, strong, recent, total] = await Promise.all([
+    supabase.from("prospects").select(NETWORK_COLUMNS).in("status", ["review", "qualified"]).order("discovered_at", { ascending: false, nullsFirst: false }).limit(40),
+    supabase.from("prospects").select(NETWORK_COLUMNS).eq("status", "approved").order("discovered_at", { ascending: false, nullsFirst: false }).limit(40),
+    supabase.from("prospects").select(NETWORK_COLUMNS).in("status", ["contacted", "replied", "follow_up", "demo_booked", "converted"]).order("discovered_at", { ascending: false, nullsFirst: false }).limit(40),
+    supabase.from("prospects").select(NETWORK_COLUMNS).eq("fit_label", "strong_fit").order("discovered_at", { ascending: false, nullsFirst: false }).limit(40),
+    supabase.from("prospects").select(NETWORK_COLUMNS).order("discovered_at", { ascending: false, nullsFirst: false }).limit(80),
+    supabase.from("prospects").select("id", { count: "exact", head: true }),
+  ]);
+  const failed = [review, approved, contacted, strong, recent].find((result) => result.error);
+  if (failed?.error) return { ok: false, error: databaseErrorMessage(failed.error), missingTable: isMissingRelation(failed.error) };
+  if (total.error) return { ok: false, error: databaseErrorMessage(total.error), missingTable: isMissingRelation(total.error) };
+  const merged = new Map<string, NetworkRow>();
+  for (const result of [review, approved, contacted, strong, recent]) {
+    for (const row of (result.data ?? []) as NetworkRow[]) merged.set(row.id, row);
+  }
+  const prospects = selectGlobeProspects(
+    [...merged.values()].map((row) => ({
+      id: row.id,
+      username: row.instagram_username,
+      name: row.display_name || row.instagram_username,
+      pictureUrl: row.profile_picture_url,
+      fitLabel: row.fit_label,
+      fitScore: row.fit_score,
+      status: row.status,
+      source: row.source,
+      discoveredAt: row.discovered_at,
+    })),
+    cap,
+  );
+  return { ok: true, data: { prospects, total: total.count ?? prospects.length } };
 }
 
 export async function getProspectCard(username: string | null): Promise<LocatedProspect | null> {

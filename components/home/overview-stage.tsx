@@ -2,26 +2,13 @@
 
 import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
+import { GlobalNetwork } from "@/components/home/global-network";
 import { HomeActions } from "@/components/home/home-actions";
 import { Avatar } from "@/components/ui/avatar";
 import { DroneMark } from "@/components/visual/drone-mark";
 import { FIT_LABELS_TEXT, STATUS_LABELS, type FitLabel, type ProspectStatus } from "@/lib/constants/prospects";
 import { formatCurrentAction } from "@/lib/status/operations";
-
-export type OverviewPin = {
-  id: string;
-  username: string;
-  name: string;
-  pictureUrl: string | null;
-  followers: number | null;
-  fitLabel: FitLabel | null;
-  fitScore: number | null;
-  status: ProspectStatus;
-  place: string;
-  category: string | null;
-  x: number;
-  y: number;
-};
+import type { GlobeProspect } from "@/lib/visual/globe";
 
 export type OverviewProspect = {
   id: string;
@@ -41,30 +28,19 @@ export type OverviewProspect = {
 const SECTIONS = [
   { id: "overview", label: "Overview" },
   { id: "analyze", label: "Analyze" },
-  { id: "map", label: "Map" },
+  { id: "network", label: "Network" },
   { id: "pipeline", label: "Pipeline" },
   { id: "queue", label: "Queue" },
 ] as const;
-
-const PIN_COLOR: Record<string, string> = {
-  discovered: "#3B82F6",
-  qualified: "#3B82F6",
-  review: "#F59E0B",
-  approved: "#A78BFA",
-  contacted: "#22D3EE",
-  replied: "#22D3EE",
-  follow_up: "#22D3EE",
-  demo_booked: "#22D3EE",
-  converted: "#22C55E",
-  skipped: "#94A3B8",
-  disqualified: "#EF4444",
-};
 
 export function OverviewStage({
   actions,
   current,
   worker,
-  pins,
+  network,
+  networkTotal,
+  reviewCount,
+  contactedCount,
   pipeline,
   queue,
 }: {
@@ -78,7 +54,10 @@ export function OverviewStage({
     connected: boolean;
     action: string;
   };
-  pins: OverviewPin[];
+  network: GlobeProspect[];
+  networkTotal: number;
+  reviewCount: number;
+  contactedCount: number;
   pipeline: { label: string; count: number }[];
   queue: OverviewProspect[];
 }) {
@@ -87,7 +66,6 @@ export function OverviewStage({
   const [progress, setProgress] = useState(0);
   const [queueOpen, setQueueOpen] = useState(0);
   const [reduced, setReduced] = useState(false);
-  const [activePin, setActivePin] = useState<string | null>(null);
   const [section, setSection] = useState("overview");
 
   useEffect(() => {
@@ -225,9 +203,10 @@ export function OverviewStage({
         </Glass>
       </section>
 
-      <section id="map" className="mt-16">
-        <Glass title="United States" detail="Pins use a confirmed city and state. Vague locations stay off the map.">
-          <ProspectMap pins={pins} active={activePin} onActive={setActivePin} />
+      <section id="network" className="mt-16">
+        <Glass title="Global Network" detail="A live visual of your growing prospect network.">
+          <p className="mb-3 text-[11px] text-slate-500">Simulated prospect distribution — locations are not derived from user data.</p>
+          <GlobalNetwork prospects={network} total={networkTotal} review={reviewCount} contacted={contactedCount} />
         </Glass>
       </section>
 
@@ -317,77 +296,6 @@ function Fact({ label, value }: { label: string; value: string }) {
     <div>
       <dt className="text-xs text-slate-500">{label}</dt>
       <dd className="mt-0.5 text-slate-100">{value}</dd>
-    </div>
-  );
-}
-
-function clusterPins(pins: OverviewPin[]) {
-  const groups: OverviewPin[][] = [];
-  for (const pin of pins) {
-    const group = groups.find((items) => {
-      const first = items[0];
-      return first != null && Math.abs(first.x - pin.x) < 3 && Math.abs(first.y - pin.y) < 3;
-    });
-    if (group) group.push(pin);
-    else groups.push([pin]);
-  }
-  return groups;
-}
-
-function ProspectMap({
-  pins,
-  active,
-  onActive,
-}: {
-  pins: OverviewPin[];
-  active: string | null;
-  onActive: (id: string | null) => void;
-}) {
-  const groups = clusterPins(pins);
-  const selected = pins.find((pin) => pin.id === active) ?? null;
-  return (
-    <div className="relative mt-2 h-[420px] overflow-hidden rounded-xl bg-[#05070d]">
-      <svg viewBox="0 0 100 100" className="absolute inset-0 h-full w-full" preserveAspectRatio="none" aria-hidden>
-        <path
-          d="M5 8 L4 16 L5 32 L8 46 L12 58 L14 66 L22 68 L32 71 L40 80 L47 93 L55 86 L60 78 L66 76 L72 86 L76 94 L78 80 L84 62 L86 48 L87 36 L92 28 L98 18 L90 16 L78 14 L70 22 L62 18 L56 10 L40 12 L24 10 Z"
-          fill="rgba(59,130,246,0.08)"
-          stroke="rgba(148,163,184,0.45)"
-          strokeWidth="0.35"
-        />
-      </svg>
-      {groups.map((group) => {
-        const pin = group[0];
-        if (!pin) return null;
-        return (
-          <button
-            key={pin.id}
-            type="button"
-            className="absolute flex h-8 w-8 -translate-x-1/2 -translate-y-1/2 items-center justify-center overflow-hidden rounded-full border border-white/40 text-[10px] font-semibold text-white"
-            style={{ left: `${pin.x}%`, top: `${pin.y}%`, boxShadow: `0 0 0 2px ${PIN_COLOR[pin.status] ?? "#94A3B8"}` }}
-            aria-label={group.length > 1 ? `${group.length} prospects in ${pin.place}` : `${pin.username}, ${pin.place}, ${STATUS_LABELS[pin.status]}`}
-            onMouseEnter={() => onActive(pin.id)}
-            onFocus={() => onActive(pin.id)}
-            onMouseLeave={() => onActive(null)}
-            onBlur={() => onActive(null)}
-          >
-            {group.length > 1 ? group.length : pin.pictureUrl ? (
-              // eslint-disable-next-line @next/next/no-img-element
-              <img src={pin.pictureUrl} alt="" referrerPolicy="no-referrer" className="h-full w-full object-cover" />
-            ) : (
-              <span className="block h-full w-full bg-slate-800" />
-            )}
-          </button>
-        );
-      })}
-      {selected ? (
-        <div className="absolute bottom-3 left-3 max-w-xs rounded-xl border border-white/10 bg-[#0b1020]/95 p-3 text-sm">
-          <p className="font-medium text-slate-50">@{selected.username}</p>
-          <p className="text-xs text-slate-400">{selected.place} · {STATUS_LABELS[selected.status]}</p>
-          <p className="text-xs text-slate-400">{selected.followers != null ? `${selected.followers.toLocaleString()} followers` : "Followers unknown"}{selected.fitLabel ? ` · ${FIT_LABELS_TEXT[selected.fitLabel]}` : ""}</p>
-          <Link href={`/prospects/${selected.id}`} className="mt-2 inline-block text-xs text-sky-300">Open prospect</Link>
-        </div>
-      ) : null}
-      {pins.length === 0 ? <p className="absolute inset-0 flex items-center justify-center px-6 text-center text-sm text-slate-400">No prospects have a confirmed US city and state yet.</p> : null}
     </div>
   );
 }
