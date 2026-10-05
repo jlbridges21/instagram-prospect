@@ -1,5 +1,6 @@
 import { continuousOutreachStep } from "../lib/discovery/policy";
-import { checkpointHoldDecision, formatHourlyWaitEvent, formatWorkerModes, hourlyInspectionPace } from "../lib/discovery/pacing";
+import { checkpointHoldDecision, formatHourlyWait, formatHourlyWaitEvent, formatWorkerModes, getDiscoveryHourlyState, hourlyActual } from "../lib/discovery/pacing";
+import { readHourlyStamps, writeHourlyStamps } from "./discovery/hourly-history";
 import { BrowserActionLock, nextOrchestratorStep } from "../lib/worker/orchestrator";
 import { discoveryRunShouldStop } from "../lib/worker/commands";
 import {
@@ -230,7 +231,8 @@ export async function runWorker(mode: RunMode) {
     await context.close().catch(() => undefined);
     return;
   }
-  const stats = { seen: 0, ingested: 0, excluded: 0, qualified: 0, errors: 0, hour: [] as number[] };
+  const stats = { seen: 0, ingested: 0, excluded: 0, qualified: 0, errors: 0, hour: readHourlyStamps() };
+  let hourlyPhase: "running" | "waiting" | "paused" = "paused";
   let outreachDueAt = 0;
   const efficiency = emptyEfficiency();
   const live = {
@@ -449,14 +451,6 @@ export async function runWorker(mode: RunMode) {
         }
         if (await holdForBrowser(config)) continue;
         live.browserConnected = true;
-        const nextMode = formatWorkerModes({
-          discovery: config.discoveryEnabled ? "RUNNING" : "PAUSED",
-          outreach: config.automationEnabled ? "RUNNING" : "PAUSED",
-        });
-        if (nextMode !== modeLine) {
-          console.log(nextMode);
-          modeLine = nextMode;
-        }
         if (attentionHold) {
           const still = await pageNeedsAttention(page).catch(() => attentionHold?.code ?? "instagram_checkpoint");
           if (still) {
@@ -564,18 +558,42 @@ export async function runWorker(mode: RunMode) {
           continue;
         }
         const outreachDueNow = config.automationEnabled && (activeSideEffect != null || Date.now() >= outreachDueAt);
-        const discoveryPace = hourlyInspectionPace({
+        const discoveryPace = getDiscoveryHourlyState({
           stamps: stats.hour,
           now: Date.now(),
           limit: config.maxProfilesPerHour,
         });
-        stats.hour = discoveryPace.active;
-        if (discoveryPace.full && discoveryPace.resumesAt != null) {
+        stats.hour = discoveryPace.stamps;
+        writeHourlyStamps(stats.hour);
+        const discoveryMode = hourlyActual({ enabled: config.discoveryEnabled, limited: discoveryPace.limited });
+        if (discoveryPace.limited && discoveryPace.nextEligibleAt != null) {
           live.lastEvent = formatHourlyWaitEvent({
             count: discoveryPace.count,
             limit: discoveryPace.limit,
-            resumesAt: discoveryPace.resumesAt,
+            resumesAt: discoveryPace.nextEligibleAt,
           });
+          if (hourlyPhase !== "waiting") {
+            console.log(formatHourlyWait({
+              count: discoveryPace.count,
+              limit: discoveryPace.limit,
+              resumesAt: discoveryPace.nextEligibleAt,
+            }));
+            console.log(formatWorkerModes({
+              discovery: "WAITING",
+              outreach: config.automationEnabled ? "RUNNING" : "PAUSED",
+            }));
+            hourlyPhase = "waiting";
+          }
+        } else if (discoveryMode === "RUNNING" && hourlyPhase === "waiting") {
+          console.log(`Discovery hourly slot available.\nHourly profile inspections: ${discoveryPace.count} / ${discoveryPace.limit}.`);
+          console.log("Discovery actual state: RUNNING");
+          hourlyPhase = "running";
+          if (live.lastEvent?.startsWith("Discovery hourly wait")) live.lastEvent = null;
+        } else if (discoveryMode === "RUNNING") {
+          hourlyPhase = "running";
+          if (live.lastEvent?.startsWith("Discovery hourly wait")) live.lastEvent = null;
+        } else if (discoveryMode === "PAUSED") {
+          hourlyPhase = "paused";
         }
         const step = nextOrchestratorStep({
           now: Date.now(),
@@ -589,8 +607,8 @@ export async function runWorker(mode: RunMode) {
           },
           discovery: {
             desired: config.discoveryEnabled,
-            eligibleNow: config.discoveryEnabled && !discoveryPace.full && !control.pauseDiscovery,
-            nextEligibleAt: discoveryPace.resumesAt,
+            eligibleNow: config.discoveryEnabled && !discoveryPace.limited && !control.pauseDiscovery,
+            nextEligibleAt: discoveryPace.nextEligibleAt,
             inspectionInProgress: false,
           },
         });
@@ -622,7 +640,7 @@ export async function runWorker(mode: RunMode) {
             });
             if (outcome.reason === "no_queued_jobs") console.log("Outreach queue is empty.");
             else if (outcome.message && outcome.reason !== "state_sync_failed") console.log(outcome.message);
-            if (!config.discoveryEnabled || discoveryPace.full) {
+            if (!config.discoveryEnabled || discoveryPace.limited) {
               if (outcome.reason !== "state_sync_failed") live.task = outcome.nextAt ? "outreach_spacing_wait" : "idle";
               await beat(cloud, identity, live.task, stats, true, true, live.attention, live.username, live.lastEvent);
               await sleep(Math.min(wait.waitMs, 15_000));
@@ -647,7 +665,7 @@ export async function runWorker(mode: RunMode) {
           sideEffect: activeSideEffect,
         });
         const outreachStillDue = config.automationEnabled && (activeSideEffect != null || Date.now() >= outreachDueAt);
-        if (admission.enter && !discoveryPace.full && !outreachStillDue) {
+        if (admission.enter && !discoveryPace.limited && !outreachStillDue) {
           const tabs = await ensureProfileTabs();
           if (!tabs) {
             session.closed = true;
@@ -658,7 +676,6 @@ export async function runWorker(mode: RunMode) {
           if (discoveryV2Test) console.log("Discovery V2 test. Outreach stays paused. Inspecting up to 10 profiles.");
           if (discoveryV3Test) console.log("Discovery V3 test. Outreach stays paused. Inspecting up to 10 profiles. No follow and no DM.");
           session.discoveryActive = true;
-          console.log("Discovery actual state: RUNNING");
           try {
             await runDiscoveryV2({
               context,
@@ -696,7 +713,7 @@ export async function runWorker(mode: RunMode) {
           if (stats.seen >= inspectionCap) console.log("Session profile limit reached. Waiting.");
           const wakeAt = Math.min(
             outreachDueAt > Date.now() ? outreachDueAt : Date.now() + 15_000,
-            discoveryPace.resumesAt ?? Date.now() + 15_000,
+            discoveryPace.nextEligibleAt ?? Date.now() + 15_000,
           );
           await sleep(Math.max(1_000, Math.min(15_000, wakeAt - Date.now())));
         }

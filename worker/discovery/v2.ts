@@ -14,12 +14,13 @@ import { log } from "../logger";
 import { discoveryQueuePath } from "../paths";
 import {
   acquisitionDecision,
-  formatHourlyWait,
   formatHourlyWaitEvent,
-  formatWorkerModes,
-  hourlyInspectionPace,
+  getDiscoveryHourlyState,
   queueThresholds,
+  releaseInspectionSlot,
+  reserveInspectionSlot,
 } from "../../lib/discovery/pacing";
+import { writeHourlyStamps } from "./hourly-history";
 import { formatDiscoveryStatus } from "../../lib/worker/discovery-status";
 
 export type DiscoveryStats = {
@@ -157,21 +158,14 @@ export async function runDiscoveryV2(input: {
       }
       queue.setTarget(config.candidateQueueTarget);
       const pace = hourPace();
-      if (pace.full) {
-        announceHourly(pace, config.automationEnabled);
+      if (pace.limited) {
+        announceHourly(pace);
         exitReason = "hourly";
         return;
       }
       if (await input.shouldYield?.()) {
         exitReason = "yield";
         return;
-      }
-      if (hourlyNoticeAt !== 0) {
-        hourlyNoticeAt = 0;
-        console.log(formatWorkerModes({
-          discovery: "RUNNING",
-          outreach: config.automationEnabled ? "RUNNING" : "PAUSED",
-        }));
       }
       const thresholds = queueThresholds(config.candidateQueueTarget);
       const acquisition = acquisitionDecision({
@@ -267,14 +261,14 @@ export async function runDiscoveryV2(input: {
 
   async function inspectLoop(tabId: (typeof PROFILE_TABS)[number], page: Page) {
     while (!finished()) {
-      const pace = hourPace();
-      if (pace.full) {
-        announceHourly(pace, latestConfig?.automationEnabled === true);
-        exitReason = "hourly";
-        return;
-      }
       if (await input.shouldYield?.()) {
         exitReason = "yield";
+        return;
+      }
+      const pace = hourPace();
+      if (pace.limited) {
+        announceHourly(pace);
+        exitReason = "hourly";
         return;
       }
       const candidate = queue.claim(tabId);
@@ -282,12 +276,24 @@ export async function runDiscoveryV2(input: {
         await sleep(300);
         continue;
       }
+      const reserved = reserveInspectionSlot({
+        stamps: input.stats.hour,
+        now: Date.now(),
+        limit: pace.limit,
+      });
+      rememberHour(reserved.state.stamps);
+      if (!reserved.ok) {
+        queue.release(candidate.username);
+        announceHourly(reserved.state);
+        exitReason = "hourly";
+        return;
+      }
       if (finished()) {
         queue.release(candidate.username);
+        rememberHour(releaseInspectionSlot(input.stats.hour, reserved.reservedAt));
         return;
       }
       input.stats.seen += 1;
-      input.stats.hour.push(Date.now());
       metrics.profilesOpened += 1;
       sinceGate += 1;
       if (sinceGate >= 5) await consultGate();
@@ -299,6 +305,7 @@ export async function runDiscoveryV2(input: {
       });
       if (input.browserLock && !input.browserLock.tryAcquire("discovery")) {
         queue.release(candidate.username);
+        rememberHour(releaseInspectionSlot(input.stats.hour, reserved.reservedAt));
         exitReason = "yield";
         return;
       }
@@ -374,36 +381,40 @@ export async function runDiscoveryV2(input: {
     const active = new Map(queue.inProgress().map((item) => [item.tab, item.username]));
     const source = sourceLabel ?? (config.discoverySourcePriority === "home_first" ? "Home Feed" : "Suggested Accounts");
     const pace = hourPace();
-    input.live.lastEvent = formatDiscoveryStatus({
-      source,
-      pending: queue.pendingCount(),
-      tab1: active.get("profile-tab-1") ?? null,
-      tab2: active.get("profile-tab-2") ?? null,
-      hour: `${pace.count}/${pace.limit}`,
-    });
+    if (!pace.limited) {
+      input.live.lastEvent = formatDiscoveryStatus({
+        source,
+        pending: queue.pendingCount(),
+        tab1: active.get("profile-tab-1") ?? null,
+        tab2: active.get("profile-tab-2") ?? null,
+        hour: `${pace.count}/${pace.limit}`,
+      });
+    }
+  }
+
+  function rememberHour(stamps: number[]) {
+    const previous = input.stats.hour;
+    const changed = stamps.length !== previous.length || stamps.some((stamp, index) => stamp !== previous[index]);
+    input.stats.hour = stamps;
+    if (changed) writeHourlyStamps(stamps);
   }
 
   function hourPace() {
-    const pace = hourlyInspectionPace({
+    const pace = getDiscoveryHourlyState({
       stamps: input.stats.hour,
       now: Date.now(),
       limit: latestConfig?.maxProfilesPerHour ?? 30,
     });
-    input.stats.hour = pace.active;
+    rememberHour(pace.stamps);
     return pace;
   }
 
-  function announceHourly(pace: ReturnType<typeof hourPace>, outreachEnabled: boolean) {
+  function announceHourly(pace: ReturnType<typeof hourPace>) {
     input.live.task = "discovery_hourly_wait";
-    if (pace.resumesAt == null || hourlyNoticeAt === pace.resumesAt) return;
-    const resumesAt = pace.resumesAt;
+    if (pace.nextEligibleAt == null || hourlyNoticeAt === pace.nextEligibleAt) return;
+    const resumesAt = pace.nextEligibleAt;
     hourlyNoticeAt = resumesAt;
     input.live.lastEvent = formatHourlyWaitEvent({ count: pace.count, limit: pace.limit, resumesAt });
-    console.log(formatHourlyWait({ count: pace.count, limit: pace.limit, resumesAt }));
-    console.log(formatWorkerModes({
-      discovery: "WAITING",
-      outreach: outreachEnabled ? "RUNNING" : "PAUSED",
-    }));
   }
 
   function sessionCap() {

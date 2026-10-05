@@ -22,7 +22,7 @@ export function OperationSummary({
   return (
     <div className="mb-6 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
       <Card href="/worker" title="Worker" state={worker} />
-      <Card href="/discovery" title="Discovery" state={discovery} extra={discovery.resumesAt ? `Resumes ${formatResumeClock(discovery.resumesAt, timeZone)}` : null} />
+      <Card href="/discovery" title="Discovery" state={discovery} extra={discovery.resumesAt ? `Next profile slot opens at ${formatResumeClock(discovery.resumesAt, timeZone)}` : null} />
       <Card href="/outreach" title="Outreach" state={outreach} extra={outreach.resumesAt ? `Next window ${formatResumeClock(outreach.resumesAt, timeZone)}` : null} />
       <Link href="/worker" className="rounded-xl border border-slate-200 bg-white p-4 text-sm hover:border-indigo-200">
         <p className="text-xs font-medium text-slate-500">Current action</p>

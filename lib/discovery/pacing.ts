@@ -1,9 +1,46 @@
 export const HOURLY_WINDOW_MS = 60 * 60 * 1000;
 
+export type DiscoveryHourlyState = {
+  stamps: number[];
+  count: number;
+  limit: number;
+  limited: boolean;
+  nextEligibleAt: number | null;
+};
+
+export function getDiscoveryHourlyState(input: { stamps: number[]; now: number; limit: number; windowMs?: number }): DiscoveryHourlyState {
+  const pace = hourlyInspectionPace(input);
+  return {
+    stamps: pace.active,
+    count: pace.count,
+    limit: pace.limit,
+    limited: pace.full,
+    nextEligibleAt: pace.resumesAt,
+  };
+}
+
+export function reserveInspectionSlot(input: { stamps: number[]; now: number; limit: number; windowMs?: number }) {
+  const current = getDiscoveryHourlyState(input);
+  if (current.limited) return { ok: false as const, state: current };
+  const state = getDiscoveryHourlyState({ ...input, stamps: [...current.stamps, input.now] });
+  return { ok: true as const, state, reservedAt: input.now };
+}
+
+export function releaseInspectionSlot(stamps: number[], reservedAt: number) {
+  const index = stamps.lastIndexOf(reservedAt);
+  if (index < 0) return stamps;
+  return stamps.filter((_, stampIndex) => stampIndex !== index);
+}
+
+export function hourlyActual(input: { enabled: boolean; limited: boolean }) {
+  if (!input.enabled) return "PAUSED" as const;
+  return input.limited ? "WAITING" as const : "RUNNING" as const;
+}
+
 export function hourlyInspectionPace(input: { stamps: number[]; now: number; limit: number; windowMs?: number }) {
   const windowMs = input.windowMs ?? HOURLY_WINDOW_MS;
   const limit = Math.max(1, input.limit);
-  const active = input.stamps.filter((stamp) => stamp <= input.now && input.now - stamp <= windowMs);
+  const active = input.stamps.filter((stamp) => stamp <= input.now && input.now - stamp < windowMs);
   const full = active.length >= limit;
   const oldest = active.length > 0 ? Math.min(...active) : null;
   return {
@@ -11,7 +48,7 @@ export function hourlyInspectionPace(input: { stamps: number[]; now: number; lim
     count: active.length,
     limit,
     full,
-    resumesAt: full && oldest != null ? oldest + windowMs + 1 : null,
+    resumesAt: full && oldest != null ? oldest + windowMs : null,
   };
 }
 
@@ -28,7 +65,7 @@ export function formatHourlyWait(input: { count: number; limit: number; resumesA
   return [
     "Discovery waiting.",
     `Hourly profile inspection pace reached: ${input.count} / ${input.limit}.`,
-    `Next inspection window: ${when}.`,
+    `Next profile slot opens at ${when}.`,
   ].join("\n");
 }
 

@@ -34,3 +34,7 @@ export function pendingResultsPath() {
 export function discoveryQueuePath() {
   return path.join(workerHome(), "discovery-queue.json");
 }
+
+export function discoveryHourlyPath() {
+  return path.join(workerHome(), "discovery-hourly.json");
+}

@@ -58,7 +58,7 @@ export function DiscoveryProgress({
       <p className="mt-2">Desired: {status.desired}</p>
       <p>{status.reason}</p>
       {status.detail ? <p className="mt-1">{status.detail}</p> : null}
-      {status.resumesAt ? <p className="mt-2">Resumes {formatResumeClock(status.resumesAt, zone)}</p> : null}
+      {status.resumesAt ? <p className="mt-2">Next profile slot opens at {formatResumeClock(status.resumesAt, zone)}</p> : null}
       {status.action ? <p className="mt-2">{status.action}</p> : null}
       {hour ? <p className="mt-3">This hour {hour.replace("/", " / ")} profile inspections</p> : null}
       <p className="mt-3">This run {sessionInspections} / {sessionCap.toLocaleString()} profiles inspected</p>

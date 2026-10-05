@@ -197,7 +197,7 @@ export function WorkerWidget({ timeZone }: { timeZone: string }) {
             </div>
             <p className="mt-3 text-xs text-slate-500">Current action</p>
             <p>{action}</p>
-            {discovery.resumesAt ? <p className="text-xs text-slate-600">Resumes {formatResumeClock(discovery.resumesAt, zone)}</p> : null}
+            {discovery.resumesAt ? <p className="text-xs text-slate-600">Next profile slot opens at {formatResumeClock(discovery.resumesAt, zone)}</p> : null}
             {outreach.resumesAt ? <p className="text-xs text-slate-600">Next eligible action {formatResumeClock(outreach.resumesAt, zone)}</p> : null}
             <div className="mt-3 grid grid-cols-2 gap-2 text-xs">
               <label>Review target

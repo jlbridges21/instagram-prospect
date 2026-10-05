@@ -63,7 +63,7 @@ export default async function DiscoveryPage() {
         <p className="mt-2 text-slate-700">Desired: {status.desired}</p>
         <p className="mt-1 text-slate-700">{status.reason}</p>
         {status.detail ? <p className="mt-1 text-slate-600">{status.detail}</p> : null}
-        {status.resumesAt ? <p className="mt-2">Resumes automatically: {formatResumeClock(status.resumesAt, settings.timezone)}</p> : null}
+        {status.resumesAt ? <p className="mt-2">Next profile slot opens at {formatResumeClock(status.resumesAt, settings.timezone)}. One older inspection leaves the rolling hour at that time. The full allowance does not reset at once.</p> : null}
         {status.action ? <p className="mt-2 text-slate-800">{status.action}</p> : null}
         {servicingOutreach ? <p className="mt-2 text-slate-700">Temporarily yielding browser control to Outreach.</p> : null}
         <div className="mt-4 grid gap-4 sm:grid-cols-2">

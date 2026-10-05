@@ -37,6 +37,13 @@ export function nextOrchestratorStep(input: {
   if (input.discovery.desired && input.discovery.eligibleNow && !input.outreach.critical) {
     return { action: "discovery", sleepMs: 0, discoveryYieldsToOutreach: false };
   }
+  if (
+    input.discovery.desired &&
+    input.discovery.nextEligibleAt != null &&
+    input.discovery.nextEligibleAt <= input.now
+  ) {
+    return { action: "sleep", sleepMs: 0, discoveryYieldsToOutreach: false };
+  }
   return {
     action: "sleep",
     sleepMs: boundedWait(earliestWake(input), input.now),
