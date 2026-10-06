@@ -23,6 +23,7 @@ type FollowingScan = {
   reserved: number;
   seedSelf: number;
   usernames: string[];
+  labels?: Record<string, string>;
 };
 
 function readFollowingList(limit: number) {
@@ -59,6 +60,7 @@ export async function openSeedFollowing(page: Page, username: string, limit: num
     }
     const read = readFollowingList(cap);
     const seen = new Set<string>();
+    const labels: Record<string, string> = {};
     let scan: FollowingScan = { profileLinks: 0, normalized: 0, duplicates: 0, reserved: 0, seedSelf: 0, usernames: [] };
     const collect = async () => {
       const found = await page.evaluate(read);
@@ -66,6 +68,7 @@ export async function openSeedFollowing(page: Page, username: string, limit: num
       for (const name of found.usernames) {
         if (seen.size >= cap) break;
         seen.add(name);
+        if (found.labels?.[name]) labels[name] = found.labels[name];
       }
     };
     await collect();
@@ -88,6 +91,7 @@ export async function openSeedFollowing(page: Page, username: string, limit: num
       reserved: scan.reserved,
       seedSelf: scan.seedSelf,
       alreadyKnown: 0,
+      labels,
       reason: usernames.length === 0 ? "dialog had no usable profile links" : "",
     };
   } catch {

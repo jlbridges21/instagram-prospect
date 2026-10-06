@@ -1,6 +1,7 @@
 import "server-only";
 
 import type { ProspectSource, ProspectStatus } from "@/lib/constants/prospects";
+import { PRE_SCORE_BANDS } from "@/lib/discovery/quality";
 import { reviewYield } from "@/lib/discovery/seeds";
 import { databaseErrorMessage, isMissingRelation } from "@/lib/db/errors";
 import type { DataResult } from "@/lib/db/models";
@@ -21,7 +22,12 @@ export async function prospectSeedUsername(id: string): Promise<string | null> {
 
 export async function prospectDiscoveryLink(id: string) {
   const supabase = await createClient();
-  const result = await supabase.from("prospects").select("source_seed_username, discovery_priority_label, discovery_priority_reason").eq("id", id).maybeSingle();
+  const result = await supabase.from("prospects").select("source_seed_username, discovery_priority_label, discovery_priority_reason, discovery_pre_score").eq("id", id).maybeSingle();
+  if (result.error && /discovery_pre_score/i.test(result.error.message)) {
+    const fallback = await supabase.from("prospects").select("source_seed_username, discovery_priority_label, discovery_priority_reason").eq("id", id).maybeSingle();
+    if (fallback.error) return null;
+    return fallback.data ? { ...fallback.data, discovery_pre_score: null } : null;
+  }
   if (result.error) return null;
   return result.data;
 }
@@ -58,7 +64,62 @@ export async function discoverySourceStats(days: number | null) {
       approvalYield: reviewYield(inspected, approved),
     };
   }));
-  return rows.filter((row) => row.inspected > 0 || row.review > 0 || row.approved > 0);
+  return rows;
+}
+
+export async function discoveryQualityStats(days: number | null) {
+  const supabase = await createClient();
+  const since = days ? new Date(Date.now() - days * 86400000).toISOString() : null;
+  const bands = [];
+  for (const band of PRE_SCORE_BANDS) {
+    const [inspected, review] = await Promise.all([
+      preScoreCount(supabase, band.min, band.max, false, since),
+      preScoreCount(supabase, band.min, band.max, true, since),
+    ]);
+    if (inspected == null || review == null) return null;
+    bands.push({ label: band.label, inspected, review, reviewYield: reviewYield(inspected, review) });
+  }
+  const opened = bands.reduce((sum, band) => sum + band.inspected, 0);
+  const review = bands.reduce((sum, band) => sum + band.review, 0);
+  const funnel = await funnelTotals(supabase, since);
+  return {
+    collected: funnel?.collected ?? null,
+    deferred: funnel?.deferred ?? null,
+    opened,
+    review,
+    reviewPerOpened: reviewYield(opened, review),
+    reviewPerCollected: funnel ? reviewYield(funnel.collected, review) : null,
+    bands,
+  };
+}
+
+async function preScoreCount(
+  supabase: Awaited<ReturnType<typeof createClient>>,
+  min: number,
+  max: number,
+  reviewOnly: boolean,
+  since: string | null,
+) {
+  let query = supabase.from("prospects").select("id", { count: "exact", head: true }).gte("discovery_pre_score", min).lte("discovery_pre_score", max);
+  if (reviewOnly) query = query.in("status", [...REVIEW_STATUSES]);
+  if (since) query = query.gte("discovered_at", since);
+  const result = await query;
+  if (result.error) return null;
+  return result.count ?? 0;
+}
+
+async function funnelTotals(supabase: Awaited<ReturnType<typeof createClient>>, since: string | null) {
+  let query = supabase.from("discovery_sessions").select("candidates_collected, candidates_deferred");
+  if (since) query = query.gte("started_at", since);
+  const result = await query;
+  if (result.error) return null;
+  return (result.data ?? []).reduce(
+    (sum, row) => ({
+      collected: sum.collected + (row.candidates_collected ?? 0),
+      deferred: sum.deferred + (row.candidates_deferred ?? 0),
+    }),
+    { collected: 0, deferred: 0 },
+  );
 }
 
 async function exactProspectCount(

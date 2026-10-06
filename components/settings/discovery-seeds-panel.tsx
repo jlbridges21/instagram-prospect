@@ -10,7 +10,7 @@ import {
   saveSeedsBulk,
   setSeedsActive,
 } from "@/lib/actions/seeds";
-import { DEFAULT_DISCOVERY_TUNING, DEFAULT_POSITIVE_KEYWORDS, explorationPercent, homeFeedPercent, seedSharePercent, type DiscoveryTuning } from "@/lib/discovery/defaults";
+import { DEFAULT_DISCOVERY_TUNING, DEFAULT_NEGATIVE_KEYWORDS, DEFAULT_POSITIVE_KEYWORDS, candidateExplorationPercent, explorationPercent, homeFeedPercent, seedSharePercent, type DiscoveryTuning } from "@/lib/discovery/defaults";
 import { approvalYield, reviewYield } from "@/lib/discovery/seeds";
 import { livePollDelay } from "@/lib/discovery/policy";
 import type { DiscoveryOptimization } from "@/lib/db/models";
@@ -179,6 +179,7 @@ export function DiscoverySeedsPanel({
           <NumberField label="Seed reuse cooldown (consecutive cycles)" value={form.seedCooldownCycles} onChange={(seedCooldownCycles) => setForm({ ...form, seedCooldownCycles })} />
           <Toggle label="Seed network fallback" checked={form.seedNetworkEnabled} onChange={(seedNetworkEnabled) => setForm({ ...form, seedNetworkEnabled })} />
           <NumberField label="Accounts to sample per seed" value={form.seedNetworkSample} onChange={(seedNetworkSample) => setForm({ ...form, seedNetworkSample })} />
+          <NumberField label="Minimum candidate pre-score" value={form.minCandidatePreScore} onChange={(minCandidatePreScore) => setForm({ ...form, minCandidatePreScore })} />
           <p className="text-sm text-slate-600 sm:col-span-2">When a seed profile has no related accounts, Discovery samples that account&apos;s Following list. Suggested accounts are still used when both are empty.</p>
         </div>
         <button
@@ -193,7 +194,7 @@ export function DiscoverySeedsPanel({
           <summary className="cursor-pointer text-sm font-medium text-slate-900">Advanced Discovery Tuning</summary>
           <p className="mt-2 text-sm text-slate-600">Most users should leave these at the recommended defaults.</p>
           <div className="mt-3 rounded-lg bg-slate-50 p-3 text-sm text-slate-700">
-            <p>{labelStrategy(form.strategy)}: under-tested seed exploration {explorationPercent(form.strategy, form.tuning)}%. Seed-based collection preference {seedSharePercent(form.strategy, form.tuning)}%.</p>
+            <p>{labelStrategy(form.strategy)}: under-tested seed exploration {explorationPercent(form.strategy, form.tuning)}%. Candidate inspection exploration {candidateExplorationPercent(form.strategy, form.tuning)}%. Seed-based collection preference {seedSharePercent(form.strategy, form.tuning)}%.</p>
             <p className="mt-1">Home Feed {form.homeFeedUsage}: {homeFeedPercent(form.homeFeedUsage, form.tuning)}%.</p>
           </div>
           <div className="mt-3 grid gap-3 text-sm sm:grid-cols-2">
@@ -203,9 +204,13 @@ export function DiscoverySeedsPanel({
             <NumberField label="Manual seed priority, Normal" value={form.tuning.manualPriorityNormal} onChange={(value) => setTuning("manualPriorityNormal", value)} />
             <NumberField label="Manual seed priority, High" value={form.tuning.manualPriorityHigh} onChange={(value) => setTuning("manualPriorityHigh", value)} />
             <NumberField label="Recent-use penalty" value={form.tuning.recentUsePenalty} onChange={(value) => setTuning("recentUsePenalty", value)} />
-            <NumberField label="Exploration share, Conservative %" value={form.tuning.explorationConservative} onChange={(value) => setTuning("explorationConservative", value)} />
-            <NumberField label="Exploration share, Balanced %" value={form.tuning.explorationBalanced} onChange={(value) => setTuning("explorationBalanced", value)} />
-            <NumberField label="Exploration share, Exploratory %" value={form.tuning.explorationExploratory} onChange={(value) => setTuning("explorationExploratory", value)} />
+            <NumberField label="Under-tested seed exploration, Conservative %" value={form.tuning.explorationConservative} onChange={(value) => setTuning("explorationConservative", value)} />
+            <NumberField label="Under-tested seed exploration, Balanced %" value={form.tuning.explorationBalanced} onChange={(value) => setTuning("explorationBalanced", value)} />
+            <NumberField label="Under-tested seed exploration, Exploratory %" value={form.tuning.explorationExploratory} onChange={(value) => setTuning("explorationExploratory", value)} />
+            <NumberField label="Candidate inspection exploration, Conservative %" value={form.tuning.candidateExploreConservative} onChange={(value) => setTuning("candidateExploreConservative", value)} />
+            <NumberField label="Candidate inspection exploration, Balanced %" value={form.tuning.candidateExploreBalanced} onChange={(value) => setTuning("candidateExploreBalanced", value)} />
+            <NumberField label="Candidate inspection exploration, Exploratory %" value={form.tuning.candidateExploreExploratory} onChange={(value) => setTuning("candidateExploreExploratory", value)} />
+            <NumberField label="Multi-seed bonus" value={form.tuning.multiSeedBonus} onChange={(value) => setTuning("multiSeedBonus", value)} />
             <NumberField label="Home Feed share, Low %" value={form.tuning.homeFeedLow} onChange={(value) => setTuning("homeFeedLow", value)} />
             <NumberField label="Home Feed share, Medium %" value={form.tuning.homeFeedMedium} onChange={(value) => setTuning("homeFeedMedium", value)} />
             <NumberField label="Home Feed share, High %" value={form.tuning.homeFeedHigh} onChange={(value) => setTuning("homeFeedHigh", value)} />
@@ -257,7 +262,7 @@ export function DiscoverySeedsPanel({
           const result = await resetDiscoveryKeywords();
           if (result.ok) {
             setPositive(DEFAULT_POSITIVE_KEYWORDS.join("\n"));
-            setNegative("");
+            setNegative(DEFAULT_NEGATIVE_KEYWORDS.join("\n"));
           }
           return result;
         })}>

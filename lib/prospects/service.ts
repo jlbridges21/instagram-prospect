@@ -251,6 +251,7 @@ export type WorkerProspectInput = {
   source_seed_username?: string | null;
   discovery_priority_label?: string | null;
   discovery_priority_reason?: string | null;
+  discovery_pre_score?: number | null;
   follow_relationship?: "following" | "not_following" | "requested" | "unknown";
 };
 
@@ -315,38 +316,42 @@ export async function ingestWorkerProspect(supabase: Client, input: WorkerProspe
       ? "Follow status unknown."
       : null;
   const now = new Date().toISOString();
-  const { data, error } = await supabase
-    .from("prospects")
-    .insert({
-      instagram_username: username,
-      display_name: input.display_name ?? null,
-      first_name: input.first_name ?? null,
-      profile_url: profileUrlForUsername(username, input.profile_url),
-      profile_picture_url: input.profile_picture_url ?? null,
-      bio: input.bio ?? null,
-      follower_count: input.follower_count ?? null,
-      following_count: input.following_count ?? null,
-      location_text: input.location_text ?? null,
-      language: input.language ?? null,
-      already_following: following,
-      already_contacted: false,
-      qualified: false,
-      status,
-      source: input.source ?? "home_feed",
-      source_seed_id: input.source_seed_id ?? null,
-      source_seed_username: input.source_seed_username ?? null,
-      discovery_priority_label: input.discovery_priority_label ?? null,
-      discovery_priority_reason: input.discovery_priority_reason ?? null,
-      instagram_post_url: input.instagram_post_url ?? null,
-      instagram_post_thumbnail_url: input.instagram_post_thumbnail_url ?? null,
-      qualification_reason: qualificationReason,
-      follow_relationship: input.follow_relationship ?? (following ? "following" : "unknown"),
-      discovered_at: now,
-      last_status_changed_at: now,
-      is_sample: false,
-    })
-    .select("id")
-    .single();
+  const row = {
+    instagram_username: username,
+    display_name: input.display_name ?? null,
+    first_name: input.first_name ?? null,
+    profile_url: profileUrlForUsername(username, input.profile_url),
+    profile_picture_url: input.profile_picture_url ?? null,
+    bio: input.bio ?? null,
+    follower_count: input.follower_count ?? null,
+    following_count: input.following_count ?? null,
+    location_text: input.location_text ?? null,
+    language: input.language ?? null,
+    already_following: following,
+    already_contacted: false,
+    qualified: false,
+    status,
+    source: input.source ?? "home_feed",
+    source_seed_id: input.source_seed_id ?? null,
+    source_seed_username: input.source_seed_username ?? null,
+    discovery_priority_label: input.discovery_priority_label ?? null,
+    discovery_priority_reason: input.discovery_priority_reason ?? null,
+    discovery_pre_score: input.discovery_pre_score ?? null,
+    instagram_post_url: input.instagram_post_url ?? null,
+    instagram_post_thumbnail_url: input.instagram_post_thumbnail_url ?? null,
+    qualification_reason: qualificationReason,
+    follow_relationship: input.follow_relationship ?? (following ? "following" : "unknown"),
+    discovered_at: now,
+    last_status_changed_at: now,
+    is_sample: false,
+  };
+  let inserted = await supabase.from("prospects").insert(row).select("id").single();
+  if (inserted.error && /discovery_pre_score/i.test(inserted.error.message)) {
+    const { discovery_pre_score: _ignored, ...withoutScore } = row;
+    inserted = await supabase.from("prospects").insert(withoutScore).select("id").single();
+  }
+  const data = inserted.data;
+  const error = inserted.error;
 
   if (error) {
     if (error.code === "23505") {
@@ -369,6 +374,7 @@ export async function ingestWorkerProspect(supabase: Client, input: WorkerProspe
     console.error("Worker prospect insert failed:", error.message);
     return { ok: false as const, status: 500, error: "Could not store the prospect." };
   }
+  if (!data) return { ok: false as const, status: 500, error: "Could not store the prospect." };
 
   const events: {
     prospectId: string;

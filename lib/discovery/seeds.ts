@@ -48,6 +48,7 @@ export function seedCollectionResult(input: {
   seedUsername: string;
   usernames: string[];
   source?: SeededDiscoverySource;
+  cardText?: Record<string, string | null | undefined>;
 }) {
   const owner = input.seedUsername.replace(/^@/, "").trim().toLowerCase();
   const source = input.source ?? "seed_suggestion";
@@ -60,6 +61,7 @@ export function seedCollectionResult(input: {
       source,
       sourceSeedId: input.seedId,
       sourceSeedUsername: owner,
+      ...(input.cardText?.[username] ? { cardText: input.cardText[username] } : {}),
     })),
   };
 }
@@ -112,13 +114,16 @@ export function prospectAttribution(candidate: {
   sourceSeedUsername?: string | null;
   priorityLabel?: string | null;
   priorityReasons?: string[] | null;
+  priorityScore?: number | null;
 }) {
+  const reason = candidate.priorityReasons?.length ? candidate.priorityReasons.join(" · ") : null;
   return {
     source: candidate.source,
     source_seed_id: candidate.sourceSeedId ?? null,
     source_seed_username: candidate.sourceSeedUsername ?? null,
     discovery_priority_label: candidate.priorityLabel ?? null,
-    discovery_priority_reason: candidate.priorityReasons?.length ? candidate.priorityReasons.join(" · ") : null,
+    discovery_priority_reason: reason ? reason.slice(0, 500) : null,
+    ...(typeof candidate.priorityScore === "number" ? { discovery_pre_score: candidate.priorityScore } : {}),
   };
 }
 

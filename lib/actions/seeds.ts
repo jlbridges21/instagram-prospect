@@ -1,7 +1,9 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
-import { DEFAULT_DISCOVERY_OPTIMIZATION, DEFAULT_POSITIVE_KEYWORDS, clampTuning, type DiscoveryTuning } from "@/lib/discovery/defaults";
+import { DEFAULT_DISCOVERY_OPTIMIZATION, DEFAULT_NEGATIVE_KEYWORDS, DEFAULT_POSITIVE_KEYWORDS, LEGACY_POSITIVE_KEYWORDS, clampTuning, effectiveKeywordList, type DiscoveryTuning } from "@/lib/discovery/defaults";
+import { clampCandidateFloor } from "@/lib/discovery/candidate-priority";
+import { clearSeedRemoval, promoteProspectToSeed, rememberSeedRemoval } from "@/lib/discovery/promotion";
 import { clampSeedNetworkSample, normalizeSeedUsername, uniqueSeedUsernames, type SeedPriority, type SeedSourceType } from "@/lib/discovery/seeds";
 import { requireUser } from "@/lib/supabase/auth";
 
@@ -45,6 +47,7 @@ export async function saveSeed(input: {
     if (/discovery_seeds/i.test(result.error.message)) return { ok: false, error: "Run the Discovery Seeds migration before saving seeds." };
     return { ok: false, error: "Could not save that seed." };
   }
+  await clearSeedRemoval(supabase, [username]);
   refresh();
   return { ok: true, message: input.id ? "Seed updated." : `@${username} added.` };
 }
@@ -66,6 +69,7 @@ export async function saveSeedsBulk(raw: string): Promise<SeedActionResult> {
     { onConflict: "instagram_username", ignoreDuplicates: true },
   );
   if (result.error) return { ok: false, error: "Could not import those seeds. Apply the Discovery Seeds migration first." };
+  await clearSeedRemoval(supabase, names);
   refresh();
   return { ok: true, message: `Imported ${names.length} seed${names.length === 1 ? "" : "s"}. Existing seeds were kept.` };
 }
@@ -73,8 +77,12 @@ export async function saveSeedsBulk(raw: string): Promise<SeedActionResult> {
 export async function setSeedsActive(ids: string[], active: boolean): Promise<SeedActionResult> {
   if (ids.length === 0) return { ok: false, error: "Select at least one seed." };
   const { supabase } = await requireUser();
+  const rows = active
+    ? await supabase.from("discovery_seeds").select("instagram_username").in("id", ids)
+    : null;
   const result = await supabase.from("discovery_seeds").update({ is_active: active, updated_at: new Date().toISOString() }).in("id", ids);
   if (result.error) return { ok: false, error: "Could not update those seeds." };
+  if (rows?.data) await clearSeedRemoval(supabase, rows.data.map((row) => row.instagram_username));
   refresh();
   return { ok: true, message: active ? "Seeds enabled." : "Seeds disabled." };
 }
@@ -82,8 +90,23 @@ export async function setSeedsActive(ids: string[], active: boolean): Promise<Se
 export async function deleteSeeds(ids: string[]): Promise<SeedActionResult> {
   if (ids.length === 0) return { ok: false, error: "Select at least one seed." };
   const { supabase } = await requireUser();
+  const existing = await supabase.from("discovery_seeds").select("instagram_username").in("id", ids);
+  if (existing.error) return { ok: false, error: "Could not remove those seeds." };
+  const remembered = await rememberSeedRemoval(supabase, (existing.data ?? []).map((row) => row.instagram_username));
+  if (!remembered.ok) {
+    return {
+      ok: false,
+      error: remembered.missing
+        ? "Apply the seed promotion migration before removing seeds, so approval does not add them back."
+        : "Could not record that removal.",
+    };
+  }
+  const names = (existing.data ?? []).map((row) => row.instagram_username);
   const result = await supabase.from("discovery_seeds").delete().in("id", ids);
-  if (result.error) return { ok: false, error: "Could not remove those seeds." };
+  if (result.error) {
+    await clearSeedRemoval(supabase, names);
+    return { ok: false, error: "Could not remove those seeds." };
+  }
   refresh();
   return { ok: true, message: "Seeds removed." };
 }
@@ -93,8 +116,20 @@ export async function toggleProspectSeed(prospectId: string, username: string, e
   if (!name) return { ok: false, error: "That username is not valid." };
   const { supabase } = await requireUser();
   if (!enabled) {
+    const remembered = await rememberSeedRemoval(supabase, [name]);
+    if (!remembered.ok) {
+      return {
+        ok: false,
+        error: remembered.missing
+          ? "Apply the seed promotion migration before removing seeds, so approval does not add them back."
+          : "Could not record that removal.",
+      };
+    }
     const result = await supabase.from("discovery_seeds").delete().eq("instagram_username", name);
-    if (result.error) return { ok: false, error: "Could not remove that seed." };
+    if (result.error) {
+      await clearSeedRemoval(supabase, [name]);
+      return { ok: false, error: "Could not remove that seed." };
+    }
     refresh();
     revalidatePath(`/prospects/${prospectId}`);
     return { ok: true, message: "Removed from Discovery Seeds." };
@@ -110,6 +145,7 @@ export async function toggleProspectSeed(prospectId: string, username: string, e
     updated_at: new Date().toISOString(),
   }, { onConflict: "instagram_username" });
   if (result.error) return { ok: false, error: "Could not add that Discovery Seed." };
+  await clearSeedRemoval(supabase, [name]);
   refresh();
   revalidatePath(`/prospects/${prospectId}`);
   return { ok: true, message: "Discovery Seed saved." };
@@ -129,6 +165,7 @@ export async function saveDiscoveryOptimization(input: {
   seedCooldownCycles: number;
   seedNetworkEnabled: boolean;
   seedNetworkSample: number;
+  minCandidatePreScore: number;
   positiveKeywords: string[];
   negativeKeywords: string[];
   tuning: DiscoveryTuning;
@@ -148,6 +185,7 @@ export async function saveDiscoveryOptimization(input: {
     discovery_seed_cooldown_cycles: clamp(input.seedCooldownCycles, 1, 10, DEFAULT_DISCOVERY_OPTIMIZATION.seedCooldownCycles),
     discovery_seed_network_enabled: input.seedNetworkEnabled,
     discovery_seed_network_sample: clampSeedNetworkSample(input.seedNetworkSample),
+    discovery_min_pre_score: clampCandidateFloor(input.minCandidatePreScore),
     discovery_positive_keywords: cleanKeywords(input.positiveKeywords),
     discovery_negative_keywords: cleanKeywords(input.negativeKeywords),
     discovery_tuning: clampTuning(input.tuning),
@@ -170,25 +208,13 @@ export async function promoteExistingQualified(): Promise<SeedActionResult> {
   if (rows.error) return { ok: false, error: "Could not read qualified prospects. Apply the Discovery Seeds migration first." };
   const eligible = (rows.data ?? []).filter((row) => row.already_following !== true && row.instagram_username);
   if (eligible.length === 0) return { ok: true, message: "No Strong Fit prospects were waiting to become seeds." };
-  const result = await supabase.from("discovery_seeds").upsert(
-    eligible.map((row) => ({
-      instagram_username: row.instagram_username,
-      display_name: row.display_name,
-      profile_url: row.profile_url,
-      profile_picture_url: row.profile_picture_url,
-      category: row.category,
-      source_type: "auto_promoted" as const,
-      is_manual: false,
-      is_active: true,
-      auto_promoted_from_prospect_id: row.id,
-      priority: "normal" as const,
-      updated_at: new Date().toISOString(),
-    })),
-    { onConflict: "instagram_username", ignoreDuplicates: true },
-  );
-  if (result.error) return { ok: false, error: "Could not promote those prospects." };
+  let created = 0;
+  for (const row of eligible) {
+    const promoted = await promoteProspectToSeed(supabase, row, "automatic", true);
+    if (promoted.outcome === "created") created += 1;
+  }
   refresh();
-  return { ok: true, message: `Checked ${eligible.length} Strong Fit prospects. Existing seeds were left unchanged.` };
+  return { ok: true, message: `Checked ${eligible.length} Strong Fit prospects. Added ${created}. Existing seeds were left unchanged.` };
 }
 
 export async function resetDiscoveryTuning(): Promise<SeedActionResult> {
@@ -200,13 +226,13 @@ export async function resetDiscoveryKeywords(): Promise<SeedActionResult> {
   return saveDiscoveryOptimization({
     ...(await currentOptimization()),
     positiveKeywords: [...DEFAULT_POSITIVE_KEYWORDS],
-    negativeKeywords: [],
+    negativeKeywords: [...DEFAULT_NEGATIVE_KEYWORDS],
   });
 }
 
 async function currentOptimization() {
   const { supabase } = await requireUser();
-  const row = await supabase.from("settings").select("discovery_auto_promote, discovery_auto_promote_min_score, discovery_promote_strong, discovery_promote_possible, discovery_promote_requires, discovery_min_seed_sample, discovery_favor_yield, discovery_yield_strength, discovery_home_feed_usage, discovery_strategy, discovery_seed_cooldown_cycles, discovery_seed_network_enabled, discovery_seed_network_sample, discovery_positive_keywords, discovery_negative_keywords, discovery_tuning").eq("id", 1).maybeSingle();
+  const row = await supabase.from("settings").select("discovery_auto_promote, discovery_auto_promote_min_score, discovery_promote_strong, discovery_promote_possible, discovery_promote_requires, discovery_min_seed_sample, discovery_favor_yield, discovery_yield_strength, discovery_home_feed_usage, discovery_strategy, discovery_seed_cooldown_cycles, discovery_seed_network_enabled, discovery_seed_network_sample, discovery_min_pre_score, discovery_positive_keywords, discovery_negative_keywords, discovery_tuning").eq("id", 1).maybeSingle();
   const data = row.data;
   return {
     autoPromote: data?.discovery_auto_promote ?? DEFAULT_DISCOVERY_OPTIMIZATION.autoPromote,
@@ -222,8 +248,9 @@ async function currentOptimization() {
     seedCooldownCycles: data?.discovery_seed_cooldown_cycles ?? DEFAULT_DISCOVERY_OPTIMIZATION.seedCooldownCycles,
     seedNetworkEnabled: data?.discovery_seed_network_enabled ?? DEFAULT_DISCOVERY_OPTIMIZATION.seedNetworkEnabled,
     seedNetworkSample: clampSeedNetworkSample(data?.discovery_seed_network_sample ?? DEFAULT_DISCOVERY_OPTIMIZATION.seedNetworkSample),
-    positiveKeywords: data?.discovery_positive_keywords ?? [...DEFAULT_POSITIVE_KEYWORDS],
-    negativeKeywords: data?.discovery_negative_keywords ?? [],
+    minCandidatePreScore: clampCandidateFloor(data?.discovery_min_pre_score ?? DEFAULT_DISCOVERY_OPTIMIZATION.minCandidatePreScore),
+    positiveKeywords: effectiveKeywordList(data?.discovery_positive_keywords, DEFAULT_POSITIVE_KEYWORDS, LEGACY_POSITIVE_KEYWORDS),
+    negativeKeywords: effectiveKeywordList(data?.discovery_negative_keywords, DEFAULT_NEGATIVE_KEYWORDS),
     tuning: clampTuning(data?.discovery_tuning),
   };
 }

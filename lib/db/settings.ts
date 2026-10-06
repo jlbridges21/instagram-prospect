@@ -18,7 +18,8 @@ import { DEFAULT_MESSAGE_TEMPLATE } from "@/lib/constants/message";
 import { DEFAULT_OUTREACH_SETTINGS, normalizeClock, normalizeDays } from "@/lib/outreach/defaults";
 import type { OutreachSettings } from "@/lib/outreach/types";
 import { databaseErrorMessage, isMissingRelation } from "@/lib/db/errors";
-import { DEFAULT_DISCOVERY_OPTIMIZATION, DEFAULT_POSITIVE_KEYWORDS, clampTuning } from "@/lib/discovery/defaults";
+import { DEFAULT_DISCOVERY_OPTIMIZATION, DEFAULT_NEGATIVE_KEYWORDS, DEFAULT_POSITIVE_KEYWORDS, LEGACY_POSITIVE_KEYWORDS, clampTuning, effectiveKeywordList } from "@/lib/discovery/defaults";
+import { clampCandidateFloor } from "@/lib/discovery/candidate-priority";
 import { clampSeedNetworkSample } from "@/lib/discovery/seeds";
 import type { AppSettings, DataResult, DiscoveryOptimization, DiscoverySettings, TargetingSettings } from "@/lib/db/models";
 import type { SettingsRow, TargetingSettingsRow } from "@/lib/db/types";
@@ -85,8 +86,9 @@ export function optimizationFromRow(row: SettingsRow): DiscoveryOptimization {
     seedCooldownCycles: row.discovery_seed_cooldown_cycles ?? DEFAULT_DISCOVERY_OPTIMIZATION.seedCooldownCycles,
     seedNetworkEnabled: row.discovery_seed_network_enabled ?? DEFAULT_DISCOVERY_OPTIMIZATION.seedNetworkEnabled,
     seedNetworkSample: clampSeedNetworkSample(row.discovery_seed_network_sample ?? DEFAULT_DISCOVERY_OPTIMIZATION.seedNetworkSample),
-    positiveKeywords: row.discovery_positive_keywords ?? [...DEFAULT_POSITIVE_KEYWORDS],
-    negativeKeywords: row.discovery_negative_keywords ?? [],
+    minCandidatePreScore: clampCandidateFloor(row.discovery_min_pre_score ?? DEFAULT_DISCOVERY_OPTIMIZATION.minCandidatePreScore),
+    positiveKeywords: effectiveKeywordList(row.discovery_positive_keywords, DEFAULT_POSITIVE_KEYWORDS, LEGACY_POSITIVE_KEYWORDS),
+    negativeKeywords: effectiveKeywordList(row.discovery_negative_keywords, DEFAULT_NEGATIVE_KEYWORDS),
     tuning: clampTuning(row.discovery_tuning),
   };
 }
@@ -164,7 +166,7 @@ export function fallbackSettings(): AppSettings {
     possibleFitMinimum: DEFAULT_POSSIBLE_FIT_MINIMUM,
     outreach: DEFAULT_OUTREACH_SETTINGS,
     discovery: DEFAULT_DISCOVERY_SETTINGS,
-    optimization: { ...DEFAULT_DISCOVERY_OPTIMIZATION, positiveKeywords: [...DEFAULT_POSITIVE_KEYWORDS], negativeKeywords: [], tuning: clampTuning(undefined) },
+    optimization: { ...DEFAULT_DISCOVERY_OPTIMIZATION, positiveKeywords: [...DEFAULT_POSITIVE_KEYWORDS], negativeKeywords: [...DEFAULT_NEGATIVE_KEYWORDS], tuning: clampTuning(undefined) },
     updatedAt: null,
   };
 }

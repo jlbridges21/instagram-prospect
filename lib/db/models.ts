@@ -35,6 +35,7 @@ export type DiscoveryOptimization = {
   seedCooldownCycles: number;
   seedNetworkEnabled: boolean;
   seedNetworkSample: number;
+  minCandidatePreScore: number;
   positiveKeywords: string[];
   negativeKeywords: string[];
   tuning: DiscoveryTuning;

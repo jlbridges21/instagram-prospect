@@ -1,3 +1,5 @@
+import { clampCandidateFloor } from "@/lib/discovery/candidate-priority";
+import { DEFAULT_NEGATIVE_KEYWORDS, LEGACY_POSITIVE_KEYWORDS, effectiveKeywordList } from "@/lib/discovery/defaults";
 import { fallbackSettings, fallbackTargeting } from "@/lib/db/settings";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { isWorkerAuthorized, workerError, workerUnauthorized } from "@/lib/worker/auth";
@@ -19,10 +21,11 @@ export async function GET(request: Request) {
       .eq("id", 1)
       .maybeSingle();
   }
-  const [seedResult, keywordResult, networkResult] = await Promise.all([
+  const [seedResult, keywordResult, networkResult, floorResult] = await Promise.all([
     admin.from("discovery_seeds").select("id, instagram_username, source_type, priority, profiles_inspected, profiles_reaching_review, consecutive_uses, is_active").eq("is_active", true).order("profiles_reaching_review", { ascending: false }).limit(100),
     admin.from("settings").select("discovery_positive_keywords, discovery_negative_keywords, discovery_home_feed_usage, discovery_strategy, discovery_yield_strength, discovery_favor_yield, discovery_min_seed_sample, discovery_seed_cooldown_cycles, discovery_tuning").eq("id", 1).maybeSingle(),
     admin.from("settings").select("discovery_seed_network_enabled, discovery_seed_network_sample").eq("id", 1).maybeSingle(),
+    admin.from("settings").select("discovery_min_pre_score").eq("id", 1).maybeSingle(),
   ]);
   const targetingResult = await admin
     .from("targeting_settings")
@@ -89,8 +92,8 @@ export async function GET(request: Request) {
       review: seed.profiles_reaching_review,
       consecutiveUses: seed.consecutive_uses,
     })),
-    positiveKeywords: keywordResult.data?.discovery_positive_keywords ?? fallback.optimization.positiveKeywords,
-    negativeKeywords: keywordResult.data?.discovery_negative_keywords ?? fallback.optimization.negativeKeywords,
+    positiveKeywords: effectiveKeywordList(keywordResult.data?.discovery_positive_keywords, fallback.optimization.positiveKeywords, LEGACY_POSITIVE_KEYWORDS),
+    negativeKeywords: effectiveKeywordList(keywordResult.data?.discovery_negative_keywords, DEFAULT_NEGATIVE_KEYWORDS),
     homeFeedUsage: keywordResult.data?.discovery_home_feed_usage ?? fallback.optimization.homeFeedUsage,
     discoveryStrategy: keywordResult.data?.discovery_strategy ?? fallback.optimization.strategy,
     yieldStrength: keywordResult.data?.discovery_yield_strength ?? fallback.optimization.yieldStrength,
@@ -99,6 +102,7 @@ export async function GET(request: Request) {
     seedCooldownCycles: keywordResult.data?.discovery_seed_cooldown_cycles ?? fallback.optimization.seedCooldownCycles,
     seedNetworkEnabled: networkResult.error ? fallback.optimization.seedNetworkEnabled : networkResult.data?.discovery_seed_network_enabled !== false,
     seedNetworkSample: networkResult.error ? fallback.optimization.seedNetworkSample : networkResult.data?.discovery_seed_network_sample ?? fallback.optimization.seedNetworkSample,
+    minCandidatePreScore: floorResult.error ? fallback.optimization.minCandidatePreScore : clampCandidateFloor(floorResult.data?.discovery_min_pre_score ?? fallback.optimization.minCandidatePreScore),
     tuning: keywordResult.data?.discovery_tuning ?? fallback.optimization.tuning,
     workerVersion: "6",
     minSupportedWorkerVersion: "6",

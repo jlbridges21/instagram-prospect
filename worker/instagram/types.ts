@@ -101,13 +101,14 @@ export type DomSnapshot = {
   metaDescription?: string | null;
   profileIsPrivate?: boolean;
   profileImageUrl?: string | null;
-  suggestedProfiles?: Array<{ username: string; href: string }>;
+  suggestedProfiles?: Array<{ username: string; href: string; cardText?: string }>;
 };
 
 export type FeedCandidate = {
   username: string;
   profileUrl: string;
   postUrl: string | null;
+  cardText?: string | null;
 };
 
 export type ProfileExtract = {

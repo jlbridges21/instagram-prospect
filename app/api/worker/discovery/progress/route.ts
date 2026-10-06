@@ -12,6 +12,8 @@ export async function POST(request: Request) {
     inspections?: number;
     ai?: number;
     emptyCycles?: number;
+    collected?: number;
+    deferred?: number;
   };
   const result = await recordDiscoveryProgress(admin, body);
   if (!result.ok) return workerError(500, result.error);

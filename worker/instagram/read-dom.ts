@@ -462,7 +462,10 @@ export const READ_DOM_SOURCE = `() => {
           const username = usernameFromSuggestedHref(link.getAttribute("href") || "");
           if (!username || username === owner || seen[username]) continue;
           seen[username] = true;
-          found.push({ username, href: link.getAttribute("href") || "" });
+          var raw = (link.innerText || link.textContent || "").replace(/\\s+/g, " ").trim();
+          var parent = link.parentElement;
+          var nearby = parent ? (parent.innerText || parent.textContent || "").replace(/\\s+/g, " ").trim() : raw;
+          found.push({ username, href: link.getAttribute("href") || "", cardText: (nearby.length > 180 ? raw : nearby).slice(0, 160) });
           added += 1;
           if (found.length >= 20) return found;
         }

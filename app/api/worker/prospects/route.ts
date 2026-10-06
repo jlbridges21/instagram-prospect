@@ -25,6 +25,7 @@ const prospectSchema = z.object({
   source_seed_username: z.string().trim().max(30).nullable().optional(),
   discovery_priority_label: z.string().trim().max(20).nullable().optional(),
   discovery_priority_reason: z.string().trim().max(500).nullable().optional(),
+  discovery_pre_score: z.number().int().min(0).max(100).nullable().optional(),
   follow_relationship: z.enum(["following", "not_following", "requested", "unknown"]).optional(),
 });
 

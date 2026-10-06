@@ -46,7 +46,7 @@ export function suggestedCandidates(dom: DomSnapshot): FeedCandidate[] {
     const username = card.username.toLowerCase().replace(/^@/, "").trim();
     if (!username || seen.has(username)) continue;
     seen.add(username);
-    found.push({ username, profileUrl: profileUrlFor(username), postUrl: null });
+    found.push({ username, profileUrl: profileUrlFor(username), postUrl: null, cardText: card.cardText ?? null });
   }
   return found;
 }
@@ -63,7 +63,7 @@ export function feedCandidates(dom: DomSnapshot): FeedCandidate[] {
     }
     if (!username || seen.has(username)) continue;
     seen.add(username);
-    found.push({ username, profileUrl: profileUrlFor(username), postUrl });
+    found.push({ username, profileUrl: profileUrlFor(username), postUrl, cardText: (article.text ?? "").replace(/\s+/g, " ").trim().slice(0, 180) });
   }
   return found;
 }

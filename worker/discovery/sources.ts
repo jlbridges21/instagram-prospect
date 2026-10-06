@@ -34,6 +34,9 @@ function tag(candidates: FeedCandidate[], source: DiscoverySource, now?: string)
     sourcePostUrl: candidate.postUrl,
     sourceThumbnailUrl: null,
     discoveredAt: now ?? new Date(0).toISOString(),
+    cardText: candidate.cardText ?? null,
+    sourcesSeen: [source],
+    seedSupport: [],
   }));
 }
 

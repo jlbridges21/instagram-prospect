@@ -10,8 +10,14 @@ type Client = SupabaseClient<Database>;
 
 export async function recordDiscoveryProgress(
   admin: Client,
-  input: { inspections?: number; ai?: number; emptyCycles?: number },
+  input: { inspections?: number; ai?: number; emptyCycles?: number; collected?: number; deferred?: number },
 ) {
+  const collected = Math.max(0, input.collected ?? 0);
+  const deferred = Math.max(0, input.deferred ?? 0);
+  if ((input.inspections ?? 0) === 0 && (input.ai ?? 0) === 0 && (input.emptyCycles ?? 0) === 0) {
+    if (collected > 0 || deferred > 0) await addFunnelCounts(admin, collected, deferred);
+    return { ok: true as const, pause: false, reason: null, outreachEnabled: null };
+  }
   const settingsColumns = "timezone, discovery_enabled, automation_enabled, discovery_review_target, discovery_session_inspection_cap, discovery_daily_inspection_cap, discovery_daily_ai_cap, discovery_stop_reason, discovery_auto_paused, discovery_run_mode";
   let settings = await admin.from("settings").select(settingsColumns).eq("id", 1).maybeSingle();
   if (settings.error && /discovery_run_mode/i.test(settings.error.message)) {
@@ -100,6 +106,7 @@ export async function recordDiscoveryProgress(
         stop_reason: decision.reason,
       })
       .eq("id", session.id);
+    if (collected > 0 || deferred > 0) await addFunnelCounts(admin, collected, deferred);
   }
 
   if (decision.pauseDiscovery && row.discovery_enabled !== false) {
@@ -126,7 +133,29 @@ export async function recordDiscoveryProgress(
   };
 }
 
+async function addFunnelCounts(admin: Client, collected: number, deferred: number) {
+  const session = await openSession(admin);
+  if (!session) return;
+  const { error } = await admin
+    .from("discovery_sessions")
+    .update({
+      candidates_collected: Number((session as { candidates_collected?: number }).candidates_collected ?? 0) + collected,
+      candidates_deferred: Number((session as { candidates_deferred?: number }).candidates_deferred ?? 0) + deferred,
+    })
+    .eq("id", session.id);
+  if (error && /candidates_collected|candidates_deferred/i.test(error.message)) return;
+}
+
 async function openSession(admin: Client) {
+  const full = await admin
+    .from("discovery_sessions")
+    .select("id, profiles_inspected, ai_qualifications, last_candidate_at, candidates_collected, candidates_deferred")
+    .is("stopped_at", null)
+    .order("started_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (!full.error) return full.data;
+  if (!/candidates_collected|candidates_deferred/i.test(full.error.message)) return null;
   const { data, error } = await admin
     .from("discovery_sessions")
     .select("id, profiles_inspected, ai_qualifications, last_candidate_at")

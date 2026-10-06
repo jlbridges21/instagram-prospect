@@ -15,6 +15,7 @@ export type SeedNetworkRead = {
   seedSelf: number;
   alreadyKnown: number;
   reason: string;
+  labels?: Record<string, string>;
 };
 
 export function emptySeedNetworkRead(reason: string, partial?: Partial<SeedNetworkRead>): SeedNetworkRead {
@@ -98,6 +99,7 @@ export const SEED_NETWORK_READER_SOURCE = `(limit) => {
   if (!root) return [];
   var cap = Math.max(0, Math.floor(Number(limit) || 0));
   var names = [];
+  var labels = {};
   var seen = {};
   var profileLinks = 0;
   var duplicates = 0;
@@ -124,9 +126,13 @@ export const SEED_NETWORK_READER_SOURCE = `(limit) => {
     if (seen[withoutOwner]) { duplicates += 1; continue; }
     seen[withoutOwner] = 1;
     names.push(withoutOwner);
+    var own = String(el.innerText || el.textContent || "").replace(/\\s+/g, " ").trim();
+    var parent = el.parentElement;
+    var nearby = parent ? String(parent.innerText || parent.textContent || "").replace(/\\s+/g, " ").trim() : own;
+    labels[withoutOwner] = (nearby.length > 180 ? own : nearby).slice(0, 160);
     if (names.length >= cap) break;
   }
-  return { profileLinks: profileLinks, normalized: names.length, duplicates: duplicates, reserved: reservedCount, seedSelf: seedSelf, usernames: names };
+  return { profileLinks: profileLinks, normalized: names.length, duplicates: duplicates, reserved: reservedCount, seedSelf: seedSelf, usernames: names, labels: labels };
 }`;
 
 export const SEED_NETWORK_SCROLL_SOURCE = `() => {

@@ -3,9 +3,9 @@ import path from "node:path";
 import type { BrowserContext, Page } from "playwright";
 import type { CloudClient, CloudConfig } from "../cloud/client";
 import { QualificationQueue } from "./qualify-queue";
-import { CandidateQueue, SessionUsernameCache, chunkUsernames, unseenUsernames, type DiscoveryCandidate } from "./queue";
-import { scoreCandidate } from "../../lib/discovery/candidate-priority";
-import { inspectionSeedId, pickSeed, prospectAttribution, seedCollectionResult, seedNetworkTake, seedStatForCandidate, shouldOpenSeedNetwork, type SeededDiscoverySource } from "../../lib/discovery/seeds";
+import { CandidateQueue, SessionUsernameCache, chunkUsernames, evidenceIsNew, mergeCandidateEvidence, unseenUsernames, type DiscoveryCandidate } from "./queue";
+import { scoreCandidate, shouldExploreCandidate } from "../../lib/discovery/candidate-priority";
+import { inspectionSeedId, pickSeed, prospectAttribution, seedCollectionResult, seedStatForCandidate, shouldOpenSeedNetwork, clampSeedNetworkSample, type SeededDiscoverySource } from "../../lib/discovery/seeds";
 import { applyEmptySeedCooldowns } from "../instagram/seed-page";
 import { clearEmptySeed, readEmptySeedCooldowns, rememberEmptySeed } from "./seed-cooldowns";
 import { pickCollectionSource } from "../../lib/discovery/source-ranking";
@@ -51,6 +51,7 @@ export type CloudEfficiency = {
   prospectsCreated: number;
   qualificationRequests: number;
   cloudRequests: number;
+  candidatesDeferred: number;
 };
 
 const PROFILE_TABS = ["profile-tab-1", "profile-tab-2"] as const;
@@ -64,6 +65,7 @@ export function emptyEfficiency(): CloudEfficiency {
     prospectsCreated: 0,
     qualificationRequests: 0,
     cloudRequests: 0,
+    candidatesDeferred: 0,
   };
 }
 
@@ -76,6 +78,7 @@ export function formatEfficiency(metrics: CloudEfficiency) {
     `Candidates skipped from local cache: ${metrics.skippedFromCache}`,
     `Profiles opened: ${metrics.profilesOpened}`,
     `Prospects created: ${metrics.prospectsCreated}`,
+    `Candidates below pre-score floor: ${metrics.candidatesDeferred}`,
     `Qualification requests: ${metrics.qualificationRequests}`,
     `Total worker cloud requests: ${metrics.cloudRequests}`,
   ].join("\n");
@@ -94,7 +97,7 @@ export async function runDiscoveryV2(input: {
   shouldStop: () => boolean;
   maybeOutreach?: () => Promise<void>;
   metrics?: CloudEfficiency;
-  gate?: (input: { inspections: number; ai: number; emptyCycles: number }) => Promise<{ pause: boolean; reason: string | null } | null>;
+  gate?: (input: { inspections: number; ai: number; emptyCycles: number; collected?: number; deferred?: number }) => Promise<{ pause: boolean; reason: string | null } | null>;
   profilePages?: [Page | null, Page | null];
   preferredTab?: "profile-tab-1" | "profile-tab-2";
   retainTabs?: boolean;
@@ -124,13 +127,22 @@ export async function runDiscoveryV2(input: {
       const result = await input.cloud.qualifyProspect(prospectId);
       if (!(result.skipped)) aiSinceGate += 1;
       if (result.ok && !result.skipped) input.stats.qualified += 1;
-      if (result.ok && !result.cached && result.status === "review" && result.seedCredit && result.username) {
-        const inspected = result.seedCredit.inspected;
-        const review = result.seedCredit.review;
-        const yieldPercent = inspected > 0 ? ((review / inspected) * 100).toFixed(1) : "0.0";
+      if (result.ok && !result.cached && result.status === "review" && result.username) {
         console.log(`@${result.username} → Review`);
-        console.log(`Credited Review to seed @${result.seedCredit.username}`);
-        console.log(`Seed yield: ${review} / ${inspected} = ${yieldPercent}%`);
+        const credit = result.seedCredit;
+        if (credit?.username) {
+          const inspected = credit.inspected;
+          const review = credit.review;
+          const yieldPercent = inspected > 0 ? ((review / inspected) * 100).toFixed(1) : "0.0";
+          if (credit.syncError) {
+            console.log(`Review credit for seed @${credit.username} was not saved. ${credit.syncError}`);
+          } else if (review === 0) {
+            console.log(`Seed @${credit.username} Review counter is still 0 after ${inspected} inspected.`);
+          } else {
+            console.log(`Credited Review to seed @${credit.username}`);
+            console.log(`Seed yield: ${review} Review / ${inspected} inspected = ${yieldPercent}%`);
+          }
+        }
       }
     } catch (error) {
       if (isAttention(error)) throw error;
@@ -155,7 +167,7 @@ export async function runDiscoveryV2(input: {
       const target = latestConfig?.candidateQueueTarget ?? 10;
       if (queue.pendingCount() <= queueThresholds(target).lowWater) await collectLoop();
       const tab = tabs.find((item) => item.id === input.preferredTab) ?? tabs[0];
-      if (tab && queue.pendingCount() > 0) await inspectLoop(tab.id, tab.page);
+      if (tab && (queue.pendingCount() > 0 || queue.deferredCount() > 0)) await inspectLoop(tab.id, tab.page);
     } else {
       await Promise.all([
         collectLoop(),
@@ -245,17 +257,18 @@ export async function runDiscoveryV2(input: {
       seedUsername: seed.username,
       usernames: found.map((item) => item.username),
       source: "seed_suggestion",
+      cardText: Object.fromEntries(found.flatMap((item) => (item.cardText ? [[item.username, item.cardText]] : []))),
     });
     if (!suggestions.fallback) {
       if (page) clearEmptySeed(seed.username);
       await input.cloud.bumpSeed(seed.id, { used: true, seen: suggestions.candidates.length }).catch(() => undefined);
-      return packSeedCandidates(seed, config, suggestions.candidates, new Map(found.map((item) => [item.username, item])));
+      return packSeedCandidates(config, suggestions.candidates, new Map(found.map((item) => [item.username, item])));
     }
     console.log("No usable profile suggestions.");
-    const room = queueThresholds(config.candidateQueueTarget).highWater - queue.pendingCount();
-    const limit = seedNetworkTake({ configured: config.seedNetworkSample ?? 15, queueRoom: room });
+    const limit = clampSeedNetworkSample(config.seedNetworkSample ?? 15);
     const networkEnabled = config.seedNetworkEnabled !== false && Boolean(input.readSeedNetwork);
     let networkUsernames: string[] = [];
+    let networkCardText: Record<string, string> = {};
     if (shouldOpenSeedNetwork(suggestions.candidates.length, networkEnabled) && limit > 0 && page) {
       console.log(`Opening seed network for @${seed.username}...`);
       const networkRead = await input.readSeedNetwork!(seed.username, limit).catch((error: unknown) => ({
@@ -270,7 +283,7 @@ export async function runDiscoveryV2(input: {
         alreadyKnown: 0,
         reason: error instanceof Error ? error.message : "could not open following",
       }));
-      const freshNetwork = networkRead.usernames.filter((name) => !cache.has(name) && !queue.seen(name));
+      const freshNetwork = networkRead.usernames.filter((name) => !cache.has(name) && !queue.isClosed(name));
       const alreadyKnown = networkRead.usernames.length - freshNetwork.length;
       for (const line of [
         `Following button found: ${networkRead.buttonFound ? "yes" : "no"}`,
@@ -285,12 +298,14 @@ export async function runDiscoveryV2(input: {
       ]) console.log(line);
       if (freshNetwork.length === 0 && networkRead.reason) console.log(`reason: ${networkRead.reason}`);
       networkUsernames = freshNetwork;
+      networkCardText = "labels" in networkRead && networkRead.labels ? networkRead.labels : {};
     }
     const network = seedCollectionResult({
       seedId: seed.id,
       seedUsername: seed.username,
       usernames: networkUsernames,
       source: "seed_network",
+      cardText: networkCardText,
     });
     if (!network.fallback) {
       clearEmptySeed(seed.username);
@@ -298,7 +313,7 @@ export async function runDiscoveryV2(input: {
       console.log(`Collected ${network.candidates.length} accounts from Following.`);
       console.log(`${session.fresh.length} new candidates after dedupe.`);
       await input.cloud.bumpSeed(seed.id, { used: true, seen: network.candidates.length }).catch(() => undefined);
-      return packSeedCandidates(seed, config, network.candidates, new Map());
+      return packSeedCandidates(config, network.candidates, new Map());
     }
     const exhausted = Boolean(page) && !(networkEnabled && limit === 0);
     if (exhausted) rememberEmptySeed(seed.username);
@@ -310,30 +325,16 @@ export async function runDiscoveryV2(input: {
   }
 
   function packSeedCandidates(
-    seed: { id: string; username: string; inspected: number; review: number; priority: "low" | "normal" | "high" },
     config: CloudConfig,
-    candidates: Array<{ username: string; source: SeededDiscoverySource; sourceSeedId: string; sourceSeedUsername: string }>,
+    candidates: Array<{ username: string; source: SeededDiscoverySource; sourceSeedId: string; sourceSeedUsername: string; cardText?: string | null }>,
     urls: Map<string, { profileUrl?: string; postUrl?: string | null }>,
   ) {
-    const mature = seed.inspected >= (config.minSeedSample ?? 10);
-    const yieldRate = seed.inspected > 0 ? seed.review / seed.inspected : 0;
     const sourceLabel = candidates[0]?.source === "seed_network" ? "Seed network" : "Seed suggestions";
     return {
       sourceLabel,
       ordered: candidates.map((item) => {
-        const priority = scoreCandidate({
-          source: "seed",
-          seedUsername: seed.username,
-          seedYield: yieldRate,
-          seedMature: mature,
-          seedPriority: seed.priority,
-          text: item.username,
-          positiveKeywords: config.positiveKeywords ?? [],
-          negativeKeywords: config.negativeKeywords ?? [],
-          tuning: config.tuning,
-        });
         const match = urls.get(item.username);
-        return {
+        return applyPriority({
           username: item.username,
           profileUrl: match?.profileUrl ?? `https://www.instagram.com/${item.username}/`,
           source: item.source,
@@ -342,12 +343,86 @@ export async function runDiscoveryV2(input: {
           discoveredAt: new Date().toISOString(),
           sourceSeedId: item.sourceSeedId,
           sourceSeedUsername: item.sourceSeedUsername,
-          priorityScore: priority.score,
-          priorityLabel: priority.label,
-          priorityReasons: priority.reasons,
-        };
+          cardText: item.cardText ?? null,
+          sourcesSeen: [item.source],
+          seedSupport: [item.sourceSeedUsername],
+        }, config);
       }),
     };
+  }
+
+  async function rankAndPlace(ordered: DiscoveryCandidate[], config: CloudConfig) {
+    const floor = config.minCandidatePreScore ?? 35;
+    const fresh: DiscoveryCandidate[] = [];
+    const merges: DiscoveryCandidate[] = [];
+    let skippedFromCache = 0;
+    const seen = new Set<string>();
+    for (const candidate of ordered) {
+      const username = candidate.username.trim().toLowerCase();
+      if (!username || seen.has(username)) continue;
+      seen.add(username);
+      if (cache.has(username) || queue.isClosed(username)) {
+        skippedFromCache += 1;
+        continue;
+      }
+      const held = queue.hold(username);
+      if (held) {
+        if (evidenceIsNew(held, candidate)) merges.push(candidate);
+        else skippedFromCache += 1;
+      } else fresh.push(candidate);
+    }
+    metrics.candidatesFound += fresh.length + merges.length;
+    metrics.skippedFromCache += skippedFromCache;
+    if (skippedFromCache > 0) log("info", "candidate_duplicate_session", { count: skippedFromCache });
+    const accepted: DiscoveryCandidate[] = [];
+    if (!input.noWrite) {
+      for (const chunk of chunkUsernames(fresh.map((candidate) => candidate.username), 15)) {
+        metrics.duplicateBatches += 1;
+        const checked = await input.cloud.checkProspects(chunk);
+        for (const row of checked.results) {
+          const username = (row.username ?? "").toLowerCase();
+          const candidate = fresh.find((item) => item.username.toLowerCase() === username);
+          if (row.skip) {
+            cache.remember(username, true);
+            log("info", "candidate_duplicate_cloud", { username, status: row.status });
+            if (candidate && inspectionSeedId(candidate)) await input.cloud.bumpSeed(candidate.sourceSeedId ?? "", seedStatForCandidate("duplicate_skipped")).catch(() => undefined);
+            continue;
+          }
+          if (candidate) accepted.push(candidate);
+        }
+      }
+    } else {
+      accepted.push(...fresh);
+    }
+    const scored = [...merges, ...accepted]
+      .map((candidate) => {
+        const held = queue.hold(candidate.username);
+        return applyPriority(held ? mergeCandidateEvidence(held, candidate) : candidate, config);
+      })
+      .sort((left, right) => (right.priorityScore ?? 0) - (left.priorityScore ?? 0) || left.discoveredAt.localeCompare(right.discoveredAt));
+    let queued = 0;
+    let deferred = 0;
+    for (const candidate of scored) {
+      const result = queue.place(candidate, floor);
+      if (result === "queued") {
+        queued += 1;
+        console.log(`Queued @${candidate.username} (pre-score ${candidate.priorityScore ?? 0})`);
+        console.log(`Source: ${candidate.source}`);
+        if ((candidate.source === "seed_suggestion" || candidate.source === "seed_network") && candidate.sourceSeedUsername) console.log(`Seed: @${candidate.sourceSeedUsername}`);
+        log("info", "candidate_queued", { username: candidate.username, source: candidate.source, seed: candidate.sourceSeedUsername ?? null, preScore: candidate.priorityScore ?? 0 });
+        if (inspectionSeedId(candidate)) await input.cloud.bumpSeed(candidate.sourceSeedId ?? "", seedStatForCandidate("queued")).catch(() => undefined);
+      } else if (result === "merged") {
+        console.log(`Updated @${candidate.username} (pre-score ${candidate.priorityScore ?? 0}, seeds ${candidate.seedSupport?.length ?? 0})`);
+      } else if (result === "deferred") {
+        deferred += 1;
+      }
+    }
+    metrics.candidatesDeferred += deferred;
+    if (scored.length > 0) console.log(`Ranked ${scored.length} candidates. Queued ${queued}. Below pre-score ${floor}: ${deferred}.`);
+    if ((fresh.length + merges.length > 0 || deferred > 0) && input.gate) {
+      await input.gate({ inspections: 0, ai: 0, emptyCycles: 0, collected: fresh.length + merges.length, deferred }).catch(() => undefined);
+    }
+    return { queued, deferred, considered: fresh.length + merges.length };
   }
 
   async function collectLoop() {
@@ -391,52 +466,9 @@ export async function runDiscoveryV2(input: {
         announcedSource = sourceLabel;
         console.log(`Discovery source: ${sourceLabel}`);
       }
-      const { fresh, skippedFromCache } = unseenUsernames(ordered.map((item) => item.username), cache, queue);
-      metrics.candidatesFound += fresh.length;
-      metrics.skippedFromCache += skippedFromCache;
-      if (skippedFromCache > 0) log("info", "candidate_duplicate_session", { count: skippedFromCache });
-      const byUsername = new Map(ordered.map((item) => [item.username, item]));
-      let queued = 0;
-      if (!input.noWrite) {
-        let filled = false;
-        for (const chunk of chunkUsernames(fresh, 15)) {
-          if (filled) break;
-          metrics.duplicateBatches += 1;
-          const checked = await input.cloud.checkProspects(chunk);
-          for (const row of checked.results) {
-            const username = row.username ?? "";
-            cache.remember(username, row.skip);
-            const candidate = byUsername.get(username);
-            if (row.skip) {
-              log("info", "candidate_duplicate_cloud", { username, status: row.status });
-              if (candidate && inspectionSeedId(candidate)) await input.cloud.bumpSeed(candidate.sourceSeedId ?? "", seedStatForCandidate("duplicate_skipped")).catch(() => undefined);
-              continue;
-            }
-            if (!candidate) continue;
-            if (queue.pendingCount() >= queueThresholds(config.candidateQueueTarget).highWater) {
-              filled = true;
-              break;
-            }
-            const prioritized = withPriority(candidate, config);
-            if (queue.enqueue(prioritized) === "queued") {
-              queued += 1;
-              console.log(`Queued @${prioritized.username}`);
-              console.log(`Source: ${prioritized.source}`);
-              if ((prioritized.source === "seed_suggestion" || prioritized.source === "seed_network") && prioritized.sourceSeedUsername) console.log(`Seed: @${prioritized.sourceSeedUsername}`);
-              log("info", "candidate_queued", { username: prioritized.username, source: prioritized.source, seed: prioritized.sourceSeedUsername ?? null });
-              if (inspectionSeedId(prioritized)) await input.cloud.bumpSeed(prioritized.sourceSeedId ?? "", seedStatForCandidate("queued")).catch(() => undefined);
-            }
-          }
-        }
-      } else {
-        for (const username of fresh) {
-          if (queue.pendingCount() >= queueThresholds(config.candidateQueueTarget).highWater) break;
-          const candidate = byUsername.get(username);
-          if (candidate && queue.enqueue(candidate) === "queued") queued += 1;
-        }
-      }
+      const ranked = await rankAndPlace(ordered, config);
       publish(config, sourceLabel);
-      if (queued === 0) {
+      if (ranked.considered === 0) {
         emptyCycles += 1;
         idleScrolls += 1;
         if (idleScrolls >= 4 && queue.pendingCount() === 0 && queue.inProgress().length === 0) {
@@ -462,9 +494,14 @@ export async function runDiscoveryV2(input: {
         return;
       }
       const pace = hourPace();
-      const candidate = queue.claim(tabId);
+      const floor = latestConfig?.minCandidatePreScore ?? 35;
+      const explore = shouldExploreCandidate(latestConfig?.discoveryStrategy ?? "balanced", Math.random(), latestConfig?.tuning);
+      const candidate = queue.claim(tabId, { floor, explore });
       if (!candidate) {
-        if (input.singleTurn) return;
+        if (input.singleTurn) {
+          if (queue.deferredCount() > 0) console.log(`No candidate met the minimum pre-score of ${floor}.`);
+          return;
+        }
         await sleep(300);
         continue;
       }
@@ -494,7 +531,7 @@ export async function runDiscoveryV2(input: {
       if (sinceGate >= 5) await consultGate();
       input.live.task = "inspecting_profiles";
       input.live.username = candidate.username;
-      console.log(`Inspecting @${candidate.username}`);
+      console.log(`Inspecting @${candidate.username} (pre-score ${candidate.priorityScore ?? 0}, ${candidate.priorityLabel ?? "Low"})`);
       console.log(`Source: ${candidate.source}`);
       if ((candidate.source === "seed_suggestion" || candidate.source === "seed_network") && candidate.sourceSeedUsername) console.log(`Seed: @${candidate.sourceSeedUsername}`);
       log("info", tabId === "profile-tab-1" ? "candidate_claimed_tab_a" : "candidate_claimed_tab_b", {
@@ -659,11 +696,15 @@ async function readDiscoveryPage(page: Page) {
 function restoreQueue(queue: CandidateQueue, cache: SessionUsernameCache) {
   try {
     const raw = fs.readFileSync(discoveryQueuePath(), "utf8");
-    const parsed = JSON.parse(raw) as { pending?: DiscoveryCandidate[]; seen?: string[] };
+    const parsed = JSON.parse(raw) as { pending?: DiscoveryCandidate[]; deferred?: DiscoveryCandidate[]; seen?: string[] };
     cache.load(parsed.seen ?? []);
     for (const candidate of parsed.pending ?? []) {
       queue.enqueue(candidate);
-      cache.remember(candidate.username);
+      cache.forget(candidate.username);
+    }
+    for (const candidate of parsed.deferred ?? []) {
+      queue.place(candidate, Number.MAX_SAFE_INTEGER);
+      cache.forget(candidate.username);
     }
   } catch {
     // A missing queue file is the normal first run.
@@ -673,10 +714,11 @@ function restoreQueue(queue: CandidateQueue, cache: SessionUsernameCache) {
 function persistQueue(queue: CandidateQueue, cache: SessionUsernameCache) {
   try {
     fs.mkdirSync(path.dirname(discoveryQueuePath()), { recursive: true });
-    const seen = [...new Set([...cache.usernames(), ...queue.seenUsernames()])];
+    const held = new Set([...queue.pendingCandidates(), ...queue.deferredCandidates()].map((candidate) => candidate.username));
+    const seen = cache.usernames().filter((username) => !held.has(username));
     fs.writeFileSync(
       discoveryQueuePath(),
-      JSON.stringify({ pending: queue.pendingCandidates(), seen }),
+      JSON.stringify({ pending: queue.pendingCandidates(), deferred: queue.deferredCandidates(), seen }),
     );
   } catch {
     // Shutdown persistence is best-effort.
@@ -687,17 +729,52 @@ function isAttention(error: unknown) {
   return error instanceof AttentionError;
 }
 
-function withPriority(candidate: DiscoveryCandidate, config: CloudConfig): DiscoveryCandidate {
-  if (candidate.priorityScore != null) return candidate;
+function applyPriority(candidate: DiscoveryCandidate, config: CloudConfig): DiscoveryCandidate {
+  const support = [...new Set([...(candidate.seedSupport ?? []), candidate.sourceSeedUsername ?? ""].map((value) => value.trim().toLowerCase()).filter(Boolean))];
+  const seeds = config.discoverySeeds ?? [];
+  const minSample = config.minSeedSample ?? 10;
+  let bestYield = 0;
+  let bestMature = false;
+  let bestName = candidate.sourceSeedUsername ?? null;
+  let bestPriority: "low" | "normal" | "high" | undefined;
+  if (config.favorYield !== false) {
+    for (const name of support) {
+      const seed = seeds.find((item) => item.username.toLowerCase() === name);
+      if (!seed || seed.inspected < minSample) continue;
+      const yieldRate = seed.inspected > 0 ? seed.review / seed.inspected : 0;
+      if (!bestMature || yieldRate >= bestYield) {
+        bestYield = yieldRate;
+        bestMature = true;
+        bestName = seed.username;
+        bestPriority = seed.priority;
+      }
+    }
+  }
+  if (!bestPriority && bestName) bestPriority = seeds.find((item) => item.username.toLowerCase() === bestName.toLowerCase())?.priority;
+  const seeded = candidate.source === "seed_suggestion" || candidate.source === "seed_network";
   const priority = scoreCandidate({
-    source: candidate.source === "seed_suggestion" || candidate.source === "seed_network" ? "seed" : candidate.source,
-    seedUsername: candidate.sourceSeedUsername,
-    text: candidate.username,
+    source: seeded ? "seed" : candidate.source === "home_feed" ? "home_feed" : "suggested_accounts",
+    sourceDetail: candidate.source,
+    seedUsername: bestName,
+    seedYield: bestYield,
+    seedMature: bestMature,
+    seedPriority: bestPriority,
+    seedSupportCount: support.length,
+    username: candidate.username,
+    text: candidate.displayName,
+    cardText: candidate.cardText,
     positiveKeywords: config.positiveKeywords ?? [],
     negativeKeywords: config.negativeKeywords ?? [],
     tuning: config.tuning,
   });
-  return { ...candidate, priorityScore: priority.score, priorityLabel: priority.label, priorityReasons: priority.reasons };
+  return {
+    ...candidate,
+    seedSupport: support,
+    sourcesSeen: candidate.sourcesSeen ?? [candidate.source],
+    priorityScore: priority.score,
+    priorityLabel: priority.label,
+    priorityReasons: priority.reasons,
+  };
 }
 
 function sleep(ms: number) {

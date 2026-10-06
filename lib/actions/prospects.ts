@@ -1,6 +1,8 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
+import { promoteProspectToSeed } from "@/lib/discovery/promotion";
+import { approvalSeedMessage, type SeedPromotionOutcome } from "@/lib/discovery/promotion-rules";
 import { listProspectIds } from "@/lib/db/prospects";
 import type { ProspectQuery } from "@/lib/db/prospects";
 import { fallbackSettings, fallbackTargeting, getSettings, getTargetingSettings } from "@/lib/db/settings";
@@ -29,6 +31,7 @@ function revalidateProspectPaths(ids: string[]) {
   revalidatePath("/follow-ups");
   revalidatePath("/outreach");
   revalidatePath("/worker");
+  revalidatePath("/settings");
   ids.forEach((id) => revalidatePath(`/prospects/${id}`));
 }
 
@@ -122,7 +125,7 @@ async function approveForOutreach(ids: string[]): Promise<ActionResult> {
       continue;
     }
     const reason = outreachBlockReason(prospect, targeting);
-    if (reason) {
+    if (reason && reason !== "AI marked the prospect as skip") {
       skipped.push(reason);
       continue;
     }
@@ -158,10 +161,19 @@ async function approveForOutreach(ids: string[]): Promise<ActionResult> {
     else if (result.skipped) skipped.push(result.skipped);
   }
 
+  const seedOutcomes: SeedPromotionOutcome[] = [];
+  for (const prospect of ready) {
+    await supabase.rpc("sync_discovery_seed_prospect", { p_prospect_id: prospect.id });
+    const promoted = await promoteProspectToSeed(supabase, prospect, "approved");
+    seedOutcomes.push(promoted.outcome);
+  }
+
   revalidateProspectPaths(ready.map((prospect) => prospect.id));
+  const seedMessage = approvalSeedMessage(seedOutcomes);
+  const summary = approvalSummary({ approved: ready.length, queued, skipped });
   return {
     ok: true,
-    message: approvalSummary({ approved: ready.length, queued, skipped }),
+    message: seedOutcomes.length === 1 && seedMessage ? seedMessage : seedMessage ? `${summary} ${seedMessage}` : summary,
   };
 }
 

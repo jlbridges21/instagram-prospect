@@ -47,6 +47,7 @@ export type ProspectRow = {
   source_seed_username?: string | null;
   discovery_priority_label?: string | null;
   discovery_priority_reason?: string | null;
+  discovery_pre_score?: number | null;
   instagram_post_url: string | null;
   instagram_post_thumbnail_url: string | null;
   discovered_at: string | null;
@@ -126,10 +127,16 @@ export type SettingsRow = {
   discovery_seed_cooldown_cycles?: number;
   discovery_seed_network_enabled?: boolean;
   discovery_seed_network_sample?: number;
+  discovery_min_pre_score?: number;
   discovery_positive_keywords?: string[] | null;
   discovery_negative_keywords?: string[] | null;
   discovery_tuning?: Json | null;
   updated_at: string;
+};
+
+export type DiscoverySeedRemovalRow = {
+  instagram_username: string;
+  removed_at: string;
 };
 
 export type DiscoverySeedRow = {
@@ -215,6 +222,8 @@ export type DiscoverySessionRow = {
   prospects_added_to_review: number;
   prospects_disqualified: number;
   suppressed_profiles: number;
+  candidates_collected?: number;
+  candidates_deferred?: number;
   last_candidate_at: string | null;
   stopped_at: string | null;
   stop_reason: string | null;
@@ -381,6 +390,12 @@ export type Database = {
         Update: Insert<DiscoverySeedRow>;
         Relationships: [];
       };
+      discovery_seed_removals: {
+        Row: DiscoverySeedRemovalRow;
+        Insert: Insert<DiscoverySeedRemovalRow> & { instagram_username: string };
+        Update: Insert<DiscoverySeedRemovalRow>;
+        Relationships: [];
+      };
       discovery_suppressions: {
         Row: DiscoverySuppressionRow;
         Insert: Insert<DiscoverySuppressionRow> & { instagram_username_normalized: string; reason: string };
@@ -529,7 +544,7 @@ export type Database = {
       };
       sync_discovery_seed_prospect: {
         Args: { p_prospect_id: string };
-        Returns: undefined;
+        Returns: { profiles_inspected: number; profiles_reaching_review: number }[];
       };
       record_discovery_seed_inspection: {
         Args: { p_seed_id: string; p_prospect_id: string };

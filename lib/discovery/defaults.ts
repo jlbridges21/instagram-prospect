@@ -1,4 +1,4 @@
-export const DEFAULT_POSITIVE_KEYWORDS = [
+export const LEGACY_POSITIVE_KEYWORDS = [
   "drone",
   "aerial",
   "photography",
@@ -18,6 +18,48 @@ export const DEFAULT_POSITIVE_KEYWORDS = [
   "production",
 ] as const;
 
+export const DEFAULT_POSITIVE_KEYWORDS = [
+  ...LEGACY_POSITIVE_KEYWORDS,
+  "photo",
+  "photos",
+  "commercial",
+  "creative",
+  "property",
+  "cinematography",
+  "films",
+  "visuals",
+  "productions",
+  "fpv filming",
+] as const;
+
+export const DEFAULT_NEGATIVE_KEYWORDS = [
+  "meme",
+  "fanpage",
+  "fan page",
+  "fitness",
+  "athlete",
+  "gaming",
+  "crypto",
+  "celebrity",
+  "musician",
+  "music artist",
+  "lifestyle",
+  "travel influencer",
+  "nasa",
+  "restaurant",
+  "health",
+  "fashion",
+  "sports",
+  "freestyle",
+  "racing",
+  "hobby",
+  "race team",
+  "fpv freestyle",
+  "rc pilot",
+  "ai news",
+  "ads",
+] as const;
+
 export const DEFAULT_DISCOVERY_OPTIMIZATION = {
   autoPromote: false,
   autoPromoteMinScore: 75,
@@ -32,6 +74,7 @@ export const DEFAULT_DISCOVERY_OPTIMIZATION = {
   seedCooldownCycles: 2,
   seedNetworkEnabled: true,
   seedNetworkSample: 15,
+  minCandidatePreScore: 35,
 };
 
 export const DEFAULT_DISCOVERY_TUNING = {
@@ -57,6 +100,10 @@ export const DEFAULT_DISCOVERY_TUNING = {
   sourceBaseSeed: 18,
   sourceBaseSuggested: 8,
   sourceBaseHome: 2,
+  multiSeedBonus: 12,
+  candidateExploreConservative: 10,
+  candidateExploreBalanced: 20,
+  candidateExploreExploratory: 35,
 };
 
 export type DiscoveryTuning = { [K in keyof typeof DEFAULT_DISCOVERY_TUNING]: number };
@@ -65,8 +112,8 @@ export const RANK_BASE = 20;
 export const IMMATURE_YIELD = 0.5;
 export const YIELD_ORIGIN = 0.2;
 export const HIGH_YIELD_MINIMUM = 0.2;
-export const PRIORITY_HIGH_AT = 24;
-export const PRIORITY_MEDIUM_AT = 10;
+export const PRIORITY_HIGH_AT = 60;
+export const PRIORITY_MEDIUM_AT = 35;
 
 const TUNING_LIMITS: Record<keyof DiscoveryTuning, { min: number; max: number }> = {
   positiveKeywordBonus: { min: 0, max: 100 },
@@ -91,6 +138,10 @@ const TUNING_LIMITS: Record<keyof DiscoveryTuning, { min: number; max: number }>
   sourceBaseSeed: { min: 0, max: 100 },
   sourceBaseSuggested: { min: 0, max: 100 },
   sourceBaseHome: { min: 0, max: 100 },
+  multiSeedBonus: { min: 0, max: 100 },
+  candidateExploreConservative: { min: 0, max: 100 },
+  candidateExploreBalanced: { min: 0, max: 100 },
+  candidateExploreExploratory: { min: 0, max: 100 },
 };
 
 export function clampTuning(input: unknown): DiscoveryTuning {
@@ -105,6 +156,27 @@ export function clampTuning(input: unknown): DiscoveryTuning {
 
 export function recommendedTuning(): DiscoveryTuning {
   return clampTuning(DEFAULT_DISCOVERY_TUNING);
+}
+
+export function candidateExplorationPercent(strategy: "conservative" | "balanced" | "exploratory", tuning?: unknown) {
+  const value = clampTuning(tuning);
+  if (strategy === "conservative") return value.candidateExploreConservative;
+  if (strategy === "exploratory") return value.candidateExploreExploratory;
+  return value.candidateExploreBalanced;
+}
+
+export function effectiveKeywordList(stored: readonly string[] | null | undefined, defaults: readonly string[], legacy?: readonly string[]) {
+  const cleaned = (stored ?? []).map((value) => value.trim().toLowerCase()).filter(Boolean);
+  if (cleaned.length === 0) return [...defaults];
+  if (legacy && sameKeywordSet(cleaned, legacy)) return [...defaults];
+  if (sameKeywordSet(cleaned, defaults)) return [...defaults];
+  return cleaned;
+}
+
+function sameKeywordSet(left: readonly string[], right: readonly string[]) {
+  if (left.length !== right.length) return false;
+  const wanted = new Set(right.map((value) => value.trim().toLowerCase()));
+  return left.every((value) => wanted.has(value.trim().toLowerCase()));
 }
 
 export function explorationPercent(strategy: "conservative" | "balanced" | "exploratory", tuning?: unknown) {

@@ -158,6 +158,7 @@ export default async function ProspectDetailPage({
               />
               <Fact label="Seed" value={seedUsername ? `@${seedUsername}` : "Not from a seed"} />
               <Fact label="Discovery priority" value={discoveryLink?.discovery_priority_label || "Not recorded"} />
+              <Fact label="Candidate pre-score" value={discoveryLink?.discovery_pre_score == null ? "Not recorded" : String(discoveryLink.discovery_pre_score)} />
               <div className="sm:col-span-2">
                 <Fact label="Why this profile was inspected" value={discoveryLink?.discovery_priority_reason || "No priority notes stored."} />
               </div>

@@ -1,3 +1,4 @@
+import { clampCandidateFloor } from "../../lib/discovery/candidate-priority";
 import { clampTuning, type DiscoveryTuning } from "../../lib/discovery/defaults";
 import { clampSeedNetworkSample } from "../../lib/discovery/seeds";
 import { AUTH_FAILURE_MESSAGE } from "../version";
@@ -46,6 +47,7 @@ export type CloudConfig = {
   seedCooldownCycles?: number;
   seedNetworkEnabled?: boolean;
   seedNetworkSample?: number;
+  minCandidatePreScore?: number;
   tuning?: DiscoveryTuning;
 };
 
@@ -166,6 +168,7 @@ export class CloudClient {
       seedCooldownCycles: numberOr(json.seedCooldownCycles, 2),
       seedNetworkEnabled: json.seedNetworkEnabled !== false,
       seedNetworkSample: clampSeedNetworkSample(numberOr(json.seedNetworkSample, 15)),
+      minCandidatePreScore: clampCandidateFloor(numberOr(json.minCandidatePreScore, 35)),
       tuning: clampTuning(json.tuning),
     } satisfies CloudConfig;
     this.configCache = value;
@@ -204,7 +207,7 @@ export class CloudClient {
     );
   }
 
-  async discoveryProgress(body: { inspections?: number; ai?: number; emptyCycles?: number }) {
+  async discoveryProgress(body: { inspections?: number; ai?: number; emptyCycles?: number; collected?: number; deferred?: number }) {
     return this.request<{ pause: boolean; reason: string | null }>("/api/worker/discovery/progress", body);
   }
 
@@ -227,7 +230,7 @@ export class CloudClient {
       cached?: boolean;
       prospectId?: string;
       username?: string;
-      seedCredit?: { username: string; inspected: number; review: number } | null;
+      seedCredit?: { username: string; inspected: number; review: number; syncError?: string | null } | null;
     }>(`/api/worker/prospects/${prospectId}/qualify`, {});
   }
 

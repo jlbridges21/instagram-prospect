@@ -54,15 +54,15 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
   await admin.from("prospects").update({ qualification_error: null }).eq("id", id);
   const decision = qualified.result.decision;
   const settings = appSettingsFromRow(settingsResult.data);
-  await recordQualificationSeedEffects(admin, id, {
+  const effects = await recordQualificationSeedEffects(admin, id, {
     cached: qualified.result.cached,
     qualified: decision.qualified,
     fitScore: decision.fitScore,
     fitLabel: decision.fitLabel,
     status: decision.status,
     settings: settings.optimization,
-  }).catch(() => undefined);
-  const seedCredit = await seedCreditForProspect(admin, id);
+  }).catch(() => ({ promoted: false, seedCredit: null }));
+  const seedCredit = effects.seedCredit;
   return Response.json({
     ok: true,
     skipped: false,
@@ -76,28 +76,12 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     category: decision.category,
     approved: false,
     seedCredit: seedCredit
-      ? { username: seedCredit.username, inspected: seedCredit.inspected, review: seedCredit.review }
+      ? {
+          username: seedCredit.username,
+          inspected: seedCredit.inspected,
+          review: seedCredit.review,
+          syncError: seedCredit.syncError,
+        }
       : null,
   });
-}
-
-async function seedCreditForProspect(admin: NonNullable<ReturnType<typeof createAdminClient>>, prospectId: string) {
-  const prospect = await admin
-    .from("prospects")
-    .select("instagram_username, source_seed_id")
-    .eq("id", prospectId)
-    .maybeSingle();
-  if (prospect.error || !prospect.data?.source_seed_id) return null;
-  const seed = await admin
-    .from("discovery_seeds")
-    .select("instagram_username, profiles_inspected, profiles_reaching_review")
-    .eq("id", prospect.data.source_seed_id)
-    .maybeSingle();
-  if (seed.error || !seed.data) return null;
-  return {
-    prospectUsername: prospect.data.instagram_username,
-    username: seed.data.instagram_username,
-    inspected: seed.data.profiles_inspected,
-    review: seed.data.profiles_reaching_review,
-  };
 }

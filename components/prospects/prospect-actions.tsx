@@ -32,7 +32,7 @@ export function ProspectActions({
   function approve() {
     startTransition(async () => {
       const result = await approveProspects([id]);
-      if (result.ok) toast.success("Prospect approved");
+      if (result.ok) toast.success(result.message ?? "Prospect approved");
       else toast.error(result.error);
     });
   }
