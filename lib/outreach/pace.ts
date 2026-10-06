@@ -199,6 +199,20 @@ export function queueHealth(jobs: PaceJob[]) {
   return { remaining: fresh + retrying, fresh, retrying, failed };
 }
 
+export function outreachStallDecision(input: {
+  now: number;
+  nextEligibleAt: number;
+  lastProgressAt: number;
+  blocked: boolean;
+  graceMs?: number;
+}) {
+  const grace = input.graceMs ?? 3 * 60 * 1000;
+  if (input.blocked || input.nextEligibleAt <= 0 || input.now < input.nextEligibleAt) return { stalled: false as const };
+  const overdueFor = input.now - input.nextEligibleAt;
+  const quietFor = input.now - input.lastProgressAt;
+  return { stalled: overdueFor >= grace && quietFor >= grace };
+}
+
 export function claimPaceDecision(input: {
   now: Date;
   timeZone: string;

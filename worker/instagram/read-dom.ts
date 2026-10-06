@@ -329,15 +329,28 @@ export const READ_DOM_SOURCE = `() => {
   const conversationHeader = headingNode ? undouble(headingNode.textContent || "").slice(0, 80) : "";
   const recipientCandidates = [];
   const activeConversationFound = Boolean(pane && composerEl);
+  const recipientRegion = (el, rect, tag, alt, ariaLabel) => {
+    if (composerBox && rect.right < composerBox.left - 120) return { scope: "outside", region: "inbox" };
+    if (composerBox && rect.left > composerBox.right - 8) return { scope: "active-header", region: "participant-details" };
+    if (tag === "img" || /profile (?:picture|photo)/i.test(alt + " " + ariaLabel)) return { scope: "active-header", region: "avatar" };
+    if (el.closest && el.closest("aside, [role='complementary']")) return { scope: "active-header", region: "participant-details" };
+    return { scope: "active-header", region: "thread-header" };
+  };
   if (pane) {
     const paneBox = pane.getBoundingClientRect();
     const headerLimit = composerBox ? Math.min(composerBox.top - 4, paneBox.top + 240) : paneBox.top + 220;
-    const nodes = [...pane.querySelectorAll("a, button, [role='button'], [role='link'], [role='heading'], h1, h2, h3, img, span, div, svg")].slice(0, 250);
-    for (const el of nodes) {
+    const nodes = [...pane.querySelectorAll("a, button, [role='button'], [role='link'], [role='heading'], h1, h2, h3, img, span, div")];
+    const interactive = nodes.filter((el) => {
+      const tag = el.tagName.toLowerCase();
+      const role = (el.getAttribute("role") || "").toLowerCase();
+      return tag === "a" || tag === "button" || tag === "img" || role === "button" || role === "link" || role === "heading" || tag === "h1" || tag === "h2";
+    });
+    const ordered = [...interactive, ...nodes.filter((el) => interactive.indexOf(el) === -1)].slice(0, 250);
+    for (const el of ordered) {
       if (el.closest && el.closest("nav, [role='navigation']")) continue;
       if (composerEl && (el === composerEl || (el.contains && el.contains(composerEl)))) continue;
       const rect = el.getBoundingClientRect();
-      if (!rect || rect.width < 1 || rect.height < 1 || rect.height > 160) continue;
+      if (!rect || rect.width < 1 || rect.height < 1 || rect.height > 180) continue;
       if (rect.top < paneBox.top - 2 || rect.bottom > headerLimit) continue;
       const tag = el.tagName.toLowerCase();
       const role = (el.getAttribute("role") || "").toLowerCase();
@@ -346,12 +359,13 @@ export const READ_DOM_SOURCE = `() => {
       const shown = ownText || (tag === "button" || tag === "a" || role === "button" || role === "link" ? controlText : "");
       if (shown.includes("\\n") || shown.length > 80) continue;
       const href = (el.getAttribute("href") || "").split("?")[0].split("#")[0].slice(0, 160);
-      const ariaLabel = undouble(el.getAttribute("aria-label") || "").slice(0, 80);
+      const ariaLabel = undouble(el.getAttribute("aria-label") || labelledBy(el)).slice(0, 120);
       const title = undouble(el.getAttribute("title") || "").slice(0, 80);
       const alt = undouble(el.getAttribute("alt") || "").slice(0, 80);
       if (!shown && !href && !ariaLabel && !title && !alt) continue;
       const tab = el.getAttribute("tabindex");
       const clickable = tag === "button" || tag === "a" || role === "button" || role === "link" || (tab !== null && Number(tab) >= 0);
+      const place = recipientRegion(el, rect, tag, alt, ariaLabel);
       recipientCandidates.push({
         tag,
         text: shown,
@@ -362,9 +376,10 @@ export const READ_DOM_SOURCE = `() => {
         alt,
         clickable,
         box: { x: Math.round(rect.x), y: Math.round(rect.y), width: Math.round(rect.width), height: Math.round(rect.height) },
-        scope: "active-header",
+        scope: place.scope,
+        region: place.region,
       });
-      if (recipientCandidates.length >= 12) break;
+      if (recipientCandidates.length >= 24) break;
     }
   }
   const headerSurfaces = [];
@@ -378,16 +393,18 @@ export const READ_DOM_SOURCE = `() => {
     for (const el of anchors) {
       if (el.closest && el.closest("nav, [role='navigation']")) continue;
       const href = (el.getAttribute("href") || "").split("?")[0].split("#")[0].slice(0, 160);
-      const ariaLabel = undouble(el.getAttribute("aria-label") || "").slice(0, 80);
+      const ariaLabel = undouble(el.getAttribute("aria-label") || labelledBy(el)).slice(0, 120);
       const title = undouble(el.getAttribute("title") || "").slice(0, 80);
       if (!href && !ariaLabel) continue;
       const rect = el.getBoundingClientRect();
       if (!rect || rect.width < 1 || rect.height < 1) continue;
       if (composerBox && rect.top >= composerBox.top - 2) continue;
-      if (composerBox && rect.right < composerBox.left - 120) continue;
       const key = href + "|" + ariaLabel;
       if (knownHeader[key]) continue;
       knownHeader[key] = true;
+      const alt = undouble(el.getAttribute("alt") || "").slice(0, 80);
+      const place = recipientRegion(el, rect, el.tagName.toLowerCase(), alt, ariaLabel);
+      const inHeaderBand = pane && rect.top <= (composerBox ? Math.min(composerBox.top - 4, pane.getBoundingClientRect().top + 240) : rect.top);
       recipientCandidates.push({
         tag: el.tagName.toLowerCase(),
         text: directText(el).slice(0, 80),
@@ -395,10 +412,11 @@ export const READ_DOM_SOURCE = `() => {
         role: ((el.getAttribute("role") || "") || "link").toLowerCase(),
         ariaLabel,
         title,
-        alt: undouble(el.getAttribute("alt") || "").slice(0, 80),
+        alt,
         clickable: true,
         box: { x: Math.round(rect.x), y: Math.round(rect.y), width: Math.round(rect.width), height: Math.round(rect.height) },
-        scope: "active-header",
+        scope: place.scope,
+        region: place.scope === "outside" ? "inbox" : inHeaderBand ? place.region : "conversation-shell",
       });
       if (recipientCandidates.length >= 24) break;
     }

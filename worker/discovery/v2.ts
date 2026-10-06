@@ -5,9 +5,11 @@ import type { CloudClient, CloudConfig } from "../cloud/client";
 import { QualificationQueue } from "./qualify-queue";
 import { CandidateQueue, SessionUsernameCache, chunkUsernames, evidenceIsNew, mergeCandidateEvidence, unseenUsernames, type DiscoveryCandidate } from "./queue";
 import { scoreCandidate, shouldExploreCandidate } from "../../lib/discovery/candidate-priority";
+import { CANDIDATE_POOL_MAX_PASSES, CANDIDATE_POOL_TARGET, clampTuning } from "../../lib/discovery/defaults";
+import { shouldFlushDiscoveryUsage } from "../../lib/discovery/inspection-count";
 import { inspectionSeedId, pickSeed, prospectAttribution, seedCollectionResult, seedStatForCandidate, shouldOpenSeedNetwork, clampSeedNetworkSample, type SeededDiscoverySource } from "../../lib/discovery/seeds";
-import { applyEmptySeedCooldowns } from "../instagram/seed-page";
-import { clearEmptySeed, readEmptySeedCooldowns, rememberEmptySeed } from "./seed-cooldowns";
+import { applyEmptySeedCooldowns, seedTurnOutcome } from "../instagram/seed-page";
+import { clearEmptySeed, readEmptySeedCooldowns, recordUnproductiveSeed } from "./seed-cooldowns";
 import { pickCollectionSource } from "../../lib/discovery/source-ranking";
 import { prioritizeCandidates } from "./sources";
 import { AttentionError } from "../instagram/errors";
@@ -20,7 +22,7 @@ import { discoveryQueuePath } from "../paths";
 import {
   acquisitionDecision,
   getDiscoveryHourlyState,
-  queueThresholds,
+  poolCollectionDecision,
   releaseInspectionSlot,
   reserveInspectionSlot,
 } from "../../lib/discovery/pacing";
@@ -104,8 +106,10 @@ export async function runDiscoveryV2(input: {
   shouldYield?: () => boolean | Promise<boolean>;
   browserLock?: { tryAcquire: (owner: "discovery") => boolean; release: (owner: "discovery") => void };
   singleTurn?: boolean;
+  allowInspect?: boolean;
+  onProgress?: () => void;
   readSeedProfile?: (username: string) => Promise<import("../instagram/types").DomSnapshot | null>;
-  readSeedNetwork?: (username: string, limit: number) => Promise<import("../instagram/seed-network").SeedNetworkRead>;
+  readSeedNetwork?: (username: string, limit: number, isKnown?: (username: string) => boolean, limits?: { maxScrolls?: number; staleScrolls?: number }) => Promise<import("../instagram/seed-network").SeedNetworkRead>;
 }) {
   const metrics = input.metrics ?? emptyEfficiency();
   const queue = new CandidateQueue(10);
@@ -164,10 +168,12 @@ export async function runDiscoveryV2(input: {
     }
     latestConfig = await input.cloud.config();
     if (input.singleTurn) {
-      const target = latestConfig?.candidateQueueTarget ?? 10;
-      if (queue.pendingCount() <= queueThresholds(target).lowWater) await collectLoop();
+      const limits = poolLimits(latestConfig);
+      queue.setTarget(limits.highWater);
+      const size = queue.pendingCount() + queue.deferredCount();
+      if (poolCollectionDecision({ size, lowWater: limits.lowWater, highWater: limits.highWater }).collect && size < limits.target) await collectLoop();
       const tab = tabs.find((item) => item.id === input.preferredTab) ?? tabs[0];
-      if (tab && (queue.pendingCount() > 0 || queue.deferredCount() > 0)) await inspectLoop(tab.id, tab.page);
+      if (input.allowInspect !== false && tab && (queue.pendingCount() > 0 || queue.deferredCount() > 0)) await inspectLoop(tab.id, tab.page);
     } else {
       await Promise.all([
         collectLoop(),
@@ -179,12 +185,13 @@ export async function runDiscoveryV2(input: {
   } finally {
     persistQueue(queue, cache);
     await qualify.drain().catch(() => undefined);
+    await consultGate();
     if (!input.retainTabs) await Promise.all(tabs.map((tab) => tab.page.close().catch(() => undefined)));
   }
   if (stopError) throw stopError;
   return exitReason;
 
-  async function collectCandidates(config: CloudConfig): Promise<{ ordered: DiscoveryCandidate[]; sourceLabel: string }> {
+  async function collectCandidates(config: CloudConfig): Promise<{ ordered: DiscoveryCandidate[]; sourceLabel: string; seedUsername?: string | null }> {
     const seeds = (config.discoverySeeds ?? []).map((seed) => ({
       id: seed.id,
       username: seed.username,
@@ -251,6 +258,7 @@ export async function runDiscoveryV2(input: {
     console.log(`Discovery seed: @${seed.username}`);
     console.log("Opening seed suggestions...");
     const page = await input.readSeedProfile(seed.username);
+    input.onProgress?.();
     const found = page ? suggestedCandidates(page) : [];
     const suggestions = seedCollectionResult({
       seedId: seed.id,
@@ -259,19 +267,24 @@ export async function runDiscoveryV2(input: {
       source: "seed_suggestion",
       cardText: Object.fromEntries(found.flatMap((item) => (item.cardText ? [[item.username, item.cardText]] : []))),
     });
-    if (!suggestions.fallback) {
-      if (page) clearEmptySeed(seed.username);
-      await input.cloud.bumpSeed(seed.id, { used: true, seen: suggestions.candidates.length }).catch(() => undefined);
-      return packSeedCandidates(config, suggestions.candidates, new Map(found.map((item) => [item.username, item])));
+    const freshSuggestions = unseenUsernames(suggestions.candidates.map((item) => item.username), cache, queue);
+    if (!suggestions.fallback && freshSuggestions.fresh.length > 0) {
+      input.onProgress?.();
+      await input.cloud.bumpSeed(seed.id, { used: true, seen: freshSuggestions.fresh.length }).catch(() => undefined);
+      const fresh = new Set(freshSuggestions.fresh);
+      return packSeedCandidates(config, suggestions.candidates.filter((item) => fresh.has(item.username)), new Map(found.map((item) => [item.username, item])));
     }
-    console.log("No usable profile suggestions.");
+    if (!suggestions.fallback) console.log("Seed suggestions produced no new candidates.");
+    else console.log("No usable profile suggestions.");
     const limit = clampSeedNetworkSample(config.seedNetworkSample ?? 15);
     const networkEnabled = config.seedNetworkEnabled !== false && Boolean(input.readSeedNetwork);
     let networkUsernames: string[] = [];
     let networkCardText: Record<string, string> = {};
-    if (shouldOpenSeedNetwork(suggestions.candidates.length, networkEnabled) && limit > 0 && page) {
+    if (shouldOpenSeedNetwork(freshSuggestions.fresh.length, networkEnabled) && limit > 0 && page) {
       console.log(`Opening seed network for @${seed.username}...`);
-      const networkRead = await input.readSeedNetwork!(seed.username, limit).catch((error: unknown) => ({
+      const known = (name: string) => cache.has(name) || queue.seen(name);
+      const tuning = clampTuning(config.tuning);
+      const networkRead = await input.readSeedNetwork!(seed.username, limit, known, { maxScrolls: tuning.seedMaxScrolls, staleScrolls: tuning.seedStaleScrolls }).catch((error: unknown) => ({
         usernames: [] as string[],
         buttonFound: false,
         dialogOpened: false,
@@ -283,8 +296,10 @@ export async function runDiscoveryV2(input: {
         alreadyKnown: 0,
         reason: error instanceof Error ? error.message : "could not open following",
       }));
-      const freshNetwork = networkRead.usernames.filter((name) => !cache.has(name) && !queue.isClosed(name));
-      const alreadyKnown = networkRead.usernames.length - freshNetwork.length;
+      input.onProgress?.();
+      const sessionNetwork = unseenUsernames(networkRead.usernames, cache, queue);
+      const freshNetwork = sessionNetwork.fresh;
+      const alreadyKnown = networkRead.alreadyKnown > 0 ? networkRead.alreadyKnown : networkRead.usernames.length - freshNetwork.length + sessionNetwork.skippedFromCache;
       for (const line of [
         `Following button found: ${networkRead.buttonFound ? "yes" : "no"}`,
         `Following dialog opened: ${networkRead.dialogOpened ? "yes" : "no"}`,
@@ -307,19 +322,21 @@ export async function runDiscoveryV2(input: {
       source: "seed_network",
       cardText: networkCardText,
     });
-    if (!network.fallback) {
-      clearEmptySeed(seed.username);
-      const session = unseenUsernames(network.candidates.map((item) => item.username), cache, queue);
-      console.log(`Collected ${network.candidates.length} accounts from Following.`);
+    const session = unseenUsernames(network.candidates.map((item) => item.username), cache, queue);
+    if (!network.fallback && session.fresh.length > 0) {
+      console.log(`Collected ${session.fresh.length} accounts from Following.`);
       console.log(`${session.fresh.length} new candidates after dedupe.`);
-      await input.cloud.bumpSeed(seed.id, { used: true, seen: network.candidates.length }).catch(() => undefined);
-      return packSeedCandidates(config, network.candidates, new Map());
+      await input.cloud.bumpSeed(seed.id, { used: true, seen: session.fresh.length }).catch(() => undefined);
+      const fresh = new Set(session.fresh);
+      return packSeedCandidates(config, network.candidates.filter((item) => fresh.has(item.username)), new Map());
     }
     const exhausted = Boolean(page) && !(networkEnabled && limit === 0);
-    if (exhausted) rememberEmptySeed(seed.username);
-    if (networkEnabled && page && limit > 0) console.log("Seed network produced no usable candidates.");
+    if (exhausted) {
+      const pause = recordUnproductiveSeed(seed.username, Date.now(), undefined, exhaustionDurations(config));
+      console.log(`Cooling down @${seed.username} for ${pause.minutes} minutes after ${pause.emptyVisits} empty visit${pause.emptyVisits === 1 ? "" : "s"}.`);
+    }
+    if (networkEnabled && page && limit > 0) console.log("Seed network produced no new candidates.");
     console.log("Falling back to Suggested Accounts.");
-    if (exhausted) console.log(`Cooling down @${seed.username} for 45 minutes.`);
     await input.cloud.bumpSeed(seed.id, { used: true, seen: 0 }).catch(() => undefined);
     return null;
   }
@@ -332,6 +349,7 @@ export async function runDiscoveryV2(input: {
     const sourceLabel = candidates[0]?.source === "seed_network" ? "Seed network" : "Seed suggestions";
     return {
       sourceLabel,
+      seedUsername: candidates[0]?.sourceSeedUsername ?? null,
       ordered: candidates.map((item) => {
         const match = urls.get(item.username);
         return applyPriority({
@@ -422,12 +440,14 @@ export async function runDiscoveryV2(input: {
     if ((fresh.length + merges.length > 0 || deferred > 0) && input.gate) {
       await input.gate({ inspections: 0, ai: 0, emptyCycles: 0, collected: fresh.length + merges.length, deferred }).catch(() => undefined);
     }
-    return { queued, deferred, considered: fresh.length + merges.length };
+    input.onProgress?.();
+    return { queued, deferred, considered: fresh.length + merges.length, survived: accepted.length };
   }
 
   async function collectLoop() {
     let idleScrolls = 0;
     let announcedSource = "";
+    let passes = 0;
     while (!finished()) {
       const config = await input.cloud.config();
       latestConfig = config;
@@ -436,29 +456,34 @@ export async function runDiscoveryV2(input: {
         await sleep(5_000);
         continue;
       }
-      queue.setTarget(config.candidateQueueTarget);
+      const limits = poolLimits(config);
+      queue.setTarget(limits.highWater);
       hourPace();
       if (await input.shouldYield?.()) {
         exitReason = "yield";
         return;
       }
-      const thresholds = queueThresholds(config.candidateQueueTarget);
-      const acquisition = acquisitionDecision({
-        pending: queue.pendingCount(),
-        highWater: thresholds.highWater,
-        lowWater: thresholds.lowWater,
-        holding: acquisitionHeld,
-        hourlyFull: false,
-      });
+      const poolSize = queue.pendingCount() + queue.deferredCount();
+      const acquisition = poolSize >= limits.highWater
+        ? { acquire: false, holding: true }
+        : acquisitionDecision({
+          pending: Math.min(poolSize, limits.lowWater),
+          highWater: limits.highWater,
+          lowWater: limits.lowWater,
+          holding: false,
+          hourlyFull: false,
+        });
       acquisitionHeld = acquisition.holding;
       publish(config, null);
       if (!acquisition.acquire) {
+        if (input.singleTurn) return;
         input.live.task = qualify.activeCount > 0 ? "qualifying_profiles" : "inspecting_profiles";
         if (!input.shouldYield) await input.maybeOutreach?.().catch(() => undefined);
         await sleep(500);
         continue;
       }
       input.live.task = "discovering_candidates";
+      input.onProgress?.();
       const collected = await collectCandidates(config);
       const ordered = collected.ordered;
       const sourceLabel = collected.sourceLabel;
@@ -466,7 +491,19 @@ export async function runDiscoveryV2(input: {
         announcedSource = sourceLabel;
         console.log(`Discovery source: ${sourceLabel}`);
       }
-      const ranked = await rankAndPlace(ordered, config);
+      const ranked = ordered.length > 0
+        ? await rankAndPlace(ordered, config)
+        : { queued: 0, deferred: 0, considered: 0, survived: 0 };
+      if (collected.seedUsername) {
+        const added = ranked.queued + ranked.deferred;
+        const outcome = seedTurnOutcome({ newAfterDedupe: added, queuedAboveFloor: ranked.queued });
+        if (added > 0) clearEmptySeed(collected.seedUsername);
+        else if (outcome === "empty" && ordered.length > 0) {
+          const pause = recordUnproductiveSeed(collected.seedUsername, Date.now(), undefined, exhaustionDurations(config));
+          console.log("Seed network produced no new candidates.");
+          console.log(`Cooling down @${collected.seedUsername} for ${pause.minutes} minutes after ${pause.emptyVisits} empty visit${pause.emptyVisits === 1 ? "" : "s"}.`);
+        }
+      }
       publish(config, sourceLabel);
       if (ranked.considered === 0) {
         emptyCycles += 1;
@@ -478,12 +515,17 @@ export async function runDiscoveryV2(input: {
         emptyCycles = 0;
         idleScrolls = 0;
       }
-      if (queue.pendingCount() < queueThresholds(config.candidateQueueTarget).highWater) {
+      if (queue.pendingCount() + queue.deferredCount() < poolLimits(config).highWater) {
         await scrollFeed(input.homePage);
-        await sleep(config.discoveryScrollDelaySeconds * 1000);
+        await sleep(input.singleTurn ? 1_000 : config.discoveryScrollDelaySeconds * 1000);
       }
       if (!input.shouldYield) await input.maybeOutreach?.().catch(() => undefined);
-      if (input.singleTurn) return;
+      if (input.singleTurn) {
+        passes += 1;
+        const limits = poolLimits(config);
+        const pool = queue.pendingCount() + queue.deferredCount();
+        if (pool >= limits.target || pool >= limits.highWater || passes >= CANDIDATE_POOL_MAX_PASSES) return;
+      }
     }
   }
 
@@ -495,8 +537,10 @@ export async function runDiscoveryV2(input: {
       }
       const pace = hourPace();
       const floor = latestConfig?.minCandidatePreScore ?? 35;
-      const explore = shouldExploreCandidate(latestConfig?.discoveryStrategy ?? "balanced", Math.random(), latestConfig?.tuning);
-      const candidate = queue.claim(tabId, { floor, explore });
+      const explorationFloor = clampTuning(latestConfig?.tuning).explorationFloor;
+      const exploreRoll = Math.random();
+      const explore = shouldExploreCandidate(latestConfig?.discoveryStrategy ?? "balanced", exploreRoll, latestConfig?.tuning);
+      const candidate = queue.claim(tabId, { floor, explore, explorationFloor, random: exploreRoll });
       if (!candidate) {
         if (input.singleTurn) {
           if (queue.deferredCount() > 0) console.log(`No candidate met the minimum pre-score of ${floor}.`);
@@ -531,7 +575,17 @@ export async function runDiscoveryV2(input: {
       if (sinceGate >= 5) await consultGate();
       input.live.task = "inspecting_profiles";
       input.live.username = candidate.username;
-      console.log(`Inspecting @${candidate.username} (pre-score ${candidate.priorityScore ?? 0}, ${candidate.priorityLabel ?? "Low"})`);
+      input.onProgress?.();
+      const selection = candidate.inspectionSelection ?? "ranked";
+      const strategy = latestConfig?.discoveryStrategy ?? "balanced";
+      console.log(`Inspecting @${candidate.username}`);
+      console.log(`Candidate pre-score: ${candidate.priorityScore ?? 0}`);
+      console.log(`Selection: ${selection}`);
+      if (selection === "exploration") {
+        const label = strategy === "conservative" ? "Conservative" : strategy === "exploratory" ? "Exploratory" : "Balanced";
+        console.log(`Exploration floor: ${explorationFloor}`);
+        console.log(`Strategy: ${label}`);
+      }
       console.log(`Source: ${candidate.source}`);
       if ((candidate.source === "seed_suggestion" || candidate.source === "seed_network") && candidate.sourceSeedUsername) console.log(`Seed: @${candidate.sourceSeedUsername}`);
       log("info", tabId === "profile-tab-1" ? "candidate_claimed_tab_a" : "candidate_claimed_tab_b", {
@@ -545,6 +599,7 @@ export async function runDiscoveryV2(input: {
       }
       try {
         await inspectCandidate(page, candidate);
+        input.onProgress?.();
         queue.complete(candidate.username, "done");
         failures.set(tabId, 0);
         log("info", "candidate_completed", { username: candidate.username, tab: tabId });
@@ -654,7 +709,7 @@ export async function runDiscoveryV2(input: {
   }
 
   async function consultGate() {
-    if (!input.gate) return;
+    if (!input.gate || !shouldFlushDiscoveryUsage({ profileOpens: sinceGate, aiQualifications: aiSinceGate })) return;
     const inspections = sinceGate;
     const ai = aiSinceGate;
     sinceGate = 0;
@@ -751,6 +806,11 @@ function applyPriority(candidate: DiscoveryCandidate, config: CloudConfig): Disc
     }
   }
   if (!bestPriority && bestName) bestPriority = seeds.find((item) => item.username.toLowerCase() === bestName.toLowerCase())?.priority;
+  const supportYields = support.flatMap((name) => {
+    const seed = seeds.find((item) => item.username.toLowerCase() === name);
+    if (!seed || seed.inspected < minSample || seed.inspected <= 0) return [];
+    return [seed.review / seed.inspected];
+  });
   const seeded = candidate.source === "seed_suggestion" || candidate.source === "seed_network";
   const priority = scoreCandidate({
     source: seeded ? "seed" : candidate.source === "home_feed" ? "home_feed" : "suggested_accounts",
@@ -766,6 +826,8 @@ function applyPriority(candidate: DiscoveryCandidate, config: CloudConfig): Disc
     positiveKeywords: config.positiveKeywords ?? [],
     negativeKeywords: config.negativeKeywords ?? [],
     tuning: config.tuning,
+    sourceReviewYield: config.sourceYields?.[candidate.source] ?? null,
+    supportYields,
   });
   return {
     ...candidate,
@@ -774,6 +836,25 @@ function applyPriority(candidate: DiscoveryCandidate, config: CloudConfig): Disc
     priorityScore: priority.score,
     priorityLabel: priority.label,
     priorityReasons: priority.reasons,
+  };
+}
+
+function poolLimits(config: CloudConfig | null) {
+  const tuning = clampTuning(config?.tuning);
+  const target = tuning.poolTarget || CANDIDATE_POOL_TARGET;
+  return {
+    target,
+    lowWater: Math.min(target, Math.max(1, tuning.poolLowWater)),
+    highWater: Math.max(target, tuning.poolHighWater),
+  };
+}
+
+function exhaustionDurations(config: CloudConfig) {
+  const tuning = clampTuning(config.tuning);
+  return {
+    first: tuning.seedCooldownFirstMinutes,
+    second: tuning.seedCooldownSecondMinutes,
+    third: tuning.seedCooldownThirdMinutes,
   };
 }
 

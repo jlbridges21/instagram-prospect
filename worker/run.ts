@@ -1,5 +1,8 @@
+import fs from "node:fs";
 import { continuousOutreachStep } from "../lib/discovery/policy";
+import { clampTuning } from "../lib/discovery/defaults";
 import { discoveryDue, discoveryStallDecision, inspectionIntervalMs, scheduleNextInspection, startDiscoveryCadence } from "../lib/discovery/cadence";
+import { outreachStallDecision } from "../lib/outreach/pace";
 import { formatCountdown } from "../lib/ui/countdown";
 import { checkpointHoldDecision, formatHourlyWaitEvent, formatWorkerModes, rollingHourInspectionCount } from "../lib/discovery/pacing";
 import { readHourlyStamps } from "./discovery/hourly-history";
@@ -29,7 +32,7 @@ import { createHeartbeatSession, mustHeartbeatBeforeClaim, safeHeartbeatError } 
 import { CloudClient, type CloudConfig, type JobPayload } from "./cloud/client";
 import { emptyEfficiency, formatEfficiency, runDiscoveryV2 } from "./discovery/v2";
 import { loadIdentity } from "./identity";
-import { formatComposerComparison, formatHeaderInspect, formatIdentityDecision, formatInitialComposer, sequenceOwnsFollow } from "../lib/outreach/dm";
+import { formatComposerComparison, formatHeaderInspect, formatIdentityDecision, formatInitialComposer, formatRecipientDiagnostic, sequenceOwnsFollow } from "../lib/outreach/dm";
 import { dryRunPlan, formatDryRun } from "../lib/outreach/dry-run-plan";
 import { recoverFollowDecision } from "../lib/outreach/follow-confirm";
 import {
@@ -50,7 +53,7 @@ import { AttentionError, NavigationError, SelectorError } from "./instagram/erro
 import { isExcludedRelationship } from "./instagram/parse";
 import { log } from "./logger";
 import { forgetPending, readPending, rememberPending } from "./pending-results";
-import { browserProfileDir } from "./paths";
+import { browserProfileDir, discoveryQueuePath } from "./paths";
 import { AUTH_FAILURE_MESSAGE, VERSION_MISMATCH_MESSAGE, WORKER_VERSION } from "./version";
 
 export type RunMode = "agent" | "smoke" | "login";
@@ -172,6 +175,19 @@ export async function runWorker(mode: RunMode) {
       }
       console.log("");
       if ("headerCandidates" in inspection) {
+        console.log(formatRecipientDiagnostic({
+          username: inspectUsernameArg,
+          displayName: inspection.displayName ?? null,
+          pageUrl: inspection.directPath || null,
+          candidates: inspection.headerCandidates ?? [],
+          composerFound: inspection.composerFound,
+          provenance: {
+            sourceProfileUsername: inspectUsernameArg,
+            sourceProfileVerified: inspection.sourceVerified === true,
+            messageActionClicked: inspection.messageAction,
+            directOpenedFromProfile: inspection.conversationOpened,
+          },
+        }));
         console.log(formatIdentityDecision({
           username: inspectUsernameArg,
           pageUrl: inspection.directPath || null,
@@ -260,6 +276,7 @@ export async function runWorker(mode: RunMode) {
   let discoveryStallLogged = false;
   let discoveryOverdueSince = 0;
   let discoveryRetryAt = 0;
+  let discoveryCollectAt = 0;
   let discoverySlotLogged = false;
   let outreachStallLogged = false;
   let dailyBlockedUntil = 0;
@@ -667,6 +684,7 @@ export async function runWorker(mode: RunMode) {
           intervalMs,
           blocked: discoveryBlocked,
           overdueSince: discoveryOverdueSince,
+          lastProgressAt: lastDiscoveryProgressAt,
         });
         discoveryOverdueSince = stall.overdueSince;
         if (stall.stalled && !discoveryStallLogged) {
@@ -677,15 +695,13 @@ export async function runWorker(mode: RunMode) {
           writeDiscoveryCadence({ nextInspectionAt: discoveryNextAt, lastInspectionAt: lastDiscoveryProgressAt || null });
         }
         const discoveryIsDue = config.discoveryEnabled && !control.pauseDiscovery && dailyBlockedUntil === 0 && discoveryDue(Date.now(), discoveryNextAt) && Date.now() >= discoveryRetryAt;
-        if (
-          config.automationEnabled &&
-          currentState() === "connected" &&
-          !activeSideEffect &&
-          outreachDueAt > 0 &&
-          Date.now() > outreachDueAt &&
-          Date.now() > lastOutreachProgressAt + 3 * 60 * 1000 &&
-          !outreachStallLogged
-        ) {
+        const outreachStall = outreachStallDecision({
+          now: Date.now(),
+          nextEligibleAt: outreachDueAt,
+          lastProgressAt: lastOutreachProgressAt,
+          blocked: !config.automationEnabled || currentState() !== "connected" || activeSideEffect != null || session.discoveryActive,
+        });
+        if (outreachStall.stalled && !outreachStallLogged) {
           outreachStallLogged = true;
           console.log("Outreach stalled. Reconciling the next prospect.");
           outreachDueAt = Date.now();
@@ -728,6 +744,7 @@ export async function runWorker(mode: RunMode) {
             continue;
           }
           outreachDueAt = outcome.nextAt ? new Date(outcome.nextAt).getTime() : Date.now() + 60_000;
+          lastOutreachProgressAt = Date.now();
           if (config.automationEnabled && outcome.reason) {
             const wait = continuousOutreachStep({
               paused: outcome.reason === "outreach_paused",
@@ -763,7 +780,10 @@ export async function runWorker(mode: RunMode) {
           sideEffect: activeSideEffect,
         });
         const outreachStillDue = config.automationEnabled && (activeSideEffect != null || Date.now() >= outreachDueAt);
-        if (admission.enter && discoveryIsDue && !outreachStillDue) {
+        const poolTuning = clampTuning(config.tuning);
+        const storedPool = persistedPoolSize();
+        const collectionDue = config.discoveryEnabled && !control.pauseDiscovery && storedPool < poolTuning.poolTarget && storedPool < poolTuning.poolHighWater && Date.now() >= discoveryCollectAt;
+        if (admission.enter && (discoveryIsDue || collectionDue) && !outreachStillDue) {
           const tabs = await ensureProfileTabs();
           if (!tabs) {
             if (browserRestartRequired({ contextConnected: false })) session.closed = true;
@@ -788,7 +808,7 @@ export async function runWorker(mode: RunMode) {
           if (discoveryV3Test) console.log("Discovery V3 test. Outreach stays paused. Inspecting up to 10 profiles. No follow and no DM.");
           session.discoveryActive = true;
           const seenBefore = stats.seen;
-          if (!discoverySlotLogged) {
+          if (discoveryIsDue && !discoverySlotLogged) {
             discoverySlotLogged = true;
             console.log("Discovery inspection slot due.");
           }
@@ -810,6 +830,10 @@ export async function runWorker(mode: RunMode) {
               shouldYield: () => config.automationEnabled && (activeSideEffect != null || Date.now() >= outreachDueAt),
               browserLock,
               singleTurn: true,
+              allowInspect: discoveryIsDue,
+              onProgress: () => {
+                lastDiscoveryProgressAt = Date.now();
+              },
               readSeedProfile: async (username) => {
                 const tab = tabs.find((item) => item && !item.isClosed()) ?? null;
                 if (!tab) return null;
@@ -821,11 +845,11 @@ export async function runWorker(mode: RunMode) {
                   return null;
                 }
               },
-              readSeedNetwork: async (username, limit) => {
+              readSeedNetwork: async (username, limit, isKnown, limits) => {
                 const tab = tabs.find((item) => item && !item.isClosed()) ?? null;
                 if (!tab) return emptySeedNetworkRead("no profile tab");
                 try {
-                  return await openSeedFollowing(tab, username, limit);
+                  return await openSeedFollowing(tab, username, limit, isKnown, limits);
                 } catch (error) {
                   const message = error instanceof Error ? error.message : "unavailable";
                   log("warn", "seed_network_unavailable", { username, message });
@@ -844,6 +868,7 @@ export async function runWorker(mode: RunMode) {
             });
           } finally {
             session.discoveryActive = false;
+            discoveryCollectAt = Date.now() + 20_000;
             if (stats.seen > seenBefore) {
               const completedAt = Date.now();
               discoveryRetryAt = 0;
@@ -867,7 +892,7 @@ export async function runWorker(mode: RunMode) {
               dailyBlockedUntil = startOfNextLocalDay(new Date(), config.timezone).getTime();
               discoveryNextAt = dailyBlockedUntil;
               writeDiscoveryCadence({ nextInspectionAt: discoveryNextAt, lastInspectionAt: lastDiscoveryProgressAt || null });
-            } else {
+            } else if (discoveryIsDue) {
               discoveryRetryAt = Date.now() + Math.min(intervalMs, 15_000);
             }
           }
@@ -1676,6 +1701,15 @@ export async function inspectUsername(rawUsername: string) {
     return result;
   } finally {
     await context.close().catch(() => undefined);
+  }
+}
+
+function persistedPoolSize() {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(discoveryQueuePath(), "utf8")) as { pending?: unknown[]; deferred?: unknown[] };
+    return (parsed.pending?.length ?? 0) + (parsed.deferred?.length ?? 0);
+  } catch {
+    return 0;
   }
 }
 

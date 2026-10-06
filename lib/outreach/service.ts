@@ -27,6 +27,7 @@ import {
   cappedFailurePlan,
   existingFailureRecord,
   reconcileRunningSend,
+  recordedFailureCode,
   retryDelayMinutes,
 } from "@/lib/outreach/failure-sync";
 import {
@@ -737,6 +738,8 @@ async function releaseUnsentRecipientFailures(admin: Client, now: Date) {
   for (const job of failed.data) {
     if (sendWasAttempted(job.result)) continue;
     const text = job.last_error ?? "";
+    const code = recordedFailureCode(job.result);
+    if (code === "recipient_detection_unresolved" || code === "recipient_identity_unconfirmed" || /layout did not change/i.test(text)) continue;
     const recoverable =
       text === "Message state is ambiguous. Manual review required." ||
       text === "The composer text did not match the queued message, so it was not sent." ||
@@ -1370,7 +1373,7 @@ export async function cancelProspectOutreach(supabase: Client, prospectId: strin
       claim_expires_at: null,
     })
     .eq("prospect_id", prospectId)
-    .in("status", ["pending", "retry_wait", "claimed"])
+    .in("status", ["pending", "retry_wait", "claimed", "failed"])
     .select("id");
   if (jobs.error) return { ok: false as const, error: dbFailure(jobs.error) };
 

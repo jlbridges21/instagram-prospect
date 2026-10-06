@@ -232,7 +232,8 @@ const href = confirmConversationRecipient({
   provenance: noProof,
 });
 assert.equal(href.confirmed, true);
-assert.equal(href.strategy, "conversation-header-profile-link");
+assert.equal(href.strategy, "thread_header_profile_href");
+assert.equal(href.identity?.confidence, "strong");
 assert.equal(href.evidence[0]?.reason, "profile href matches target");
 const atName = confirmConversationRecipient({
   username: "vsiaerial",
@@ -240,14 +241,14 @@ const atName = confirmConversationRecipient({
   provenance: noProof,
 });
 assert.equal(atName.confirmed, true);
-assert.equal(atName.strategy, "conversation-header-at-username");
+assert.equal(atName.strategy, "thread_header_username");
 const plainName = confirmConversationRecipient({
   username: "vsiaerial",
   candidates: [{ text: "vsiaerial", href: "", role: "link", ...blank }],
   provenance: noProof,
 });
 assert.equal(plainName.confirmed, true);
-assert.equal(plainName.strategy, "conversation-header-username");
+assert.equal(plainName.strategy, "thread_header_username");
 const displayOnly = confirmConversationRecipient({
   username: "vsiaerial",
   displayName: "VSI Aerial",
@@ -261,8 +262,8 @@ const displayWithProof = confirmConversationRecipient({
   candidates: [{ text: "VSI Aerial", href: "", role: "link", ...blank }],
   provenance: proof,
 });
-assert.equal(displayWithProof.confirmed, true);
-assert.equal(displayWithProof.strategy, "conversation-header-display-name-plus-provenance");
+assert.equal(displayWithProof.confirmed, false);
+assert.equal(displayWithProof.strategy, null);
 const other = confirmConversationRecipient({
   username: "vsiaerial",
   displayName: "VSI Aerial",
@@ -277,23 +278,23 @@ const spanName = confirmConversationRecipient({
   candidates: [{ text: "VSI Aerial", href: "", role: "span", tag: "span", ariaLabel: "", title: "", alt: "", scope: "active-header", box: headerBox, clickable: false }],
   provenance: proof,
 });
-assert.equal(spanName.confirmed, true);
-assert.equal(spanName.strategy, "conversation-header-display-name-plus-provenance");
+assert.equal(spanName.confirmed, false);
+assert.equal(spanName.strategy, null);
 const buttonName = confirmConversationRecipient({
   username: "vsiaerial",
   displayName: "VSI Aerial",
   candidates: [{ text: "VSI Aerial", href: "", role: "button", tag: "button", ariaLabel: "", title: "", alt: "", scope: "active-header", clickable: true, box: headerBox }],
   provenance: proof,
 });
-assert.equal(buttonName.confirmed, true);
+assert.equal(buttonName.confirmed, false);
 const avatar = confirmConversationRecipient({
   username: "vsiaerial",
   displayName: "VSI Aerial",
   candidates: [{ text: "", href: "", role: "img", tag: "img", ariaLabel: "", title: "", alt: "VSI Aerial's profile picture", scope: "active-header", box: headerBox }],
   provenance: proof,
 });
-assert.equal(avatar.confirmed, true);
-assert.equal(avatar.strategy, "conversation-header-avatar-alt");
+assert.equal(avatar.confirmed, false);
+assert.equal(avatar.strategy, null);
 const inboxOnly = confirmConversationRecipient({
   username: "vsiaerial",
   displayName: "VSI Aerial",
@@ -330,7 +331,7 @@ const liveThread = confirmConversationRecipient({
   provenance: proof,
 });
 assert.equal(liveThread.confirmed, true);
-assert.equal(liveThread.strategy, "conversation-header-profile-link");
+assert.equal(liveThread.strategy, "thread_header_profile_href");
 assert.equal(liveThread.evidence.some((item) => item.classification === "identity_conflict"), false);
 assert.equal(liveThread.evidence[0]?.classification, "ui_control");
 assert.equal(liveThread.evidence[1]?.classification, "identity_match");
@@ -366,7 +367,7 @@ const ariaOnly = confirmConversationRecipient({
   provenance: noProof,
 });
 assert.equal(ariaOnly.confirmed, true);
-assert.equal(ariaOnly.strategy, "conversation-header-aria-username");
+assert.equal(ariaOnly.strategy, "aria_label");
 assert.equal(classifyHeaderCandidate({ text: "Go back", href: "", role: "button", ariaLabel: "", title: "", alt: "" }, "vsiaerial", "VSI Aerial").classification, "ui_control");
 assert.equal(classifyHeaderCandidate({ text: "Expand", href: "", role: "button", ariaLabel: "", title: "", alt: "" }, "vsiaerial", "VSI Aerial").classification, "ui_control");
 assert.equal(classifyHeaderCandidate({ text: "Close", href: "", role: "button", ariaLabel: "", title: "", alt: "" }, "vsiaerial", "VSI Aerial").classification, "ui_control");
@@ -601,7 +602,7 @@ assert.equal(
     status: "retry_wait",
     last_error: "Composer was found but thread identity was not confirmed.",
   }),
-  "Retrying — Thread identity not confirmed",
+  "Recipient not verified",
 );
 assert.equal(
   queueSendStatusLabel({
@@ -621,7 +622,7 @@ const layoutA = confirmConversationRecipient({
   provenance: noProof,
 });
 assert.equal(layoutA.confirmed, true);
-assert.equal(layoutA.strategy, "conversation-header-profile-link");
+assert.equal(layoutA.strategy, "thread_header_profile_href");
 const layoutB = confirmConversationRecipient({
   username: "sinaysky",
   displayName: "Sina",
@@ -629,7 +630,7 @@ const layoutB = confirmConversationRecipient({
   provenance: noProof,
 });
 assert.equal(layoutB.confirmed, true);
-assert.equal(layoutB.strategy, "conversation-header-aria-username");
+assert.equal(layoutB.strategy, "aria_label");
 const layoutC = confirmConversationRecipient({
   username: "sinaysky",
   displayName: "Sina",
@@ -679,16 +680,26 @@ const repeated = nextIdentityFailure({
   fingerprint: "same",
   sawHeaderSignals: false,
 });
-assert.equal(repeated.code, "recipient_detection_unresolved");
-assert.equal(repeated.retryable, false);
+assert.equal(repeated.code, "ui_structure_unknown");
+assert.equal(repeated.retryable, true);
+const sameLayout = nextIdentityFailure({
+  previousFingerprint: "same",
+  fingerprint: "same",
+  sawHeaderSignals: true,
+  composerFound: true,
+  threadOpened: true,
+});
+assert.equal(sameLayout.code, "recipient_identity_unconfirmed");
+assert.equal(sameLayout.retryable, true);
+assert.doesNotMatch(sameLayout.reason, /was not opened again/);
 const routeConfirmed = confirmConversationRecipient({
   username: "sinaysky",
   candidates: [],
   provenance: noProof,
   pageUrl: "https://www.instagram.com/sinaysky/",
 });
-assert.equal(routeConfirmed.confirmed, true);
-assert.equal(routeConfirmed.strategy, "profile-route-username");
+assert.equal(routeConfirmed.confirmed, false);
+assert.equal(routeConfirmed.strategy, null);
 const directRoute = confirmConversationRecipient({
   username: "sinaysky",
   candidates: [],
@@ -696,6 +707,141 @@ const directRoute = confirmConversationRecipient({
   pageUrl: "https://www.instagram.com/direct/t/999/",
 });
 assert.equal(directRoute.confirmed, false);
+
+const headerHref = confirmConversationRecipient({
+  username: "l17.marketing",
+  displayName: "L17 Marketing",
+  candidates: [{ text: "L17 Marketing", href: "/l17.marketing/", role: "link", tag: "a", ariaLabel: "", title: "", alt: "", scope: "active-header" }],
+  provenance: noProof,
+});
+assert.equal(headerHref.confirmed, true);
+assert.equal(headerHref.strategy, "thread_header_profile_href");
+assert.equal(headerHref.identity?.confidence, "strong");
+
+const avatarHref = confirmConversationRecipient({
+  username: "shotsby.smith",
+  displayName: "Smith Rice",
+  candidates: [{ text: "", href: "/shotsby.smith/", role: "link", tag: "a", ariaLabel: "", title: "", alt: "shotsby.smith's profile picture", scope: "active-header", region: "avatar" }],
+  provenance: noProof,
+});
+assert.equal(avatarHref.confirmed, true);
+assert.equal(avatarHref.strategy, "thread_avatar_profile_href");
+
+const photoAria = confirmConversationRecipient({
+  username: "l17.marketing",
+  displayName: "L17 Marketing",
+  candidates: [{ text: "L17 Marketing", href: "", role: "button", ariaLabel: "Profile photo of l17.marketing", title: "", alt: "", scope: "active-header" }],
+  provenance: noProof,
+});
+assert.equal(photoAria.confirmed, true);
+assert.equal(photoAria.strategy, "aria_label");
+
+const displayNameOnly = confirmConversationRecipient({
+  username: "shotsby.smith",
+  displayName: "Smith Rice",
+  candidates: [{ text: "Smith Rice", href: "", role: "heading", ariaLabel: "", title: "", alt: "", scope: "active-header" }],
+  provenance: proof,
+  pageUrl: "https://www.instagram.com/direct/t/abc/",
+});
+assert.equal(displayNameOnly.confirmed, false);
+assert.equal(displayNameOnly.identity?.confidence, "none");
+
+const profileRouteOnly = confirmConversationRecipient({
+  username: "l17.marketing",
+  candidates: [{ text: "Message", href: "", role: "button", ariaLabel: "Message", title: "", alt: "", scope: "active-header" }],
+  provenance: proof,
+  pageUrl: "https://www.instagram.com/l17.marketing/",
+});
+assert.equal(profileRouteOnly.confirmed, false);
+
+const composerOnly = confirmConversationRecipient({
+  username: "thedronegoat",
+  displayName: "The Drone Goat",
+  candidates: [{ text: "You", href: "", role: "span", ariaLabel: "", title: "", alt: "", scope: "active-header" }],
+  provenance: proof,
+});
+assert.equal(composerOnly.confirmed, false);
+
+const strayTextDoesNotVeto = confirmConversationRecipient({
+  username: "shadowfox.visuals",
+  displayName: "Shadow Fox",
+  candidates: [
+    { text: "Shadow Fox", href: "/shadowfox.visuals/", role: "link", tag: "a", ariaLabel: "", title: "", alt: "", scope: "active-header" },
+    { text: "You", href: "", role: "span", ariaLabel: "", title: "", alt: "", scope: "active-header" },
+    { text: "", href: "", role: "img", ariaLabel: "", title: "", alt: "Someone Else's profile picture", scope: "active-header" },
+  ],
+  provenance: noProof,
+});
+assert.equal(strayTextDoesNotVeto.confirmed, true);
+assert.equal(strayTextDoesNotVeto.strategy, "thread_header_profile_href");
+
+const wrongLink = confirmConversationRecipient({
+  username: "lealmediaus",
+  candidates: [{ text: "Other", href: "/someoneelse/", role: "link", ...layoutBlank }],
+  provenance: proof,
+});
+assert.equal(wrongLink.confirmed, false);
+
+const ambiguousThread = confirmConversationRecipient({
+  username: "conner.v1",
+  candidates: [
+    { text: "Conner", href: "/conner.v1/", role: "link", ...layoutBlank },
+    { text: "Other", href: "/other.media/", role: "link", ...layoutBlank },
+  ],
+  provenance: proof,
+});
+assert.equal(ambiguousThread.confirmed, false);
+
+const inboxDoesNotBlock = confirmConversationRecipient({
+  username: "simon.frwt",
+  candidates: [
+    { text: "Simon", href: "/simon.frwt/", role: "link", tag: "a", ariaLabel: "", title: "", alt: "", scope: "active-header", region: "thread-header" },
+    { text: "Other", href: "/other.media/", role: "link", tag: "a", ariaLabel: "", title: "", alt: "", scope: "outside", region: "inbox" },
+  ],
+  provenance: noProof,
+});
+assert.equal(inboxDoesNotBlock.confirmed, true);
+
+const detailsHref = confirmConversationRecipient({
+  username: "l17.marketing",
+  candidates: [{ text: "", href: "/l17.marketing/", role: "link", tag: "a", ariaLabel: "", title: "", alt: "", scope: "active-header", region: "participant-details" }],
+  provenance: noProof,
+});
+assert.equal(detailsHref.confirmed, true);
+assert.equal(detailsHref.strategy, "participant_details_profile_href");
+
+const firstRetry = failurePlan({ attemptCount: 0, maxAttempts: 3, retryable: true });
+const secondRetry = failurePlan({ attemptCount: 1, maxAttempts: 3, retryable: true });
+const thirdRetry = failurePlan({ attemptCount: 2, maxAttempts: 3, retryable: true });
+assert.equal(firstRetry.status, "retry_wait");
+assert.equal(firstRetry.delayMinutes, 5);
+assert.equal(secondRetry.status, "retry_wait");
+assert.equal(secondRetry.delayMinutes, 15);
+assert.equal(thirdRetry.status, "failed");
+assert.equal(thirdRetry.delayMinutes, null);
+assert.equal(
+  queueSendStatusLabel({
+    job_type: "send_message",
+    status: "failed",
+    last_error: "Recipient not verified. The composer was found, but no exact username signal was available in the current Direct layout.",
+  }),
+  "Needs Review",
+);
+assert.equal(
+  queueSendStatusLabel({
+    job_type: "send_message",
+    status: "retry_wait",
+    last_error: "Recipient detection is unresolved. The Direct layout did not change, so this profile was not opened again.",
+  }),
+  "Recipient not verified",
+);
+assert.equal(sendRecoveryDecision({
+  sendAttempted: false,
+  exactOutboundPresent: false,
+  composerFound: true,
+  priorConversation: true,
+  conversationMatches: true,
+}).action, "existing_conversation");
 
 console.log("dm and send recovery tests passed");
 }

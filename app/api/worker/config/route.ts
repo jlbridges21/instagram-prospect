@@ -41,6 +41,7 @@ export async function GET(request: Request) {
   const targeting = targetingResult.data;
   const fallback = fallbackSettings();
   const fallbackRules = fallbackTargeting();
+  const sourceYields = await sourceReviewYields(admin);
 
   return Response.json({
     workerEnabled: settings?.worker_enabled ?? fallback.workerEnabled,
@@ -104,7 +105,29 @@ export async function GET(request: Request) {
     seedNetworkSample: networkResult.error ? fallback.optimization.seedNetworkSample : networkResult.data?.discovery_seed_network_sample ?? fallback.optimization.seedNetworkSample,
     minCandidatePreScore: floorResult.error ? fallback.optimization.minCandidatePreScore : clampCandidateFloor(floorResult.data?.discovery_min_pre_score ?? fallback.optimization.minCandidatePreScore),
     tuning: keywordResult.data?.discovery_tuning ?? fallback.optimization.tuning,
+    sourceYields,
     workerVersion: "6",
     minSupportedWorkerVersion: "6",
   });
+}
+
+async function sourceReviewYields(admin: ReturnType<typeof createAdminClient>) {
+  const yields: Record<string, number> = {};
+  if (!admin) return yields;
+  const rows = await admin.from("prospects").select("source, status").order("discovered_at", { ascending: false }).limit(1000);
+  if (rows.error || !rows.data) return yields;
+  const review = new Set(["review", "approved", "contacted", "replied", "follow_up", "demo_booked", "converted"]);
+  const totals = new Map<string, { inspected: number; review: number }>();
+  for (const row of rows.data) {
+    const source = row.source;
+    if (!source) continue;
+    const current = totals.get(source) ?? { inspected: 0, review: 0 };
+    current.inspected += 1;
+    if (review.has(row.status)) current.review += 1;
+    totals.set(source, current);
+  }
+  for (const [source, counts] of totals) {
+    if (counts.inspected >= 10) yields[source] = counts.review / counts.inspected;
+  }
+  return yields;
 }

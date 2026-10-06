@@ -5,7 +5,9 @@ import { ProgressMetric } from "@/components/ui/progress-metric";
 import { StartDiscoveryButton } from "@/components/worker/start-discovery-button";
 import { DiscoveryRunButtons } from "@/components/worker/discovery-run-buttons";
 import { getDiscoveryV3Snapshot } from "@/lib/db/discovery";
-import { discoveryQualityStats, discoverySourceStats, listDiscoverySeeds } from "@/lib/db/seeds";
+import { discoveryOutcomeWindow, discoveryQualityStats, discoverySourceStats, listDiscoverySeeds, optimizationStartedAt } from "@/lib/db/seeds";
+import { optimizationComparison } from "@/lib/discovery/quality";
+import { QualityMarkerButton } from "@/components/discovery/quality-marker";
 import { reviewYield } from "@/lib/discovery/seeds";
 import { fallbackSettings, getSettings } from "@/lib/db/settings";
 import { getLatestWorker } from "@/lib/db/workers";
@@ -29,12 +31,23 @@ export default async function DiscoveryPage({
   const settings = settingsResult.ok ? settingsResult.data : fallbackSettings();
   const workerResult = await getLatestWorker();
   const worker = workerResult.ok ? workerResult.data : null;
-  const [progress, seedsResult, sources, quality] = await Promise.all([
+  const now = Date.now();
+  const marker = await optimizationStartedAt().catch(() => null);
+  const [progress, seedsResult, sources, quality, today, week, month, allTime, beforeOptimization, afterOptimization] = await Promise.all([
     getDiscoveryV3Snapshot(settings.timezone),
     listDiscoverySeeds(),
     discoverySourceStats(range),
     discoveryQualityStats(range),
+    discoveryOutcomeWindow(new Date(now - 24 * 60 * 60 * 1000).toISOString()),
+    discoveryOutcomeWindow(new Date(now - 7 * 86400000).toISOString()),
+    discoveryOutcomeWindow(new Date(now - 30 * 86400000).toISOString()),
+    discoveryOutcomeWindow(null),
+    marker ? discoveryOutcomeWindow(null, marker) : Promise.resolve(null),
+    marker ? discoveryOutcomeWindow(marker) : Promise.resolve(null),
   ]);
+  const comparison = beforeOptimization && afterOptimization
+    ? optimizationComparison({ before: beforeOptimization, after: afterOptimization })
+    : null;
   const seeds = seedsResult.ok ? seedsResult.data : [];
   const activeSeed = seeds.find((seed) => seed.is_active) ?? null;
   const health = getWorkerHealth({
@@ -112,6 +125,47 @@ export default async function DiscoveryPage({
         </p>
       </section>
       <section className="mt-4 rounded-xl border border-slate-200 bg-white p-4 text-sm">
+        <h2 className="font-semibold text-slate-900">Discovery quality</h2>
+        <p className="mt-1 text-slate-600">Review yield is Review prospects divided by profiles inspected. Approval yield is Approved prospects divided by profiles inspected.</p>
+        <div className="mt-3 grid gap-3 sm:grid-cols-4">
+          {[
+            { label: "Today", stats: today },
+            { label: "7 days", stats: week },
+            { label: "30 days", stats: month },
+            { label: "All time", stats: allTime },
+          ].map((item) => (
+            <div key={item.label} className="rounded-lg bg-slate-50 p-3">
+              <p className="font-medium text-slate-900">{item.label}</p>
+              <p className="mt-1">{item.stats.inspected} inspected</p>
+              <p>{item.stats.review} Review</p>
+              <p>{item.stats.approved} Approved</p>
+              <p className="mt-1">Review yield {item.stats.inspected === 0 ? "—" : `${Math.round(item.stats.reviewYield * 1000) / 10}%`}</p>
+              <p>Approval yield {item.stats.inspected === 0 ? "—" : `${Math.round(item.stats.approvalYield * 1000) / 10}%`}</p>
+            </div>
+          ))}
+        </div>
+        {comparison ? (
+          <div className="mt-4 grid gap-3 sm:grid-cols-2">
+            <div className="rounded-lg bg-slate-50 p-3">
+              <p className="font-medium">Before this measurement</p>
+              <p className="mt-1">{comparison.before.inspected} inspected · {comparison.before.review} Review · {comparison.before.approved} Approved</p>
+              <p>Review yield {comparison.before.inspected === 0 ? "—" : `${Math.round(comparison.before.reviewYield * 1000) / 10}%`}</p>
+              <p>Approval yield {comparison.before.inspected === 0 ? "—" : `${Math.round(comparison.before.approvalYield * 1000) / 10}%`}</p>
+            </div>
+            <div className="rounded-lg bg-slate-50 p-3">
+              <p className="font-medium">After this measurement</p>
+              <p className="mt-1">{comparison.after.inspected} inspected · {comparison.after.review} Review · {comparison.after.approved} Approved</p>
+              <p>Review yield {comparison.after.inspected === 0 ? "—" : `${Math.round(comparison.after.reviewYield * 1000) / 10}%`}</p>
+              <p>Approval yield {comparison.after.inspected === 0 ? "—" : `${Math.round(comparison.after.approvalYield * 1000) / 10}%`}</p>
+              <p className="mt-1 text-slate-600">{comparison.ready ? "Sample is large enough to compare." : "Wait until 100 inspections have been stored after the marker."}</p>
+            </div>
+          </div>
+        ) : (
+          <p className="mt-3 text-slate-600">Set a marker before judging whether these scoring changes improved Review yield.</p>
+        )}
+        <QualityMarkerButton />
+      </section>
+      <section className="mt-4 rounded-xl border border-slate-200 bg-white p-4 text-sm">
         <h2 className="font-semibold text-slate-900">Pre-score results</h2>
         <p className="mt-1 text-slate-600">Review yield is counted from profiles that were actually opened after pre-score ranking. Compare this after 100–200 new inspections.</p>
         {quality ? (
@@ -164,7 +218,7 @@ export default async function DiscoveryPage({
           <thead>
             <tr className="text-xs text-slate-500">
               <th className="py-1 font-medium">Source</th>
-              <th className="py-1 font-medium">Inspected</th>
+              <th className="py-1 font-medium">Profiles opened</th>
               <th className="py-1 font-medium">Review</th>
               <th className="py-1 font-medium">Review yield</th>
               <th className="py-1 font-medium">Approved</th>
@@ -182,7 +236,7 @@ export default async function DiscoveryPage({
                 <td>{Math.round(row.approvalYield * 100)}%</td>
               </tr>
             ))}
-            <tr><td className="py-2 text-xs text-slate-500" colSpan={6}>Pre-filtered usernames are not included. These rows count profiles that were opened and stored.</td></tr>
+            <tr><td className="py-2 text-xs text-slate-500" colSpan={6}>Profiles opened, Review, and Review yield come from stored prospects for seed network, seed suggestions, Suggested Accounts, and Home Feed. Candidate collection is the session total above. Pre-filtered usernames are not counted as inspections.</td></tr>
           </tbody>
         </table>
         <h3 className="mt-4 font-semibold text-slate-900">Top Discovery Seeds</h3>

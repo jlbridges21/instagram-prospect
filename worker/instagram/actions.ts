@@ -434,11 +434,14 @@ function identityFailure(
 ) {
   const candidates = dom.recipientCandidates ?? [];
   const fingerprint = directStructureFingerprint({ url: dom.url, composerFound, candidates });
-  const sawHeaderSignals = candidates.some((candidate) => Boolean(candidate.href || candidate.ariaLabel));
+  const sawHeaderSignals = candidates.some((candidate) => Boolean(candidate.href || candidate.ariaLabel || candidate.text));
+  const threadOpened = dom.url.includes("/direct/") || candidates.length > 0 || composerFound;
   const next = nextIdentityFailure({
     previousFingerprint: readIdentityFingerprint(username),
     fingerprint,
     sawHeaderSignals,
+    composerFound,
+    threadOpened,
   });
   writeIdentityFingerprint(username, fingerprint);
   return {
@@ -807,7 +810,35 @@ async function waitForDirect(page: Page, username: string, displayName: string |
     await page.waitForTimeout(DM_OPEN_POLL_MS);
     dom = await readDom(page);
   }
-  return directSnapshot(dom, username, displayName, locked, sourceVerified, null);
+  const snapshot = directSnapshot(dom, username, displayName, locked, sourceVerified, null);
+  if (snapshot.recipient.confirmed || (!snapshot.composerFound && !snapshot.opened)) return snapshot;
+  const details = await openThreadDetails(page);
+  if (!details) return snapshot;
+  await page.waitForTimeout(700);
+  const revealed = await readDom(page);
+  return directSnapshot(revealed, username, displayName, locked, sourceVerified, null);
+}
+
+const OPEN_THREAD_DETAILS_SOURCE = `() => {
+  const names = /^(info|details|thread details|conversation information|chat details|view thread details)$/i;
+  const blocked = /follow|message|send|like/i;
+  const nodes = [...document.querySelectorAll("button, [role='button']")];
+  for (const el of nodes) {
+    if (el.closest && el.closest("nav, [role='navigation']")) continue;
+    const aria = (el.getAttribute("aria-label") || "").trim();
+    const text = (el.innerText || el.textContent || "").trim().replace(/\\s+/g, " ");
+    const label = aria || text;
+    if (!names.test(label) || blocked.test(label)) continue;
+    el.click();
+    return label;
+  }
+  return "";
+}`;
+
+async function openThreadDetails(page: Page) {
+  const open = new Function(`return (${OPEN_THREAD_DETAILS_SOURCE})`)() as () => string;
+  const label = await page.evaluate(open).catch(() => "");
+  return Boolean(label);
 }
 
 async function confirmSend(page: Page, message: string) {

@@ -29,6 +29,8 @@ export const WORKER_ERROR_CODES = [
   "composer_unavailable",
   "ui_structure_unknown",
   "recipient_detection_unresolved",
+  "recipient_identity_unconfirmed",
+  "direct_thread_not_opened",
   "message_send_failed",
   "rate_limited",
   "browser_error",

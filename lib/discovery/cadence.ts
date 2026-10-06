@@ -45,12 +45,17 @@ export function discoveryStallDecision(input: {
   intervalMs: number;
   blocked: boolean;
   overdueSince: number;
+  lastProgressAt?: number;
 }) {
   if (input.blocked || input.now < input.nextInspectionAt) {
     return { stalled: false, overdueSince: 0 };
   }
-  const overdueSince = input.overdueSince > 0 ? input.overdueSince : input.now;
   const grace = discoveryGraceMs(input.intervalMs);
+  const progressAt = input.lastProgressAt ?? 0;
+  if (progressAt > 0 && input.now - progressAt < grace) {
+    return { stalled: false, overdueSince: 0 };
+  }
+  const overdueSince = input.overdueSince > 0 ? input.overdueSince : input.now;
   const stalled = input.now > input.nextInspectionAt + grace && input.now >= overdueSince + grace;
   return { stalled, overdueSince };
 }

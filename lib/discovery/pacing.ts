@@ -120,6 +120,12 @@ export function queueThresholds(target: number) {
   return { highWater, lowWater };
 }
 
+export function poolCollectionDecision(input: { size: number; lowWater: number; highWater: number }) {
+  if (input.size >= input.highWater) return { collect: false as const, reason: "high_water" as const };
+  if (input.size < input.lowWater) return { collect: true as const, reason: "low_water" as const };
+  return { collect: true as const, reason: "below_target" as const };
+}
+
 export function rollingHourInspectionCount(stamps: number[], now: number) {
   return hourlyInspectionPace({ stamps, now, limit: Number.MAX_SAFE_INTEGER }).count;
 }

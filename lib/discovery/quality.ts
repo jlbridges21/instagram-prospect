@@ -25,6 +25,28 @@ export function summarizePreScoreBands(rows: Array<{ score: number | null; revie
   });
 }
 
+export function qualityYield(input: { inspected: number; review: number; approved: number }) {
+  const inspected = Math.max(0, input.inspected);
+  return {
+    inspected,
+    review: Math.max(0, input.review),
+    approved: Math.max(0, input.approved),
+    reviewYield: inspected > 0 ? input.review / inspected : 0,
+    approvalYield: inspected > 0 ? input.approved / inspected : 0,
+  };
+}
+
+export function optimizationComparison(input: {
+  before: { inspected: number; review: number; approved: number };
+  after: { inspected: number; review: number; approved: number };
+}) {
+  return {
+    before: qualityYield(input.before),
+    after: qualityYield(input.after),
+    ready: input.after.inspected >= 100,
+  };
+}
+
 export function summarizeFunnel(input: { collected: number; deferred: number; opened: number; review: number }) {
   return {
     collected: input.collected,

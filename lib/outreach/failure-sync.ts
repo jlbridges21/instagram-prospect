@@ -16,6 +16,8 @@ export function isSafeUnsentFailure(result: unknown, lastError: string | null | 
   if (
     code === "recipient_confirmation_failed" ||
     code === "recipient_detection_unresolved" ||
+    code === "recipient_identity_unconfirmed" ||
+    code === "direct_thread_not_opened" ||
     code === "ui_structure_unknown" ||
     code === "message_unavailable" ||
     code === "composer_unavailable" ||

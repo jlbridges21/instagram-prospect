@@ -11,6 +11,7 @@ export const SEED_SUGGESTION_WAIT_MS = 4_000;
 export const SEED_SUGGESTION_POLL_MS = 300;
 export const SEED_SUGGESTION_EXPAND_WAIT_MS = 2_000;
 export const EMPTY_SEED_COOLDOWN_MS = 45 * 60 * 1000;
+export const UNHELPFUL_SEED_COOLDOWN_MS = 10 * 60 * 1000;
 const MAX_SUGGESTION_LINKS = 12;
 
 export type SeedReadSnapshot = {
@@ -104,8 +105,14 @@ export async function pollSeedRead<T extends { usernames: string[] }>(input: {
   return latest;
 }
 
-export function emptySeedCooldownUntil(now: number) {
-  return new Date(now + EMPTY_SEED_COOLDOWN_MS).toISOString();
+export function emptySeedCooldownUntil(now: number, durationMs = EMPTY_SEED_COOLDOWN_MS) {
+  return new Date(now + durationMs).toISOString();
+}
+
+export function seedTurnOutcome(input: { newAfterDedupe: number; queuedAboveFloor: number }) {
+  if (input.newAfterDedupe <= 0) return "empty" as const;
+  if (input.queuedAboveFloor <= 0) return "unhelpful" as const;
+  return "productive" as const;
 }
 
 export function applyEmptySeedCooldowns<T extends { username: string; cooldownUntil?: string | null }>(

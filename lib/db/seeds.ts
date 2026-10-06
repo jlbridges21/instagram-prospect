@@ -2,6 +2,9 @@ import "server-only";
 
 import type { ProspectSource, ProspectStatus } from "@/lib/constants/prospects";
 import { PRE_SCORE_BANDS } from "@/lib/discovery/quality";
+import { clampTuning, effectiveKeywordList, DEFAULT_POSITIVE_KEYWORDS, LEGACY_POSITIVE_KEYWORDS } from "@/lib/discovery/defaults";
+import { suggestPositiveKeywords } from "@/lib/discovery/keyword-suggestions";
+import { qualityYield } from "@/lib/discovery/quality";
 import { reviewYield } from "@/lib/discovery/seeds";
 import { databaseErrorMessage, isMissingRelation } from "@/lib/db/errors";
 import type { DataResult } from "@/lib/db/models";
@@ -45,6 +48,46 @@ const SOURCE_GROUPS = [
   ["suggested_accounts", "Suggested Accounts"],
   ["home_feed", "Home Feed"],
 ] as const;
+
+export async function suggestedDiscoveryKeywords() {
+  const supabase = await createClient();
+  const [settings, rows] = await Promise.all([
+    supabase.from("settings").select("discovery_positive_keywords, discovery_ignored_keywords, discovery_tuning").eq("id", 1).maybeSingle(),
+    supabase.from("prospects").select("instagram_username, display_name, bio, category, status").in("status", ["approved", "contacted", "skipped", "disqualified"]).limit(400),
+  ]);
+  if (rows.error || !rows.data) return [] as string[];
+  const tuning = clampTuning(settings.data?.discovery_tuning);
+  const ignored = settings.error ? [] : settings.data?.discovery_ignored_keywords ?? [];
+  return suggestPositiveKeywords({
+    observations: rows.data.flatMap((row) => {
+      if (row.status !== "approved" && row.status !== "contacted" && row.status !== "skipped" && row.status !== "disqualified") return [];
+      return [{
+        status: row.status,
+        text: [row.instagram_username, row.display_name, row.bio, row.category].filter((value): value is string => Boolean(value)).join(" "),
+      }];
+    }),
+    existingKeywords: effectiveKeywordList(settings.data?.discovery_positive_keywords, DEFAULT_POSITIVE_KEYWORDS, LEGACY_POSITIVE_KEYWORDS),
+    ignored,
+    minimum: tuning.keywordSuggestionMinimum,
+  });
+}
+
+export async function discoveryOutcomeWindow(since: string | null, until: string | null = null) {
+  const supabase = await createClient();
+  const [inspected, review, approved] = await Promise.all([
+    outcomeCount(supabase, null, since, until),
+    outcomeCount(supabase, REVIEW_STATUSES, since, until),
+    outcomeCount(supabase, APPROVED_STATUSES, since, until),
+  ]);
+  return qualityYield({ inspected, review, approved });
+}
+
+export async function optimizationStartedAt() {
+  const supabase = await createClient();
+  const row = await supabase.from("settings").select("discovery_optimization_started_at").eq("id", 1).maybeSingle();
+  if (row.error) return null;
+  return row.data?.discovery_optimization_started_at ?? null;
+}
 
 export async function discoverySourceStats(days: number | null) {
   const supabase = await createClient();
@@ -120,6 +163,21 @@ async function funnelTotals(supabase: Awaited<ReturnType<typeof createClient>>, 
     }),
     { collected: 0, deferred: 0 },
   );
+}
+
+async function outcomeCount(
+  supabase: Awaited<ReturnType<typeof createClient>>,
+  statuses: readonly ProspectStatus[] | null,
+  since: string | null,
+  until: string | null = null,
+) {
+  let query = supabase.from("prospects").select("id", { count: "exact", head: true });
+  if (statuses) query = query.in("status", [...statuses]);
+  if (since) query = query.gte("discovered_at", since);
+  if (until) query = query.lt("discovered_at", until);
+  const result = await query;
+  if (result.error) return 0;
+  return result.count ?? 0;
 }
 
 async function exactProspectCount(

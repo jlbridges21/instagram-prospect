@@ -5,6 +5,31 @@ export type PriorityLabel = "High" | "Medium" | "Low";
 
 const POSITIVE_HIT_CAP = 8;
 const NEGATIVE_HIT_CAP = 6;
+const COMMERCIAL_HIT_CAP = 6;
+const SOURCE_PRIOR_CAP = 8;
+
+const COMMERCIAL_INTENT_TERMS = [
+  "services",
+  "service",
+  "book",
+  "booking",
+  "clients",
+  "client",
+  "commercial",
+  "production",
+  "agency",
+  "studio",
+  "licensed",
+  "portfolio",
+  "work with us",
+  "contact",
+  "business",
+  "cinematographer",
+  "cinematography",
+  "media",
+  "real estate",
+  "property",
+] as const;
 
 export function scoreCandidate(input: {
   source: "seed" | "suggested_accounts" | "home_feed";
@@ -14,6 +39,8 @@ export function scoreCandidate(input: {
   seedMature?: boolean;
   seedPriority?: SeedPriority;
   seedSupportCount?: number;
+  supportYields?: number[];
+  sourceReviewYield?: number | null;
   username?: string | null;
   text?: string | null;
   cardText?: string | null;
@@ -70,8 +97,47 @@ export function scoreCandidate(input: {
     score += extraSeeds * tuning.multiSeedBonus;
     reasons.push(`+ ${support} seed matches`);
   }
+  const matureSupport = (input.supportYields ?? []).filter((rate) => rate >= HIGH_YIELD_MINIMUM).length;
+  if (matureSupport > 0) {
+    const supportBonus = Math.min(tuning.multiSeedBonus, matureSupport * Math.round(tuning.networkConfidenceWeight / 2));
+    score += supportBonus;
+    reasons.push(`+ high-yield seed support`);
+  }
+  let commercialHits = 0;
+  for (const term of COMMERCIAL_INTENT_TERMS) {
+    if (commercialHits >= COMMERCIAL_HIT_CAP) break;
+    if (!keywordMatches(corpus, term)) continue;
+    commercialHits += 1;
+    score += tuning.commercialIntentWeight;
+    reasons.push(`+ commercial ${term}`);
+  }
+  if (typeof input.sourceReviewYield === "number") {
+    const prior = Math.max(-SOURCE_PRIOR_CAP, Math.min(SOURCE_PRIOR_CAP, Math.round((input.sourceReviewYield - 0.2) * tuning.sourceYieldWeight)));
+    if (prior !== 0) {
+      score += prior;
+      reasons.push(`source yield prior ${prior > 0 ? "+" : ""}${prior}`);
+    }
+  }
   score = Math.max(0, Math.min(100, Math.round(score)));
-  return { score, label: priorityLabel(score), reasons };
+  const niche = positiveHits === 0 ? 0 : Math.max(0, Math.min(100, 40 + positiveHits * 15));
+  const commercial = commercialHits === 0 ? 8 : Math.max(0, Math.min(100, 25 + commercialHits * 18));
+  const networkRaw = (input.source === "seed" ? tuning.sourceBaseSeed : input.source === "suggested_accounts" ? tuning.sourceBaseSuggested : tuning.sourceBaseHome)
+    + extraSeeds * tuning.multiSeedBonus
+    + (input.seedMature && (input.seedYield ?? 0) >= HIGH_YIELD_MINIMUM ? tuning.highYieldCandidateBonus : 0);
+  const network = Math.max(0, Math.min(100, networkRaw));
+  reasons.unshift(`Network confidence: ${network}`, `Commercial intent: ${commercial}`, `Niche relevance: ${niche}`);
+  return { score, label: priorityLabel(score), reasons, niche, commercial, network };
+}
+
+export function pickWeightedIndex(weights: number[], random: number) {
+  const total = weights.reduce((sum, weight) => sum + Math.max(0, weight), 0);
+  if (total <= 0) return 0;
+  let roll = Math.min(0.999999, Math.max(0, random)) * total;
+  for (let index = 0; index < weights.length; index += 1) {
+    roll -= Math.max(0, weights[index] ?? 0);
+    if (roll < 0) return index;
+  }
+  return Math.max(0, weights.length - 1);
 }
 
 export function clampCandidateFloor(value: number) {

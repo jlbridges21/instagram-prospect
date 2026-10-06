@@ -92,6 +92,7 @@ export type DomSnapshot = {
     tag?: string;
     clickable?: boolean;
     scope?: "active-header" | "outside";
+    region?: "thread-header" | "avatar" | "participant-card" | "participant-details" | "conversation-shell" | "inbox";
     box?: { x: number; y: number; width: number; height: number } | null;
   }>;
   activeConversationFound?: boolean;

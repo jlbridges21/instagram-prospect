@@ -2,7 +2,9 @@
 
 import { useEffect, useMemo, useState, useTransition } from "react";
 import {
+  acceptSuggestedKeyword,
   deleteSeeds,
+  ignoreSuggestedKeyword,
   promoteExistingQualified,
   resetDiscoveryKeywords,
   saveDiscoveryOptimization,
@@ -16,14 +18,21 @@ import { livePollDelay } from "@/lib/discovery/policy";
 import type { DiscoveryOptimization } from "@/lib/db/models";
 import type { DiscoverySeedRow } from "@/lib/db/types";
 
+function matureRate(inspected: number, hits: number, yieldOf: (inspected: number, hits: number) => number) {
+  if (inspected < 10) return -1;
+  return yieldOf(inspected, hits);
+}
+
 export function DiscoverySeedsPanel({
   seeds,
   optimization,
   migrationNeeded,
+  suggestions = [],
 }: {
   seeds: DiscoverySeedRow[];
   optimization: DiscoveryOptimization;
   migrationNeeded: boolean;
+  suggestions?: string[];
 }) {
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
@@ -31,7 +40,7 @@ export function DiscoverySeedsPanel({
   const [selected, setSelected] = useState<string[]>([]);
   const [openId, setOpenId] = useState<string | null>(null);
   const [query, setQuery] = useState("");
-  const [sort, setSort] = useState<"yield" | "inspected" | "review">("review");
+  const [sort, setSort] = useState<"yield" | "approval" | "inspected" | "review">("review");
   const [positive, setPositive] = useState(optimization.positiveKeywords.join("\n"));
   const [negative, setNegative] = useState(optimization.negativeKeywords.join("\n"));
   const [form, setForm] = useState(optimization);
@@ -84,7 +93,8 @@ export function DiscoverySeedsPanel({
     });
     return filtered.sort((a, b) => {
       if (sort === "inspected") return b.profiles_inspected - a.profiles_inspected;
-      if (sort === "yield") return reviewYield(b.profiles_inspected, b.profiles_reaching_review) - reviewYield(a.profiles_inspected, a.profiles_reaching_review);
+      if (sort === "yield") return matureRate(b.profiles_inspected, b.profiles_reaching_review, reviewYield) - matureRate(a.profiles_inspected, a.profiles_reaching_review, reviewYield);
+      if (sort === "approval") return matureRate(b.profiles_inspected, b.profiles_approved, approvalYield) - matureRate(a.profiles_inspected, a.profiles_approved, approvalYield);
       return b.profiles_reaching_review - a.profiles_reaching_review;
     });
   }, [rows, query, sort]);
@@ -136,8 +146,9 @@ export function DiscoverySeedsPanel({
           <input className="rounded-lg border border-slate-200 px-3 py-2 text-sm" placeholder="Filter" value={query} onChange={(event) => setQuery(event.target.value)} />
           <select className="rounded-lg border border-slate-200 px-3 py-2 text-sm" value={sort} onChange={(event) => setSort(event.target.value as typeof sort)}>
             <option value="review">Most Review</option>
-            <option value="yield">Highest yield</option>
-            <option value="inspected">Most inspected</option>
+            <option value="yield">Review yield</option>
+            <option value="approval">Approval yield</option>
+            <option value="inspected">Volume</option>
           </select>
           <button type="button" className="rounded-lg border border-slate-200 px-3 py-2 text-sm" disabled={pending || selected.length === 0} onClick={() => run(() => setSeedsActive(selected, true))}>Enable</button>
           <button type="button" className="rounded-lg border border-slate-200 px-3 py-2 text-sm" disabled={pending || selected.length === 0} onClick={() => run(() => setSeedsActive(selected, false))}>Disable</button>
@@ -180,8 +191,25 @@ export function DiscoverySeedsPanel({
           <Toggle label="Seed network fallback" checked={form.seedNetworkEnabled} onChange={(seedNetworkEnabled) => setForm({ ...form, seedNetworkEnabled })} />
           <NumberField label="Accounts to sample per seed" value={form.seedNetworkSample} onChange={(seedNetworkSample) => setForm({ ...form, seedNetworkSample })} />
           <NumberField label="Minimum candidate pre-score" value={form.minCandidatePreScore} onChange={(minCandidatePreScore) => setForm({ ...form, minCandidatePreScore })} />
+          <NumberField label="Exploration floor" value={form.tuning.explorationFloor} onChange={(value) => setTuning("explorationFloor", value)} />
+          <NumberField label="Candidate pool target" value={form.tuning.poolTarget} onChange={(value) => setTuning("poolTarget", value)} />
           <p className="text-sm text-slate-600 sm:col-span-2">When a seed profile has no related accounts, Discovery samples that account&apos;s Following list. Suggested accounts are still used when both are empty.</p>
         </div>
+        {suggestions.length > 0 ? (
+          <div className="mt-4 rounded-lg border border-slate-200 p-3">
+            <p className="text-sm font-medium text-slate-900">Suggested positive keywords</p>
+            <p className="mt-1 text-sm text-slate-600">These terms appear disproportionately often in Approved and Contacted prospects. They do not affect scoring until you accept one.</p>
+            <ul className="mt-3 space-y-2">
+              {suggestions.map((term) => (
+                <li key={term} className="flex flex-wrap items-center gap-2 text-sm">
+                  <span className="font-medium text-slate-900">{term}</span>
+                  <button type="button" className="rounded-lg bg-slate-900 px-2 py-1 text-white disabled:opacity-50" disabled={pending} onClick={() => run(() => acceptSuggestedKeyword(term))}>Accept</button>
+                  <button type="button" className="rounded-lg border border-slate-200 px-2 py-1 disabled:opacity-50" disabled={pending} onClick={() => run(() => ignoreSuggestedKeyword(term))}>Ignore</button>
+                </li>
+              ))}
+            </ul>
+          </div>
+        ) : null}
         <button
           type="button"
           className="mt-4 rounded-lg bg-slate-900 px-3 py-2 text-sm text-white disabled:opacity-50"
@@ -211,6 +239,17 @@ export function DiscoverySeedsPanel({
             <NumberField label="Candidate inspection exploration, Balanced %" value={form.tuning.candidateExploreBalanced} onChange={(value) => setTuning("candidateExploreBalanced", value)} />
             <NumberField label="Candidate inspection exploration, Exploratory %" value={form.tuning.candidateExploreExploratory} onChange={(value) => setTuning("candidateExploreExploratory", value)} />
             <NumberField label="Multi-seed bonus" value={form.tuning.multiSeedBonus} onChange={(value) => setTuning("multiSeedBonus", value)} />
+            <NumberField label="Pool low-water" value={form.tuning.poolLowWater} onChange={(value) => setTuning("poolLowWater", value)} />
+            <NumberField label="Pool high-water" value={form.tuning.poolHighWater} onChange={(value) => setTuning("poolHighWater", value)} />
+            <NumberField label="Seed Following max scrolls" value={form.tuning.seedMaxScrolls} onChange={(value) => setTuning("seedMaxScrolls", value)} />
+            <NumberField label="Seed scrolls with no new usernames" value={form.tuning.seedStaleScrolls} onChange={(value) => setTuning("seedStaleScrolls", value)} />
+            <NumberField label="Commercial intent weight" value={form.tuning.commercialIntentWeight} onChange={(value) => setTuning("commercialIntentWeight", value)} />
+            <NumberField label="Source yield weight" value={form.tuning.sourceYieldWeight} onChange={(value) => setTuning("sourceYieldWeight", value)} />
+            <NumberField label="Network confidence weight" value={form.tuning.networkConfidenceWeight} onChange={(value) => setTuning("networkConfidenceWeight", value)} />
+            <NumberField label="Empty seed cooldown, first visit (minutes)" value={form.tuning.seedCooldownFirstMinutes} onChange={(value) => setTuning("seedCooldownFirstMinutes", value)} />
+            <NumberField label="Empty seed cooldown, second visit (minutes)" value={form.tuning.seedCooldownSecondMinutes} onChange={(value) => setTuning("seedCooldownSecondMinutes", value)} />
+            <NumberField label="Empty seed cooldown, third visit (minutes)" value={form.tuning.seedCooldownThirdMinutes} onChange={(value) => setTuning("seedCooldownThirdMinutes", value)} />
+            <NumberField label="Approved prospects before keyword suggestions" value={form.tuning.keywordSuggestionMinimum} onChange={(value) => setTuning("keywordSuggestionMinimum", value)} />
             <NumberField label="Home Feed share, Low %" value={form.tuning.homeFeedLow} onChange={(value) => setTuning("homeFeedLow", value)} />
             <NumberField label="Home Feed share, Medium %" value={form.tuning.homeFeedMedium} onChange={(value) => setTuning("homeFeedMedium", value)} />
             <NumberField label="Home Feed share, High %" value={form.tuning.homeFeedHigh} onChange={(value) => setTuning("homeFeedHigh", value)} />

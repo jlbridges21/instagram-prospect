@@ -49,6 +49,7 @@ export type CloudConfig = {
   seedNetworkSample?: number;
   minCandidatePreScore?: number;
   tuning?: DiscoveryTuning;
+  sourceYields?: Partial<Record<"seed_network" | "seed_suggestion" | "suggested_accounts" | "home_feed", number>>;
 };
 
 export const CONFIG_CACHE_MS = 60_000;
@@ -170,6 +171,7 @@ export class CloudClient {
       seedNetworkSample: clampSeedNetworkSample(numberOr(json.seedNetworkSample, 15)),
       minCandidatePreScore: clampCandidateFloor(numberOr(json.minCandidatePreScore, 35)),
       tuning: clampTuning(json.tuning),
+      sourceYields: sourceYieldMap(json.sourceYields),
     } satisfies CloudConfig;
     this.configCache = value;
     this.configCachedAt = Date.now();
@@ -318,6 +320,17 @@ function authError() {
   const error = new Error(AUTH_FAILURE_MESSAGE) as Error & { statusCode: number };
   error.statusCode = 401;
   return error;
+}
+
+function sourceYieldMap(value: unknown): CloudConfig["sourceYields"] {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  const source = value as Record<string, unknown>;
+  const yields: NonNullable<CloudConfig["sourceYields"]> = {};
+  for (const key of ["seed_network", "seed_suggestion", "suggested_accounts", "home_feed"] as const) {
+    const rate = source[key];
+    if (typeof rate === "number" && Number.isFinite(rate)) yields[key] = rate;
+  }
+  return yields;
 }
 
 function numberOr(value: unknown, fallback: number) {

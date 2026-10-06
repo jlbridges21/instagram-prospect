@@ -313,6 +313,7 @@ export type RecipientCandidate = {
   tag?: string;
   clickable?: boolean;
   scope?: "active-header" | "outside";
+  region?: "thread-header" | "avatar" | "participant-card" | "participant-details" | "conversation-shell" | "inbox";
   box?: { x: number; y: number; width: number; height: number } | null;
 };
 
@@ -359,10 +360,6 @@ function exactHeaderUsername(header: string | null | undefined, username: string
   return text;
 }
 
-function activeHeader(candidates: RecipientCandidate[]) {
-  return candidates.filter((candidate) => !candidate.scope || candidate.scope === "active-header");
-}
-
 export type HeaderClassification =
   | "identity_match"
   | "identity_conflict"
@@ -382,7 +379,8 @@ function profileAriaUsername(value: string) {
   const patterns = [
     /open the profile page of\s+@?([a-z0-9._]{1,30})\b/i,
     /view\s+(?:the\s+)?profile\s+(?:page\s+)?(?:of\s+)?@?([a-z0-9._]{1,30})\b/i,
-    /^@?([a-z0-9._]{1,30})'s profile$/i,
+    /profile (?:photo|picture) of\s+@?([a-z0-9._]{1,30})\b/i,
+    /^@?([a-z0-9._]{1,30})'s profile(?: (?:photo|picture))?$/i,
   ];
   for (const pattern of patterns) {
     const match = text.match(pattern);
@@ -433,16 +431,12 @@ export function classifyHeaderCandidate(
   }
   if (hrefUser === target) return { classification: "identity_match", reason: "profile href matches target", match: "href" };
   if (ariaUser === target) return { classification: "identity_match", reason: "profile aria-label matches target", match: "aria" };
-  const textNames = [textIdentity?.username ?? null, labelIdentity?.username ?? null].filter((value): value is string => Boolean(value));
-  if (textNames.some((value) => value !== target)) {
-    return { classification: "identity_conflict", reason: "different participant in the active header", match: null };
-  }
   if (display) {
     const pictures = [candidate.alt, candidate.title, candidate.ariaLabel]
       .map(namedProfilePicture)
       .filter((name): name is string => Boolean(name));
-    if (pictures.some((name) => !sameDisplayName(name, display))) {
-      return { classification: "identity_conflict", reason: "different participant in the active header", match: null };
+    if (pictures.some((name) => !sameDisplayName(name, display)) && !hrefUser && !ariaUser) {
+      return { classification: "irrelevant", reason: "avatar display name is not an exact username", match: null };
     }
   }
   if (textIdentity?.username === target || labelIdentity?.username === target) {
@@ -466,6 +460,36 @@ export function classifyHeaderCandidate(
   return { classification: "irrelevant", reason: "visible in active conversation header", match: null };
 }
 
+export type RecipientIdentitySource =
+  | "thread_header_profile_href"
+  | "thread_avatar_profile_href"
+  | "participant_card_profile_href"
+  | "participant_details_profile_href"
+  | "conversation_shell_profile_href"
+  | "aria_label"
+  | "thread_header_username";
+
+export type RecipientIdentity = {
+  expectedUsername: string;
+  confirmed: boolean;
+  confidence: "strong" | "none";
+  source: RecipientIdentitySource | null;
+  evidence: string[];
+};
+
+function identitySource(candidate: RecipientCandidate, match: "href" | "aria" | "at" | "username"): RecipientIdentitySource {
+  if (match === "aria") return "aria_label";
+  if (match === "at" || match === "username") return "thread_header_username";
+  if (candidate.region === "participant-card") return "participant_card_profile_href";
+  if (candidate.region === "participant-details") return "participant_details_profile_href";
+  if (candidate.region === "conversation-shell") return "conversation_shell_profile_href";
+  const avatarText = `${candidate.alt} ${candidate.ariaLabel} ${candidate.title}`;
+  if (candidate.region === "avatar" || candidate.tag === "img" || /profile (?:picture|photo)/i.test(avatarText)) {
+    return "thread_avatar_profile_href";
+  }
+  return "thread_header_profile_href";
+}
+
 export function confirmConversationRecipient(input: {
   username: string;
   displayName?: string | null;
@@ -478,9 +502,8 @@ export function confirmConversationRecipient(input: {
   const display = input.displayName?.trim() ?? "";
   const headerText = exactHeaderUsername(input.conversationHeader, username);
   const candidates = headerText
-    ? [...input.candidates, { text: headerText, href: "", role: "heading", ariaLabel: "", title: "", alt: "", scope: "active-header" as const }]
+    ? [...input.candidates, { text: headerText, href: "", role: "heading", ariaLabel: "", title: "", alt: "", scope: "active-header" as const, region: "thread-header" as const }]
     : input.candidates;
-  const header = activeHeader(candidates);
   const routeUser = usernameFromProfileRoute(input.pageUrl);
   const evidence = candidates.map((candidate) => {
     const classified = classifyHeaderCandidate(candidate, username, display);
@@ -492,60 +515,69 @@ export function confirmConversationRecipient(input: {
       match: classified.match,
     };
   });
-  const provenanceOk =
-    input.provenance.sourceProfileVerified &&
-    input.provenance.messageActionClicked &&
-    input.provenance.directOpenedFromProfile &&
-    input.provenance.sourceProfileUsername.replace(/^@/, "").toLowerCase() === username;
-  const conflict = evidence.find((item) => item.classification === "identity_conflict") || (routeUser && routeUser !== username ? { reason: "profile route belongs to another account" } : null);
-  if (conflict) {
+  const inThread = evidence.filter((item) => item.scope !== "outside" && item.region !== "inbox");
+  const foreign = inThread.filter((item) => item.classification === "identity_conflict");
+  const strong = inThread.filter((item) => item.match === "href" || item.match === "aria" || item.match === "at" || item.match === "username");
+  const notes = [
+    routeUser ? `Profile route: /${routeUser}/ is context only.` : "",
+    display ? `Display name: ${display}` : "",
+  ].filter(Boolean);
+  if (foreign.length > 0) {
     return {
       confirmed: false as const,
       strategy: null,
       evidence,
-      ambiguousReason: "Conversation recipient could not be confirmed.",
+      identity: {
+        expectedUsername: username,
+        confirmed: false,
+        confidence: "none" as const,
+        source: null,
+        evidence: notes,
+      } satisfies RecipientIdentity,
+      ambiguousReason: strong.length > 0
+        ? "The Direct thread has more than one username, so it was not confirmed."
+        : "The Direct thread shows a different username.",
     };
   }
-  if (evidence.some((item) => item.match === "href")) {
-    return { confirmed: true as const, strategy: "conversation-header-profile-link", evidence, ambiguousReason: null };
-  }
-  if (evidence.some((item) => item.match === "aria")) {
-    return { confirmed: true as const, strategy: "conversation-header-aria-username", evidence, ambiguousReason: null };
-  }
-  if (evidence.some((item) => item.reason === "visible @username")) {
-    return { confirmed: true as const, strategy: "conversation-header-at-username", evidence, ambiguousReason: null };
-  }
-  if (evidence.some((item) => item.reason === "visible username")) {
-    return { confirmed: true as const, strategy: "conversation-header-username", evidence, ambiguousReason: null };
-  }
-  if (routeUser === username) {
-    return { confirmed: true as const, strategy: "profile-route-username", evidence, ambiguousReason: null };
-  }
-  const displayMatched = evidence.some((item) => item.reason === "display name in the active header");
-  const avatarMatched = evidence.some((item) => item.reason === "avatar matches the profile display name");
-  if (displayMatched && provenanceOk) {
+  const hrefMatch = strong.find((item) => item.match === "href");
+  const ariaMatch = strong.find((item) => item.match === "aria");
+  const textMatch = strong.find((item) => item.match === "at" || item.match === "username");
+  const chosen = hrefMatch ?? ariaMatch ?? textMatch;
+  if (chosen?.match === "href" || chosen?.match === "aria" || chosen?.match === "at" || chosen?.match === "username") {
+    const source = identitySource(chosen, chosen.match);
     return {
       confirmed: true as const,
-      strategy: "conversation-header-display-name-plus-provenance",
+      strategy: source,
       evidence,
+      identity: {
+        expectedUsername: username,
+        confirmed: true,
+        confidence: "strong" as const,
+        source,
+        evidence: notes,
+      } satisfies RecipientIdentity,
       ambiguousReason: null,
     };
   }
-  if (avatarMatched && provenanceOk) {
-    return {
-      confirmed: true as const,
-      strategy: "conversation-header-avatar-alt",
-      evidence,
-      ambiguousReason: null,
-    };
-  }
+  const unresolved = [
+    display ? "display name present" : "",
+    routeUser === username ? "profile page URL matches, which does not verify the Direct thread" : "",
+    "no exact username href",
+    "no participant card username",
+    "no exact aria username",
+  ].filter(Boolean);
   return {
     confirmed: false as const,
     strategy: null,
     evidence,
-    ambiguousReason: header.length === 0 || provenanceOk
-      ? "Composer was found but thread identity was not confirmed."
-      : "Conversation recipient could not be confirmed.",
+    identity: {
+      expectedUsername: username,
+      confirmed: false,
+      confidence: "none" as const,
+      source: null,
+      evidence: [...notes, ...unresolved],
+    } satisfies RecipientIdentity,
+    ambiguousReason: "Recipient not verified. The composer was found, but no exact username signal was available in the current Direct layout.",
   };
 }
 
@@ -594,26 +626,27 @@ export function nextIdentityFailure(input: {
   previousFingerprint: string | null;
   fingerprint: string;
   sawHeaderSignals: boolean;
+  composerFound?: boolean;
+  threadOpened?: boolean;
 }) {
-  const same = Boolean(input.previousFingerprint) && input.previousFingerprint === input.fingerprint;
-  if (same) {
+  if (!input.threadOpened && !input.composerFound) {
+    if (!input.sawHeaderSignals) {
+      return {
+        code: "ui_structure_unknown" as const,
+        retryable: true,
+        reason: "Instagram UI unknown. No DM was sent.",
+      };
+    }
     return {
-      code: "recipient_detection_unresolved" as const,
-      retryable: false,
-      reason: "Recipient detection is unresolved. The Direct layout did not change, so this profile was not opened again.",
-    };
-  }
-  if (!input.sawHeaderSignals) {
-    return {
-      code: "ui_structure_unknown" as const,
+      code: "direct_thread_not_opened" as const,
       retryable: true,
-      reason: "The Direct layout did not expose a recipient signal. No DM was sent.",
+      reason: "Direct thread not opened. No DM was sent.",
     };
   }
   return {
-    code: "recipient_confirmation_failed" as const,
+    code: "recipient_identity_unconfirmed" as const,
     retryable: true,
-    reason: "Composer was found but thread identity was not confirmed.",
+    reason: "Recipient not verified. The composer was found, but no exact username signal was available in the current Direct layout.",
   };
 }
 
@@ -939,6 +972,57 @@ export async function waitForComposer(input: {
   return found;
 }
 
+function recipientNotVerified(error: string | null | undefined) {
+  return /recipient not verified|recipient could not be verified|recipient detection is unresolved|no exact username|thread identity was not confirmed|thread identity not confirmed/i.test(error ?? "");
+}
+
+export function formatRecipientDiagnostic(input: {
+  username: string;
+  displayName?: string | null;
+  pageUrl?: string | null;
+  candidates: RecipientCandidate[];
+  composerFound: boolean;
+  provenance: NavigationProvenance;
+  conversationHeader?: string | null;
+}) {
+  const decision = confirmConversationRecipient(input);
+  const expected = input.username.replace(/^@/, "").toLowerCase();
+  const header = decision.evidence.filter((item) => item.scope !== "outside" && item.region !== "inbox");
+  const headerText = header.map((item) => item.text).find((text) => text.trim()) ?? "";
+  const headerHref = header.map((item) => item.href).find((href) => profileUsernameFromHref(href)) ?? "";
+  const avatarHref = header.find((item) => item.region === "avatar" || item.tag === "img" || /profile (?:picture|photo)/i.test(`${item.alt} ${item.ariaLabel}`))?.href ?? "";
+  const aria = [...new Set(header.map((item) => item.ariaLabel).filter(Boolean))];
+  const lines = [
+    `Expected: @${expected}`,
+    "",
+    "Thread header:",
+    `display text: ${headerText || input.displayName || "none"}`,
+    `profile href: ${headerHref || "none"}`,
+    "",
+    "Avatar link:",
+    `href: ${avatarHref || headerHref || "none"}`,
+    "",
+    "ARIA labels:",
+    aria.length ? JSON.stringify(aria) : "[]",
+    "",
+    "Identity:",
+    decision.confirmed ? "CONFIRMED" : "UNRESOLVED",
+    "",
+    "Source:",
+    decision.strategy ?? "none",
+    "",
+    "Confidence:",
+    decision.confirmed ? "strong" : "none",
+  ];
+  if (!decision.confirmed) {
+    lines.push("", "Reasons:");
+    for (const reason of decision.identity?.evidence ?? []) lines.push(`- ${reason}`);
+    if (input.composerFound) lines.push("- composer exists, which does not verify the recipient");
+  }
+  lines.push("", input.composerFound ? "Composer: yes" : "Composer: no", "Nothing was typed or sent.");
+  return lines.join("\n");
+}
+
 export function queueSendStatusLabel(job: {
   job_type: string;
   status: string;
@@ -947,8 +1031,12 @@ export function queueSendStatusLabel(job: {
   now?: Date;
 }) {
   if (job.job_type !== "send_message") return null;
+  if (recipientNotVerified(job.last_error)) {
+    if (job.status === "failed") return "Needs Review";
+    if (job.status === "retry_wait" || job.status === "running" || job.status === "claimed") return "Recipient not verified";
+  }
   if (/thread identity/i.test(job.last_error ?? "")) {
-    if (job.status === "retry_wait") return "Retrying — Thread identity not confirmed";
+    if (job.status === "retry_wait") return "Recipient not verified";
     if (job.status === "running" || job.status === "claimed") return "Needs attention — Could not save retry state";
   }
   if (job.status === "retry_wait") {

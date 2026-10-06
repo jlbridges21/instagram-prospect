@@ -1,3 +1,5 @@
+import { pickWeightedIndex } from "../../lib/discovery/candidate-priority";
+
 export type DiscoverySource = "home_feed" | "suggested_accounts" | "seed_suggestion" | "seed_network";
 export type CandidateState = "pending" | "deferred" | "in_progress" | "done" | "skipped";
 
@@ -17,9 +19,10 @@ export type DiscoveryCandidate = {
   displayName?: string | null;
   sourcesSeen?: DiscoverySource[];
   seedSupport?: string[];
+  inspectionSelection?: "ranked" | "exploration";
 };
 
-const DEFERRED_CAP = 20;
+const DEFERRED_CAP = 30;
 
 export function sourceStrength(source: DiscoverySource) {
   if (source === "seed_network" || source === "seed_suggestion") return 3;
@@ -149,24 +152,31 @@ export class CandidateQueue {
     return "deferred" as const;
   }
 
-  claim(tabId: string, options?: { floor?: number; explore?: boolean }) {
+  claim(tabId: string, options?: { floor?: number; explore?: boolean; explorationFloor?: number; random?: number }) {
     const floor = options?.floor ?? 0;
     const explore = options?.explore ?? false;
+    const explorationFloor = options?.explorationFloor ?? 0;
     if (explore) {
-      const deferred = this.best((item) => item.state === "deferred");
-      if (deferred) {
-        deferred.state = "in_progress";
-        deferred.tab = tabId;
-        deferred.fromDeferred = true;
-        return deferred.candidate;
+      const deferred = [...this.items.values()]
+        .filter((item) => item.state === "deferred" && (item.candidate.priorityScore ?? 0) >= explorationFloor)
+        .sort((left, right) => (right.candidate.priorityScore ?? 0) - (left.candidate.priorityScore ?? 0));
+      const index = deferred.length > 0 ? pickWeightedIndex(deferred.map((item) => Math.max(1, item.candidate.priorityScore ?? 0)), options?.random ?? Math.random()) : -1;
+      const picked = index >= 0 ? deferred[index] : null;
+      if (picked) {
+        picked.state = "in_progress";
+        picked.tab = tabId;
+        picked.fromDeferred = true;
+        picked.candidate.inspectionSelection = "exploration";
+        return picked.candidate;
       }
     }
-    const best = this.best((item) => item.state === "pending" && (item.candidate.priorityScore ?? 0) >= floor);
-    if (!best) return null;
-    best.state = "in_progress";
-    best.tab = tabId;
-    best.fromDeferred = false;
-    return best.candidate;
+    const ranked = this.best((item) => item.state === "pending" && (item.candidate.priorityScore ?? 0) >= floor);
+    if (!ranked) return null;
+    ranked.state = "in_progress";
+    ranked.tab = tabId;
+    ranked.fromDeferred = false;
+    ranked.candidate.inspectionSelection = "ranked";
+    return ranked.candidate;
   }
 
   complete(username: string, state: "done" | "skipped" = "done") {

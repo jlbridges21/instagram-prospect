@@ -131,6 +131,8 @@ export type SettingsRow = {
   discovery_positive_keywords?: string[] | null;
   discovery_negative_keywords?: string[] | null;
   discovery_tuning?: Json | null;
+  discovery_ignored_keywords?: string[] | null;
+  discovery_optimization_started_at?: string | null;
   updated_at: string;
 };
 

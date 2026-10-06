@@ -104,6 +104,19 @@ export const DEFAULT_DISCOVERY_TUNING = {
   candidateExploreConservative: 10,
   candidateExploreBalanced: 20,
   candidateExploreExploratory: 35,
+  poolTarget: 25,
+  poolLowWater: 10,
+  poolHighWater: 30,
+  explorationFloor: 20,
+  seedMaxScrolls: 6,
+  seedStaleScrolls: 2,
+  commercialIntentWeight: 4,
+  sourceYieldWeight: 8,
+  networkConfidenceWeight: 8,
+  seedCooldownFirstMinutes: 45,
+  seedCooldownSecondMinutes: 120,
+  seedCooldownThirdMinutes: 360,
+  keywordSuggestionMinimum: 10,
 };
 
 export type DiscoveryTuning = { [K in keyof typeof DEFAULT_DISCOVERY_TUNING]: number };
@@ -114,6 +127,8 @@ export const YIELD_ORIGIN = 0.2;
 export const HIGH_YIELD_MINIMUM = 0.2;
 export const PRIORITY_HIGH_AT = 60;
 export const PRIORITY_MEDIUM_AT = 35;
+export const CANDIDATE_POOL_TARGET = 25;
+export const CANDIDATE_POOL_MAX_PASSES = 6;
 
 const TUNING_LIMITS: Record<keyof DiscoveryTuning, { min: number; max: number }> = {
   positiveKeywordBonus: { min: 0, max: 100 },
@@ -142,6 +157,19 @@ const TUNING_LIMITS: Record<keyof DiscoveryTuning, { min: number; max: number }>
   candidateExploreConservative: { min: 0, max: 100 },
   candidateExploreBalanced: { min: 0, max: 100 },
   candidateExploreExploratory: { min: 0, max: 100 },
+  poolTarget: { min: 5, max: 40 },
+  poolLowWater: { min: 1, max: 40 },
+  poolHighWater: { min: 5, max: 60 },
+  explorationFloor: { min: 0, max: 100 },
+  seedMaxScrolls: { min: 1, max: 12 },
+  seedStaleScrolls: { min: 1, max: 6 },
+  commercialIntentWeight: { min: 0, max: 20 },
+  sourceYieldWeight: { min: 0, max: 40 },
+  networkConfidenceWeight: { min: 0, max: 40 },
+  seedCooldownFirstMinutes: { min: 5, max: 24 * 60 },
+  seedCooldownSecondMinutes: { min: 5, max: 48 * 60 },
+  seedCooldownThirdMinutes: { min: 5, max: 7 * 24 * 60 },
+  keywordSuggestionMinimum: { min: 1, max: 100 },
 };
 
 export function clampTuning(input: unknown): DiscoveryTuning {

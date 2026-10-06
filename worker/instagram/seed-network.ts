@@ -1,6 +1,9 @@
 import { isInstagramProfileHref } from "./profile-href";
 
-export const SEED_NETWORK_SCROLL_LIMIT = 4;
+export const SEED_NETWORK_SCROLL_LIMIT = 6;
+export const SEED_NETWORK_STALE_SCROLLS = 2;
+export const SEED_NETWORK_BUDGET_MS = 12_000;
+export const SEED_NETWORK_VIEWPORT_CAP = 80;
 export const SEED_NETWORK_OPEN_WAIT_MS = 4_000;
 export const SEED_NETWORK_POLL_MS = 300;
 
@@ -32,6 +35,40 @@ export function emptySeedNetworkRead(reason: string, partial?: Partial<SeedNetwo
     ...partial,
     usernames: partial?.usernames ?? [],
   };
+}
+
+export function absorbFollowingViewport(input: {
+  visible: string[];
+  isKnown: (username: string) => boolean;
+  collected: string[];
+  target: number;
+}) {
+  const have = new Set(input.collected.map((name) => name.trim().toLowerCase()).filter(Boolean));
+  let added = 0;
+  for (const name of input.visible) {
+    const key = name.trim().toLowerCase();
+    if (!key || have.has(key) || input.isKnown(key)) continue;
+    have.add(key);
+    added += 1;
+    if (have.size >= input.target) break;
+  }
+  return { collected: [...have], added };
+}
+
+export function followingScrollDecision(input: {
+  newCount: number;
+  target: number;
+  scrolls: number;
+  maxScrolls: number;
+  staleScrolls: number;
+  staleLimit: number;
+  timedOut: boolean;
+}) {
+  if (input.newCount >= input.target) return "target" as const;
+  if (input.timedOut) return "timeout" as const;
+  if (input.scrolls >= input.maxScrolls) return "max_scrolls" as const;
+  if (input.staleScrolls >= input.staleLimit) return "no_new_usernames" as const;
+  return "scroll" as const;
 }
 
 export function followingUsernames(hrefs: string[], owner: string, limit: number) {

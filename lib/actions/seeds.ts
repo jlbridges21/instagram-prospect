@@ -222,6 +222,38 @@ export async function resetDiscoveryTuning(): Promise<SeedActionResult> {
   return saveDiscoveryOptimization({ ...current, tuning: clampTuning(undefined) });
 }
 
+export async function startOptimizationWindow(): Promise<SeedActionResult> {
+  const { supabase } = await requireUser();
+  const saved = await supabase.from("settings").update({
+    discovery_optimization_started_at: new Date().toISOString(),
+    updated_at: new Date().toISOString(),
+  }).eq("id", 1);
+  if (saved.error) return { ok: false, error: "Could not start the quality comparison. Apply the discovery quality migration first." };
+  refresh();
+  revalidatePath("/discovery");
+  return { ok: true, message: "Quality comparison starts from now. Judge it after 100 new inspections." };
+}
+
+export async function acceptSuggestedKeyword(term: string): Promise<SeedActionResult> {
+  const current = await currentOptimization();
+  const keyword = term.trim().toLowerCase();
+  if (!keyword) return { ok: false, error: "Enter a keyword." };
+  if (current.positiveKeywords.includes(keyword)) return { ok: true, message: `${keyword} is already a positive keyword.` };
+  return saveDiscoveryOptimization({ ...current, positiveKeywords: [...current.positiveKeywords, keyword] });
+}
+
+export async function ignoreSuggestedKeyword(term: string): Promise<SeedActionResult> {
+  const { supabase } = await requireUser();
+  const keyword = term.trim().toLowerCase();
+  const current = await supabase.from("settings").select("discovery_ignored_keywords").eq("id", 1).maybeSingle();
+  if (current.error) return { ok: false, error: "Could not save ignored keywords. Apply the discovery quality migration first." };
+  const ignored = [...new Set([...(current.data?.discovery_ignored_keywords ?? []), keyword])];
+  const saved = await supabase.from("settings").update({ discovery_ignored_keywords: ignored, updated_at: new Date().toISOString() }).eq("id", 1);
+  if (saved.error) return { ok: false, error: "Could not save ignored keywords. Apply the discovery quality migration first." };
+  refresh();
+  return { ok: true, message: `Ignored “${keyword}”. It will not be suggested again.` };
+}
+
 export async function resetDiscoveryKeywords(): Promise<SeedActionResult> {
   return saveDiscoveryOptimization({
     ...(await currentOptimization()),

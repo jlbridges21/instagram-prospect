@@ -347,7 +347,7 @@ export function QueueBoard({
               <Detail label="Started" value={formatDateTime(selected.job.started_at, timeZone, dateFormat)} />
               <Detail label="Completed" value={formatDateTime(selected.job.completed_at, timeZone, dateFormat)} />
               <Detail label="Attempts" value={`${selected.job.attempt_count} of ${selected.job.max_attempts}`} />
-              <Detail label="Error" value={selected.job.last_error ?? "—"} />
+              <Detail label="Error" value={jobErrorText(selected.job)} />
               <Detail label="Result" value={resultText(selected.job.result)} />
             </dl>
             {selected.job.status === "pending" || selected.job.status === "retry_wait" ? (
@@ -444,7 +444,7 @@ function RowActions({
           Retry
         </Button>
       ) : null}
-      {row.job.status === "pending" || row.job.status === "retry_wait" || row.job.status === "claimed" ? (
+      {row.job.status === "pending" || row.job.status === "retry_wait" || row.job.status === "claimed" || row.job.status === "failed" ? (
         <Button size="sm" variant="danger" disabled={pending} onClick={onCancel}>
           Cancel job
         </Button>
@@ -496,6 +496,15 @@ function matchesTab(status: OutreachJobStatus, tab: TabId) {
   if (tab === "failed") return status === "failed";
   if (tab === "cancelled") return status === "cancelled";
   return status === "completed";
+}
+
+function jobErrorText(job: OutreachJobRow) {
+  const error = job.last_error ?? "";
+  if (/layout did not change|recipient detection is unresolved/i.test(error)) {
+    return "Recipient not verified. The composer was found, but no exact username signal was available in the current Direct layout.";
+  }
+  if (stepStatus(job) === "Needs Review") return "Recipient could not be verified. The Direct thread did not expose an exact username.";
+  return error || "—";
 }
 
 function stepStatus(job: OutreachJobRow) {
