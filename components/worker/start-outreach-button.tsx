@@ -11,12 +11,14 @@ export function StartOutreachButton({
   hourlyMaximum,
   dailyMaximum,
   minimumSpacingSeconds,
+  className,
 }: {
   disabled?: boolean;
   ready?: number;
   hourlyMaximum?: number;
   dailyMaximum?: number;
   minimumSpacingSeconds?: number;
+  className?: string;
 }) {
   const [open, setOpen] = useState(false);
   const [pending, startTransition] = useTransition();
@@ -34,7 +36,7 @@ export function StartOutreachButton({
 
   return (
     <>
-      <button type="button" className="rounded-lg border border-slate-200 px-2 py-1 text-xs disabled:opacity-50" disabled={disabled} onClick={() => setOpen(true)}>
+      <button type="button" className={className ?? "rounded-lg border border-slate-200 px-2 py-1 text-xs disabled:opacity-50"} disabled={disabled} onClick={() => setOpen(true)}>
         Start Outreach
       </button>
       {open ? (

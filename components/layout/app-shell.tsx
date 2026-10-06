@@ -22,6 +22,7 @@ import {
 import { logout } from "@/lib/actions/auth";
 import { NAV_ITEMS, isNavItemActive, type NavIcon } from "@/lib/constants/navigation";
 import { Logo } from "@/components/layout/logo";
+import { MobileBottomNav, MobileHeader } from "@/components/mobile/mobile-chrome";
 import { WorkerWidget } from "@/components/worker/worker-widget";
 import { cn } from "@/lib/utils/cn";
 
@@ -105,7 +106,9 @@ export function AppShell({
         <SidebarContent email={email} pathname={pathname} workerOnline={workerOnline} reviewCount={reviewLive} collapsed={collapsed} onToggle={toggleSidebar} />
       </aside>
       <div className={cn("transition-[padding]", collapsed ? "lg:pl-[4.75rem]" : "lg:pl-64")}>
-        <header className="sticky top-0 z-20 border-b border-white/10 bg-[#05070d]/80 px-4 py-3 backdrop-blur-xl">
+        <MobileHeader email={email} />
+        {live?.attentionReason ? <p className="border-b border-red-400/30 bg-red-500/15 px-4 py-2 text-sm text-red-100 md:hidden">{live.attentionReason}</p> : null}
+        <header className="sticky top-0 z-20 hidden border-b border-white/10 bg-[#05070d]/80 px-4 py-3 backdrop-blur-xl md:block">
           <div className="flex items-center justify-between gap-3 lg:hidden">
             <Logo compact />
             <button type="button" className="inline-flex h-9 w-9 items-center justify-center rounded-lg" aria-label={open ? "Close navigation" : "Open navigation"} aria-expanded={open} onClick={() => setOpenPath(open ? null : pathname)}>
@@ -129,8 +132,10 @@ export function AppShell({
         ) : null}
         <main id="main" className="mx-auto w-full max-w-[1440px] px-4 py-6 pb-36 sm:px-6 lg:px-8">
           {children}
+          <div className="h-[calc(4.75rem+env(safe-area-inset-bottom))] md:hidden" aria-hidden />
         </main>
       </div>
+      <MobileBottomNav />
       <WorkerWidget timeZone={timeZone} />
     </div>
   );

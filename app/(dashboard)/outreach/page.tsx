@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import { MobileOutreach } from "@/components/mobile/mobile-outreach";
 import { AutomationControls } from "@/components/outreach/automation-controls";
 import { RecalculateScheduleButton } from "@/components/outreach/recalculate-schedule-button";
 import { OutreachLive } from "@/components/outreach/outreach-live";
@@ -12,6 +13,7 @@ import { getLatestWorker } from "@/lib/db/workers";
 import { attentionKind, formatOutreachStatus, isStateSyncFailure } from "@/lib/status/operations";
 import { getWorkerHealth } from "@/lib/utils/worker-health";
 import { claimPaceDecision, paceReasonLabel, queueHealth, reflowPlan, type PaceJob } from "@/lib/outreach/pace";
+import { compareQueueJobs, statusesForTab } from "@/lib/outreach/queue-sort";
 
 export const metadata: Metadata = { title: "Outreach" };
 
@@ -78,8 +80,43 @@ export default async function OutreachPage() {
     stateSync: isStateSyncFailure(worker?.attention_reason) ? { username: worker?.current_username } : null,
   });
 
+  const upcomingStatuses = new Set(statusesForTab("upcoming") ?? []);
+  const prospectsById = new Map((queue.ok ? queue.data.prospects : []).map((prospect) => [prospect.id, prospect]));
+  const upcoming = (queue.ok ? queue.data.jobs : [])
+    .filter((job) => upcomingStatuses.has(job.status))
+    .sort((left, right) => compareQueueJobs("upcoming", left, right))
+    .slice(0, 12)
+    .map((job) => {
+      const prospect = prospectsById.get(job.prospect_id);
+      return {
+        id: job.prospect_id,
+        username: prospect?.instagram_username ?? "prospect",
+        pictureUrl: null,
+        state: job.job_type.replaceAll("_", " "),
+        when: null,
+      };
+    });
+
   return (
     <div>
+      <MobileOutreach
+        running={settings.outreach.automationEnabled}
+        queued={snapshot?.queueProspects ?? 0}
+        contacted={snapshot?.sentToday ?? 0}
+        nextAt={pace.at?.toISOString() ?? null}
+        currentTask={worker?.current_task ?? null}
+        currentUsername={worker?.current_username ?? null}
+        remaining={healthCounts.remaining}
+        fresh={healthCounts.fresh}
+        retrying={healthCounts.retrying}
+        failed={healthCounts.failed}
+        spacingSeconds={settings.outreach.minimumActionDelaySeconds}
+        upcoming={upcoming}
+        workerOnline={online}
+        browser="connected"
+        discovery={settings.discovery.enabled ? "RUNNING" : "PAUSED"}
+      />
+      <div className="hidden md:block">
       <PageHeader
         title="Outreach"
         description="Process approved prospects through verification, Follow, and DM. Pacing and daily limits still apply."
@@ -135,6 +172,7 @@ export default async function OutreachPage() {
           dateFormat={settings.dateFormat}
         />
       ) : null}
+      </div>
     </div>
   );
 }

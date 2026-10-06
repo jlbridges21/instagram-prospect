@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import { MobileProspects } from "@/components/mobile/mobile-prospects";
 import { DatabaseSetup } from "@/components/layout/database-setup";
 import { PageHeader } from "@/components/layout/page-header";
 import { ProspectFilters, ProspectPagination } from "@/components/prospects/prospect-filters";
@@ -9,6 +10,7 @@ import { categoryLabel } from "@/lib/ai/categories";
 import {
   pageSizeFromParam,
   SOURCE_LABELS,
+  type ProspectStatus,
   isFitLabel,
   isProspectSort,
   isProspectSource,
@@ -89,8 +91,39 @@ export default async function ProspectsPage({
   const count = pageResult.ok ? pageResult.data.count : 0;
   const pageCount = Math.max(1, Math.ceil(count / query.pageSize));
 
+  const mobileRows = pageRows.map((row) => ({
+    id: row.id,
+    name: row.display_name || row.first_name || row.instagram_username,
+    username: row.instagram_username,
+    followers: formatFollowerCount(row.follower_count),
+    fitLabel: row.fit_label,
+    fitScore: row.fit_score,
+    status: row.status as ProspectStatus,
+    reason: whyLine(row),
+    category: categoryLabel(row.category),
+    source: SOURCE_LABELS[row.source as ProspectSource] ?? row.source,
+    pictureUrl: row.profile_picture_url,
+    profileUrl: row.profile_url || `https://www.instagram.com/${row.instagram_username}/`,
+    message: prospectMessage({
+      template: settings.messageTemplate,
+      messageOverride: row.message_override,
+      firstName: row.first_name,
+      username: row.instagram_username,
+    }),
+    canRequeue: row.status === "approved" && !row.already_contacted && Boolean(outreachFlags.get(row.id)?.canRequeue),
+  }));
+
   return (
     <div>
+      <MobileProspects
+        rows={mobileRows}
+        query={query}
+        counts={counts}
+        page={query.page}
+        pageCount={pageCount}
+        empty={view === "all" ? "No profiles match these filters." : prospectTab(view).empty}
+      />
+      <div className="hidden md:block">
       <PageHeader
         title="Prospects"
         description={
@@ -151,6 +184,7 @@ export default async function ProspectsPage({
         }))}
       />}
       <ProspectPagination query={query} page={query.page} pageCount={pageCount} />
+      </div>
     </div>
   );
 }

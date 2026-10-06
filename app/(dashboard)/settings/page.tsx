@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import { MobileSettings } from "@/components/mobile/mobile-settings";
 import { DatabaseSetup } from "@/components/layout/database-setup";
 import { PageHeader } from "@/components/layout/page-header";
 import { DiscoverySeedsPanel } from "@/components/settings/discovery-seeds-panel";
@@ -29,6 +30,16 @@ export default async function SettingsPage() {
 
   return (
     <div>
+      {settingsResult.ok && targetingResult.ok ? (
+        <MobileSettings
+          settings={settings}
+          targeting={targeting}
+          openaiConfigured={isOpenAiConfigured()}
+          seeds={seedsResult.ok ? seedsResult.data : []}
+          optimization={settings.optimization}
+        />
+      ) : null}
+      <div className="hidden md:block">
       <PageHeader
         title="Settings"
         description={
@@ -74,6 +85,7 @@ export default async function SettingsPage() {
           migrationNeeded={!seedsResult.ok && seedsResult.missingTable === true}
         />
       ) : null}
+      </div>
     </div>
   );
 }

@@ -5,7 +5,7 @@ import { toast } from "sonner";
 import { pauseAutomation, pendingOutreachCount, resumeAutomation } from "@/lib/actions/outreach";
 import { Button } from "@/components/ui/button";
 
-export function AutomationControls({ enabled }: { enabled: boolean }) {
+export function AutomationControls({ enabled, prominent = false }: { enabled: boolean; prominent?: boolean }) {
   const [open, setOpen] = useState(false);
   const [confirmCancel, setConfirmCancel] = useState(false);
   const [pendingCount, setPendingCount] = useState<number | null>(null);
@@ -46,22 +46,24 @@ export function AutomationControls({ enabled }: { enabled: boolean }) {
 
   return (
     <div className="flex flex-wrap items-center gap-2">
-      <span
-        className={
-          enabled
-            ? "rounded-full bg-emerald-50 px-2.5 py-1 text-xs font-medium text-emerald-700"
-            : "rounded-full bg-amber-50 px-2.5 py-1 text-xs font-medium text-amber-800"
-        }
-      >
-        {enabled ? "Running" : "Paused"}
-      </span>
+      {prominent ? null : (
+        <span
+          className={
+            enabled
+              ? "rounded-full bg-emerald-50 px-2.5 py-1 text-xs font-medium text-emerald-700"
+              : "rounded-full bg-amber-50 px-2.5 py-1 text-xs font-medium text-amber-800"
+          }
+        >
+          {enabled ? "Running" : "Paused"}
+        </span>
+      )}
       {enabled ? (
-        <Button size="sm" variant="secondary" disabled={pending} onClick={() => setOpen(true)}>
-          Stop outreach
+        <Button size={prominent ? "md" : "sm"} className={prominent ? "min-h-12 w-full text-base" : undefined} variant="secondary" disabled={pending} onClick={() => setOpen(true)}>
+          {prominent ? "Pause Outreach" : "Stop outreach"}
         </Button>
       ) : (
-        <Button size="sm" disabled={pending} onClick={resume}>
-          Resume automation
+        <Button size={prominent ? "md" : "sm"} className={prominent ? "min-h-12 w-full text-base" : undefined} disabled={pending} onClick={resume}>
+          {prominent ? "Resume Outreach" : "Resume automation"}
         </Button>
       )}
       {open ? (

@@ -4,7 +4,7 @@ import { useState, useTransition } from "react";
 import { toast } from "sonner";
 import { requestWorkerCommand } from "@/lib/actions/worker-commands";
 
-export function StartDiscoveryButton({ disabled, reviewCount }: { disabled?: boolean; reviewCount: number }) {
+export function StartDiscoveryButton({ disabled, reviewCount, className }: { disabled?: boolean; reviewCount: number; className?: string }) {
   const [open, setOpen] = useState(false);
   const [mode, setMode] = useState<"review_target" | "duration" | "inspection_count" | "continuous">("review_target");
   const [target, setTarget] = useState("20");
@@ -37,7 +37,7 @@ export function StartDiscoveryButton({ disabled, reviewCount }: { disabled?: boo
 
   return (
     <>
-      <button type="button" className="rounded-lg bg-indigo-600 px-2 py-1 text-xs text-white disabled:opacity-50" disabled={disabled} onClick={() => setOpen(true)}>
+      <button type="button" className={className ?? "rounded-lg bg-indigo-600 px-2 py-1 text-xs text-white disabled:opacity-50"} disabled={disabled} onClick={() => setOpen(true)}>
         Start Discovery
       </button>
       {open ? (

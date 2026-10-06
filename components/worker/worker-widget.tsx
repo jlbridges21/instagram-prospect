@@ -119,13 +119,13 @@ export function WorkerWidget({ timeZone }: { timeZone: string }) {
   return (
     <>
       {attention || versions.mismatch ? (
-        <div className="fixed inset-x-0 top-36 z-30 border-b border-red-400/30 bg-red-500/15 px-4 py-2 text-sm text-red-100 lg:left-64" role="status">
+        <div className="fixed inset-x-0 top-36 z-30 hidden border-b border-red-400/30 bg-red-500/15 px-4 py-2 text-sm text-red-100 md:block lg:left-64" role="status">
           <p className="font-semibold">{versions.mismatch ? "Worker update required" : "Instagram needs attention"}</p>
           <p>{versions.mismatch ? versions.message : discovery.reason}</p>
           <p>{versions.mismatch ? "Worker actions stay disabled until the Windows worker is updated." : discovery.detail}</p>
         </div>
       ) : null}
-      <section className="fixed bottom-4 right-4 z-40 w-[min(24rem,calc(100vw-1.5rem))]" aria-label="Worker control" data-timezone={timeZone}>
+      <section className="fixed bottom-4 right-4 z-40 hidden w-[min(24rem,calc(100vw-1.5rem))] md:block" aria-label="Worker control" data-timezone={timeZone}>
         {open ? (
           <div className="max-h-[70vh] overflow-y-auto rounded-2xl border border-white/10 bg-[#0b1020]/90 p-4 text-sm shadow-[0_20px_60px_rgba(0,0,0,0.45)] backdrop-blur-xl">
             <div className="flex items-center justify-between">

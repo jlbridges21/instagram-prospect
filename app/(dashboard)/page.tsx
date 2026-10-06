@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import { MobileOverview } from "@/components/mobile/mobile-overview";
 import { RecentActivity } from "@/components/dashboard/recent-activity";
 import { OverviewStage, type OverviewProspect } from "@/components/home/overview-stage";
 import { LiveProspectSync } from "@/components/prospects/live-sync";
@@ -110,6 +111,28 @@ export default async function OverviewPage() {
 
   return (
     <div>
+      <MobileOverview
+        discovery={discoveryState.actual}
+        discoveryDetail={hourly ? `${hourly.count} / ${hourly.limit} this hour` : `${progress.dailyInspections} inspected today`}
+        reviewCount={progress.currentReview}
+        outreach={outreachState.actual}
+        outreachDetail={outreachState.reason}
+        workerOnline={online}
+        workerDetail={online ? "Windows automation ready" : "Start the Windows worker"}
+        queueCount={outreach?.queueProspects ?? 0}
+        contactedCount={counts.contacted}
+        inspectedCount={hourly?.count ?? progress.dailyInspections}
+        inspectedLabel={hourly ? "Inspected This Hour" : "Inspected Today"}
+        currentTask={worker?.current_task ?? null}
+        currentUsername={worker?.current_username ?? null}
+        nextOutreachAt={nextOutreachAt}
+        hourlyResumesAt={hourly?.resumesAt ?? null}
+        browserState={browser?.state ?? "connected"}
+        discoveryEnabled={settings.discovery.enabled}
+        outreachEnabled={settings.outreach.automationEnabled}
+        reviewTarget={settings.discovery.reviewTarget}
+      />
+      <div className="hidden md:block">
       <LiveProspectSync />
       {missing ? <div className="mb-6"><DatabaseSetup message={missing.error} /></div> : null}
       {failure ? <div className="mb-6 rounded-xl border border-red-400/30 bg-red-500/10 px-4 py-3 text-sm text-red-200">{failure.error}</div> : null}
@@ -161,6 +184,7 @@ export default async function OverviewPage() {
           eventType: event.event_type,
         }))}
       />
+      </div>
     </div>
   );
 }
