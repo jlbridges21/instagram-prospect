@@ -1,4 +1,5 @@
 import { pickWeightedIndex } from "../../lib/discovery/candidate-priority";
+import { censusFromScores, type PoolCensus } from "../../lib/discovery/pacing";
 
 export type DiscoverySource = "home_feed" | "suggested_accounts" | "seed_suggestion" | "seed_network";
 export type CandidateState = "pending" | "deferred" | "in_progress" | "done" | "skipped";
@@ -97,6 +98,13 @@ export class CandidateQueue {
 
   deferredCount() {
     return [...this.items.values()].filter((item) => item.state === "deferred").length;
+  }
+
+  census(floor: number, explorationFloor: number): PoolCensus {
+    const scores = [...this.items.values()]
+      .filter((item) => item.state === "pending" || item.state === "deferred")
+      .map((item) => item.candidate.priorityScore ?? 0);
+    return censusFromScores(scores, floor, explorationFloor);
   }
 
   hold(username: string) {

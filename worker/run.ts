@@ -1,10 +1,11 @@
 import fs from "node:fs";
 import { continuousOutreachStep } from "../lib/discovery/policy";
+import { rememberExplorationDecision } from "../lib/discovery/candidate-priority";
 import { clampTuning } from "../lib/discovery/defaults";
 import { discoveryDue, discoveryStallDecision, inspectionIntervalMs, scheduleNextInspection, startDiscoveryCadence } from "../lib/discovery/cadence";
 import { outreachStallDecision } from "../lib/outreach/pace";
 import { formatCountdown } from "../lib/ui/countdown";
-import { checkpointHoldDecision, formatHourlyWaitEvent, formatWorkerModes, rollingHourInspectionCount } from "../lib/discovery/pacing";
+import { censusFromScores, checkpointHoldDecision, formatHourlyWaitEvent, formatWorkerModes, rollingHourInspectionCount } from "../lib/discovery/pacing";
 import { readHourlyStamps } from "./discovery/hourly-history";
 import { readDiscoveryCadence, writeDiscoveryCadence } from "./discovery/cadence-file";
 import { startOfNextLocalDay } from "../lib/outreach/time";
@@ -277,6 +278,8 @@ export async function runWorker(mode: RunMode) {
   let discoveryOverdueSince = 0;
   let discoveryRetryAt = 0;
   let discoveryCollectAt = 0;
+  let discoveryWaitUntil = 0;
+  let explorationChoice: { slot: number; explore: boolean } | null = null;
   let discoverySlotLogged = false;
   let outreachStallLogged = false;
   let dailyBlockedUntil = 0;
@@ -685,14 +688,17 @@ export async function runWorker(mode: RunMode) {
           blocked: discoveryBlocked,
           overdueSince: discoveryOverdueSince,
           lastProgressAt: lastDiscoveryProgressAt,
+          sourcing: discoveryWaitUntil > Date.now(),
         });
         discoveryOverdueSince = stall.overdueSince;
         if (stall.stalled && !discoveryStallLogged) {
           discoveryStallLogged = true;
           console.log("Discovery stalled. Reconciling the inspection schedule.");
-          discoveryNextAt = Date.now();
-          discoveryOverdueSince = 0;
-          writeDiscoveryCadence({ nextInspectionAt: discoveryNextAt, lastInspectionAt: lastDiscoveryProgressAt || null });
+          if (discoveryWaitUntil <= Date.now()) {
+            discoveryNextAt = Date.now();
+            discoveryOverdueSince = 0;
+            writeDiscoveryCadence({ nextInspectionAt: discoveryNextAt, lastInspectionAt: lastDiscoveryProgressAt || null });
+          }
         }
         const discoveryIsDue = config.discoveryEnabled && !control.pauseDiscovery && dailyBlockedUntil === 0 && discoveryDue(Date.now(), discoveryNextAt) && Date.now() >= discoveryRetryAt;
         const outreachStall = outreachStallDecision({
@@ -706,7 +712,6 @@ export async function runWorker(mode: RunMode) {
           console.log("Outreach stalled. Reconciling the next prospect.");
           outreachDueAt = Date.now();
         }
-        if (discoveryIsDue) discoveryStallLogged = false;
         if (outreachDueNow) outreachStallLogged = false;
         const step = nextOrchestratorStep({
           now: Date.now(),
@@ -781,8 +786,17 @@ export async function runWorker(mode: RunMode) {
         });
         const outreachStillDue = config.automationEnabled && (activeSideEffect != null || Date.now() >= outreachDueAt);
         const poolTuning = clampTuning(config.tuning);
-        const storedPool = persistedPoolSize();
-        const collectionDue = config.discoveryEnabled && !control.pauseDiscovery && storedPool < poolTuning.poolTarget && storedPool < poolTuning.poolHighWater && Date.now() >= discoveryCollectAt;
+        const storedSupply = persistedCandidateSupply(config.minCandidatePreScore ?? 35, poolTuning.explorationFloor);
+        const collectionDue = config.discoveryEnabled && !control.pauseDiscovery && storedSupply.ranked < poolTuning.poolLowWater && Date.now() >= discoveryCollectAt && Date.now() >= discoveryWaitUntil;
+        if (discoveryIsDue) {
+          explorationChoice = rememberExplorationDecision({
+            previous: explorationChoice,
+            slot: discoveryNextAt,
+            strategy: config.discoveryStrategy ?? "balanced",
+            random: Math.random(),
+            tuning: config.tuning,
+          });
+        }
         if (admission.enter && (discoveryIsDue || collectionDue) && !outreachStillDue) {
           const tabs = await ensureProfileTabs();
           if (!tabs) {
@@ -831,8 +845,13 @@ export async function runWorker(mode: RunMode) {
               browserLock,
               singleTurn: true,
               allowInspect: discoveryIsDue,
+              exploreDecision: discoveryIsDue ? explorationChoice?.explore === true : false,
               onProgress: () => {
                 lastDiscoveryProgressAt = Date.now();
+                discoveryStallLogged = false;
+              },
+              onOutcome: (outcome) => {
+                discoveryWaitUntil = outcome.action === "waiting" ? Date.now() + 60_000 : 0;
               },
               readSeedProfile: async (username) => {
                 const tab = tabs.find((item) => item && !item.isClosed()) ?? null;
@@ -868,7 +887,12 @@ export async function runWorker(mode: RunMode) {
             });
           } finally {
             session.discoveryActive = false;
-            discoveryCollectAt = Date.now() + 20_000;
+            if (discoveryWaitUntil > Date.now()) {
+              discoveryRetryAt = discoveryWaitUntil;
+              discoveryCollectAt = discoveryWaitUntil;
+            } else {
+              discoveryCollectAt = Date.now() + 20_000;
+            }
             if (stats.seen > seenBefore) {
               const completedAt = Date.now();
               discoveryRetryAt = 0;
@@ -892,7 +916,7 @@ export async function runWorker(mode: RunMode) {
               dailyBlockedUntil = startOfNextLocalDay(new Date(), config.timezone).getTime();
               discoveryNextAt = dailyBlockedUntil;
               writeDiscoveryCadence({ nextInspectionAt: discoveryNextAt, lastInspectionAt: lastDiscoveryProgressAt || null });
-            } else if (discoveryIsDue) {
+            } else if (discoveryIsDue && discoveryWaitUntil <= Date.now()) {
               discoveryRetryAt = Date.now() + Math.min(intervalMs, 15_000);
             }
           }
@@ -1704,12 +1728,16 @@ export async function inspectUsername(rawUsername: string) {
   }
 }
 
-function persistedPoolSize() {
+function persistedCandidateSupply(floor: number, explorationFloor: number) {
   try {
-    const parsed = JSON.parse(fs.readFileSync(discoveryQueuePath(), "utf8")) as { pending?: unknown[]; deferred?: unknown[] };
-    return (parsed.pending?.length ?? 0) + (parsed.deferred?.length ?? 0);
+    const parsed = JSON.parse(fs.readFileSync(discoveryQueuePath(), "utf8")) as {
+      pending?: Array<{ priorityScore?: number }>;
+      deferred?: Array<{ priorityScore?: number }>;
+    };
+    const scores = [...(parsed.pending ?? []), ...(parsed.deferred ?? [])].map((item) => item.priorityScore ?? 0);
+    return censusFromScores(scores, floor, explorationFloor);
   } catch {
-    return 0;
+    return censusFromScores([], floor, explorationFloor);
   }
 }
 

@@ -153,6 +153,17 @@ export function shouldExploreCandidate(
   return random < candidateExplorationPercent(strategy, tuning) / 100;
 }
 
+export function rememberExplorationDecision(input: {
+  previous: { slot: number; explore: boolean } | null;
+  slot: number;
+  strategy: "conservative" | "balanced" | "exploratory";
+  random: number;
+  tuning?: unknown;
+}) {
+  if (input.previous && input.previous.slot === input.slot) return input.previous;
+  return { slot: input.slot, explore: shouldExploreCandidate(input.strategy, input.random, input.tuning) };
+}
+
 export function priorityLabel(score: number): PriorityLabel {
   if (score >= PRIORITY_HIGH_AT) return "High";
   if (score >= PRIORITY_MEDIUM_AT) return "Medium";

@@ -21,8 +21,10 @@ import { log } from "../logger";
 import { discoveryQueuePath } from "../paths";
 import {
   acquisitionDecision,
+  candidateRefillDecision,
   getDiscoveryHourlyState,
-  poolCollectionDecision,
+  poolStatusLine,
+  REFILL_PASS_LIMIT,
   releaseInspectionSlot,
   reserveInspectionSlot,
 } from "../../lib/discovery/pacing";
@@ -57,6 +59,13 @@ export type CloudEfficiency = {
 };
 
 const PROFILE_TABS = ["profile-tab-1", "profile-tab-2"] as const;
+let lastOrchestrationLog = "";
+
+function logPoolOnce(line: string) {
+  if (line === lastOrchestrationLog) return;
+  lastOrchestrationLog = line;
+  console.log(line);
+}
 
 export function emptyEfficiency(): CloudEfficiency {
   return {
@@ -107,7 +116,9 @@ export async function runDiscoveryV2(input: {
   browserLock?: { tryAcquire: (owner: "discovery") => boolean; release: (owner: "discovery") => void };
   singleTurn?: boolean;
   allowInspect?: boolean;
+  exploreDecision?: boolean;
   onProgress?: () => void;
+  onOutcome?: (outcome: { action: "inspected" | "waiting" }) => void;
   readSeedProfile?: (username: string) => Promise<import("../instagram/types").DomSnapshot | null>;
   readSeedNetwork?: (username: string, limit: number, isKnown?: (username: string) => boolean, limits?: { maxScrolls?: number; staleScrolls?: number }) => Promise<import("../instagram/seed-network").SeedNetworkRead>;
 }) {
@@ -124,6 +135,7 @@ export async function runDiscoveryV2(input: {
   let aiSinceGate = 0;
   let emptyCycles = 0;
   let acquisitionHeld = false;
+  let refillSource = "";
   let exitReason: "hourly" | "yield" | "stopped" | "done" = "done";
   const qualify = new QualificationQueue(3, async (prospectId) => {
       metrics.qualificationRequests += 1;
@@ -168,12 +180,7 @@ export async function runDiscoveryV2(input: {
     }
     latestConfig = await input.cloud.config();
     if (input.singleTurn) {
-      const limits = poolLimits(latestConfig);
-      queue.setTarget(limits.highWater);
-      const size = queue.pendingCount() + queue.deferredCount();
-      if (poolCollectionDecision({ size, lowWater: limits.lowWater, highWater: limits.highWater }).collect && size < limits.target) await collectLoop();
-      const tab = tabs.find((item) => item.id === input.preferredTab) ?? tabs[0];
-      if (input.allowInspect !== false && tab && (queue.pendingCount() > 0 || queue.deferredCount() > 0)) await inspectLoop(tab.id, tab.page);
+      await orchestrateTurn();
     } else {
       await Promise.all([
         collectLoop(),
@@ -444,6 +451,93 @@ export async function runDiscoveryV2(input: {
     return { queued, deferred, considered: fresh.length + merges.length, survived: accepted.length };
   }
 
+  async function orchestrateTurn() {
+    const config = latestConfig ?? await input.cloud.config();
+    latestConfig = config;
+    const limits = poolLimits(config);
+    queue.setTarget(limits.highWater);
+    const floor = config.minCandidatePreScore ?? 35;
+    const explorationFloor = clampTuning(config.tuning).explorationFloor;
+    const allowInspect = input.allowInspect !== false;
+    const explore = input.exploreDecision === true;
+    let passes = 0;
+    let emptyPasses = 0;
+    let refillLogged = false;
+    while (!finished()) {
+      if (await input.shouldYield?.()) {
+        exitReason = "yield";
+        return;
+      }
+      const census = queue.census(floor, explorationFloor);
+      const action = candidateRefillDecision({
+        census,
+        lowWater: limits.lowWater,
+        explore,
+        allowInspect,
+        passes,
+        maxPasses: REFILL_PASS_LIMIT,
+        consecutiveEmptyPasses: emptyPasses,
+      });
+      if (action === "inspect_ranked" || action === "inspect_exploration") {
+        const tab = tabs.find((item) => item.id === input.preferredTab) ?? tabs[0];
+        if (!tab) return;
+        const seenBefore = input.stats.seen;
+        await inspectLoop(tab.id, tab.page, { once: true, explore: action === "inspect_exploration" });
+        input.onOutcome?.({ action: input.stats.seen > seenBefore ? "inspected" : "waiting" });
+        return;
+      }
+      if (action === "refill") {
+        if (!refillLogged) {
+          console.log("No ranked candidate available.");
+          console.log(`Pool: ${poolStatusLine(census)}`);
+          console.log("Refilling candidate pool...");
+          refillLogged = true;
+        }
+        const added = await acquirePass();
+        passes += 1;
+        emptyPasses = added > 0 ? 0 : emptyPasses + 1;
+        continue;
+      }
+      logPoolOnce(`No ranked candidate available.\nPool: ${poolStatusLine(census)}`);
+      input.onProgress?.();
+      input.onOutcome?.({ action: "waiting" });
+      return;
+    }
+  }
+
+  async function acquirePass() {
+    const config = await input.cloud.config();
+    latestConfig = config;
+    if (!config.discoveryEnabled) return 0;
+    queue.setTarget(poolLimits(config).highWater);
+    input.live.task = "discovering_candidates";
+    input.onProgress?.();
+    const collected = await collectCandidates(config);
+    if (refillSource !== collected.sourceLabel) {
+      refillSource = collected.sourceLabel;
+      console.log(`Discovery source: ${collected.sourceLabel}`);
+    }
+    const ranked = collected.ordered.length > 0
+      ? await rankAndPlace(collected.ordered, config)
+      : { queued: 0, deferred: 0, considered: 0, survived: 0 };
+    if (collected.seedUsername) {
+      const added = ranked.queued + ranked.deferred;
+      const outcome = seedTurnOutcome({ newAfterDedupe: added, queuedAboveFloor: ranked.queued });
+      if (added > 0) clearEmptySeed(collected.seedUsername);
+      else if (outcome === "empty" && collected.ordered.length > 0) {
+        const pause = recordUnproductiveSeed(collected.seedUsername, Date.now(), undefined, exhaustionDurations(config));
+        console.log("Seed network produced no new candidates.");
+        console.log(`Cooling down @${collected.seedUsername} for ${pause.minutes} minutes after ${pause.emptyVisits} empty visit${pause.emptyVisits === 1 ? "" : "s"}.`);
+      }
+    }
+    publish(config, collected.sourceLabel);
+    if (queue.pendingCount() + queue.deferredCount() < poolLimits(config).highWater) {
+      await scrollFeed(input.homePage);
+      await sleep(1_000);
+    }
+    return ranked.considered;
+  }
+
   async function collectLoop() {
     let idleScrolls = 0;
     let announcedSource = "";
@@ -529,7 +623,7 @@ export async function runDiscoveryV2(input: {
     }
   }
 
-  async function inspectLoop(tabId: (typeof PROFILE_TABS)[number], page: Page) {
+  async function inspectLoop(tabId: (typeof PROFILE_TABS)[number], page: Page, options?: { once?: boolean; explore?: boolean }) {
     while (!finished()) {
       if (await input.shouldYield?.()) {
         exitReason = "yield";
@@ -539,13 +633,12 @@ export async function runDiscoveryV2(input: {
       const floor = latestConfig?.minCandidatePreScore ?? 35;
       const explorationFloor = clampTuning(latestConfig?.tuning).explorationFloor;
       const exploreRoll = Math.random();
-      const explore = shouldExploreCandidate(latestConfig?.discoveryStrategy ?? "balanced", exploreRoll, latestConfig?.tuning);
+      const explore = typeof options?.explore === "boolean"
+        ? options.explore
+        : shouldExploreCandidate(latestConfig?.discoveryStrategy ?? "balanced", exploreRoll, latestConfig?.tuning);
       const candidate = queue.claim(tabId, { floor, explore, explorationFloor, random: exploreRoll });
       if (!candidate) {
-        if (input.singleTurn) {
-          if (queue.deferredCount() > 0) console.log(`No candidate met the minimum pre-score of ${floor}.`);
-          return;
-        }
+        if (options?.once || input.singleTurn) return;
         await sleep(300);
         continue;
       }
@@ -624,7 +717,7 @@ export async function runDiscoveryV2(input: {
       } finally {
         input.browserLock?.release("discovery");
       }
-      if (input.singleTurn) return;
+      if (options?.once || input.singleTurn) return;
     }
   }
 

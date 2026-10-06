@@ -126,6 +126,55 @@ export function poolCollectionDecision(input: { size: number; lowWater: number; 
   return { collect: true as const, reason: "below_target" as const };
 }
 
+export const REFILL_PASS_LIMIT = 4;
+
+export type PoolCensus = {
+  total: number;
+  ranked: number;
+  explorationEligible: number;
+  deferred: number;
+};
+
+export function censusFromScores(scores: number[], floor: number, explorationFloor: number): PoolCensus {
+  let ranked = 0;
+  let explorationEligible = 0;
+  let deferred = 0;
+  for (const score of scores) {
+    if (score >= floor) ranked += 1;
+    else if (score >= explorationFloor) explorationEligible += 1;
+    else deferred += 1;
+  }
+  return { total: scores.length, ranked, explorationEligible, deferred };
+}
+
+export type RefillAction = "inspect_ranked" | "inspect_exploration" | "refill" | "wait";
+
+export function candidateRefillDecision(input: {
+  census: PoolCensus;
+  lowWater: number;
+  explore: boolean;
+  allowInspect: boolean;
+  passes: number;
+  maxPasses?: number;
+  consecutiveEmptyPasses?: number;
+}): RefillAction {
+  const maxPasses = input.maxPasses ?? REFILL_PASS_LIMIT;
+  const exhausted = input.passes >= maxPasses || (input.consecutiveEmptyPasses ?? 0) >= 2;
+  const starved = input.census.ranked < input.lowWater;
+  if (input.allowInspect && input.explore && input.census.explorationEligible > 0) return "inspect_exploration";
+  if (input.allowInspect && input.census.ranked > 0) return "inspect_ranked";
+  if (starved && !exhausted) return "refill";
+  return "wait";
+}
+
+export function poolStatusLine(census: PoolCensus) {
+  return `${census.total} total · ${census.ranked} ranked · ${census.explorationEligible} exploration eligible`;
+}
+
+export function logOnTransition(previous: string, next: string) {
+  return { log: previous !== next, state: next };
+}
+
 export function rollingHourInspectionCount(stamps: number[], now: number) {
   return hourlyInspectionPace({ stamps, now, limit: Number.MAX_SAFE_INTEGER }).count;
 }

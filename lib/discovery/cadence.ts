@@ -46,8 +46,9 @@ export function discoveryStallDecision(input: {
   blocked: boolean;
   overdueSince: number;
   lastProgressAt?: number;
+  sourcing?: boolean;
 }) {
-  if (input.blocked || input.now < input.nextInspectionAt) {
+  if (input.blocked || input.sourcing || input.now < input.nextInspectionAt) {
     return { stalled: false, overdueSince: 0 };
   }
   const grace = discoveryGraceMs(input.intervalMs);
