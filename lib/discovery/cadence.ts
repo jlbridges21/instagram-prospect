@@ -30,6 +30,20 @@ export function discoveryDue(now: number, nextInspectionAt: number) {
   return now >= nextInspectionAt;
 }
 
+export function formatElapsed(ms: number) {
+  const total = Math.max(0, Math.round(ms / 1000));
+  const minutes = Math.floor(total / 60);
+  const seconds = total % 60;
+  if (minutes > 0) return `${minutes}m ${seconds}s`;
+  return `${seconds}s`;
+}
+
+export function formatInspectionDelay(input: { now: number; dueAt: number; intervalMs: number; reason: string }) {
+  const overdue = input.now - input.dueAt;
+  if (overdue <= input.intervalMs * 2) return null;
+  return ["Inspection delayed:", `reason: ${input.reason}`, `overdue by: ${formatElapsed(overdue)}`].join("\n");
+}
+
 export function discoveryGraceMs(intervalMs: number) {
   return Math.max(60_000, intervalMs * 3);
 }

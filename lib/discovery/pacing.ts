@@ -127,6 +127,7 @@ export function poolCollectionDecision(input: { size: number; lowWater: number; 
 }
 
 export const REFILL_PASS_LIMIT = 4;
+export const REFILL_BUDGET_MS = 90_000;
 
 export type PoolCensus = {
   total: number;
@@ -150,7 +151,7 @@ export function censusFromScores(scores: number[], floor: number, explorationFlo
   return { total: scores.length, ranked, explorationEligible, deferred, highest };
 }
 
-export type RefillAction = "inspect_ranked" | "inspect_starvation" | "refill" | "wait";
+export type RefillAction = "inspect_ranked" | "inspect_starvation" | "refill" | "yield_for_slot" | "wait";
 
 export function candidateRefillDecision(input: {
   census: PoolCensus;
@@ -160,14 +161,64 @@ export function candidateRefillDecision(input: {
   passes: number;
   maxPasses?: number;
   consecutiveEmptyPasses?: number;
+  elapsedMs?: number;
+  budgetMs?: number;
+  slotDue?: boolean;
 }): RefillAction {
   const maxPasses = input.maxPasses ?? REFILL_PASS_LIMIT;
-  const exhausted = input.passes >= maxPasses || (input.consecutiveEmptyPasses ?? 0) >= 2;
+  const overBudget = (input.elapsedMs ?? 0) >= (input.budgetMs ?? REFILL_BUDGET_MS);
+  const exhausted = input.passes >= maxPasses || (input.consecutiveEmptyPasses ?? 0) >= 2 || overBudget;
   const starved = input.census.ranked < input.lowWater;
+  if (!input.allowInspect && input.slotDue) return "yield_for_slot";
   if (input.allowInspect && input.census.ranked > 0) return "inspect_ranked";
   if (starved && !exhausted) return "refill";
   if (input.allowInspect && input.census.ranked === 0 && input.census.explorationEligible > 0) return "inspect_starvation";
   return "wait";
+}
+
+export type DiscoveryRuntimeConfig = {
+  profilesPerHour: number;
+  minimumPreScore: number;
+  explorationFloor: number;
+  strategy: string;
+  poolTarget: number;
+  lowWater: number;
+};
+
+function strategyLabel(strategy: string) {
+  if (strategy === "conservative") return "Conservative";
+  if (strategy === "exploratory") return "Exploratory";
+  return "Balanced";
+}
+
+export function formatDiscoveryConfig(config: DiscoveryRuntimeConfig) {
+  return [
+    "Discovery config:",
+    `profiles/hour: ${config.profilesPerHour}`,
+    `minimum pre-score: ${config.minimumPreScore}`,
+    `exploration floor: ${config.explorationFloor}`,
+    `strategy: ${strategyLabel(config.strategy)}`,
+    `pool target: ${config.poolTarget}`,
+    `low water: ${config.lowWater}`,
+  ].join("\n");
+}
+
+export function discoveryConfigUpdates(previous: DiscoveryRuntimeConfig, next: DiscoveryRuntimeConfig) {
+  const fields: Array<[string, keyof DiscoveryRuntimeConfig]> = [
+    ["profiles/hour", "profilesPerHour"],
+    ["minimum pre-score", "minimumPreScore"],
+    ["exploration floor", "explorationFloor"],
+    ["strategy", "strategy"],
+    ["pool target", "poolTarget"],
+    ["low water", "lowWater"],
+  ];
+  const lines = fields.flatMap(([label, key]) => {
+    const before = key === "strategy" ? strategyLabel(String(previous[key])) : previous[key];
+    const after = key === "strategy" ? strategyLabel(String(next[key])) : next[key];
+    return before === after ? [] : [`${label} ${before} → ${after}`];
+  });
+  if (lines.length === 0) return null;
+  return ["Discovery config updated:", ...lines].join("\n");
 }
 
 export function formatRefillComplete(input: { census: PoolCensus; floor: number; selection: "starvation fallback" | "wait" }) {

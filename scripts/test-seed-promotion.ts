@@ -155,5 +155,11 @@ assert.match(migration, /returns table \(profiles_inspected integer, profiles_re
 assert.match(migration, /unique_violation/);
 assert.match(migration, /source_seed_id/);
 assert.doesNotMatch(migration, /profiles_reaching_review \+ 1/);
+const creditFix = fs.readFileSync("supabase/migrations/20261015120000_seed_review_credit.sql", "utf8");
+assert.match(creditFix, /array_append\(v_wanted, 'review'\)/);
+assert.match(creditFix, /array_append\(v_wanted, 'approved'\)/);
+assert.match(creditFix, /array_append\(v_wanted, 'contacted'\)/);
+assert.match(creditFix, /unique_violation/);
+assert.doesNotMatch(creditFix, /\|\| '/);
 
 console.log("seed promotion tests passed");

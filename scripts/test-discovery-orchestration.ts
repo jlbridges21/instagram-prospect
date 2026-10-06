@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
 import { rememberExplorationDecision } from "../lib/discovery/candidate-priority";
-import { discoveryStallDecision } from "../lib/discovery/cadence";
+import { discoveryStallDecision, formatInspectionDelay, inspectionIntervalMs } from "../lib/discovery/cadence";
 import { scoreCandidate } from "../lib/discovery/candidate-priority";
 import {
   REFILL_PASS_LIMIT,
   candidateRefillDecision,
   censusFromScores,
+  discoveryConfigUpdates,
   formatRefillComplete,
   logOnTransition,
   type PoolCensus,
@@ -214,5 +215,54 @@ assert.equal(evidence.pendingCount(), 1);
 assert.equal(evidence.deferredCount(), 0);
 assert.equal(evidence.census(35, 20).ranked, 1);
 assert.equal(evidence.hold("johnsmith")?.priorityScore, 36);
+
+const floor18 = new CandidateQueue(10);
+floor18.place(stored("jjhomesphotographyllc", "seed_network", 30, "listwell.media"), 35);
+floor18.place(stored("tk.creativemedia", "seed_network", 24, "listwell.media"), 35);
+floor18.place(stored("below", "seed_network", 17, "listwell.media"), 35);
+assert.equal(floor18.deferredCount(), 3);
+const first = floor18.claim("profile-tab-1", { floor: 18, explore: true, explorationFloor: 20 });
+assert.equal(first?.username, "jjhomesphotographyllc");
+assert.equal(first?.inspectionSelection, "ranked");
+const second = floor18.claim("profile-tab-1", { floor: 18, explore: true, explorationFloor: 20 });
+assert.equal(second?.username, "tk.creativemedia");
+assert.equal(second?.inspectionSelection, "ranked");
+assert.equal(floor18.claim("profile-tab-1", { floor: 18, explore: true, explorationFloor: 20 }), null);
+
+const atFloor = censusFromScores([30, 24], 18, 20);
+assert.equal(atFloor.ranked, 2);
+assert.equal(decision(atFloor, true), "inspect_ranked");
+const underFloor = censusFromScores([17], 18, 20);
+assert.equal(underFloor.ranked, 0);
+assert.equal(underFloor.explorationEligible, 0);
+
+const overdueRefill = candidateRefillDecision({
+  census: censusFromScores([24, 30], 35, 20),
+  lowWater,
+  explore: false,
+  allowInspect: true,
+  passes: 0,
+  elapsedMs: 10 * 60 * 1000,
+});
+assert.equal(overdueRefill, "inspect_starvation");
+const slotArrived = candidateRefillDecision({
+  census: censusFromScores([24], 35, 20),
+  lowWater,
+  explore: false,
+  allowInspect: false,
+  passes: 0,
+  slotDue: true,
+});
+assert.equal(slotArrived, "yield_for_slot");
+assert.equal(inspectionIntervalMs(50), 72_000);
+assert.equal(formatInspectionDelay({ now: 70_000, dueAt: 0, intervalMs: 72_000, reason: "Refilling candidate pool" }), null);
+const delay = formatInspectionDelay({ now: 11 * 60 * 1000, dueAt: 0, intervalMs: 72_000, reason: "Refilling candidate pool" });
+assert.match(delay ?? "", /reason: Refilling candidate pool/);
+assert.match(delay ?? "", /overdue by: 11m 0s/);
+
+const before = { profilesPerHour: 50, minimumPreScore: 35, explorationFloor: 20, strategy: "balanced", poolTarget: 25, lowWater: 10 };
+const after = { ...before, minimumPreScore: 18 };
+assert.equal(discoveryConfigUpdates(before, after), "Discovery config updated:\nminimum pre-score 35 → 18");
+assert.equal(discoveryConfigUpdates(after, after), null);
 
 console.log("discovery orchestration tests passed");

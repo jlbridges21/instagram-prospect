@@ -2,10 +2,10 @@ import fs from "node:fs";
 import { continuousOutreachStep } from "../lib/discovery/policy";
 import { rememberExplorationDecision } from "../lib/discovery/candidate-priority";
 import { clampTuning, DEFAULT_DISCOVERY_OPTIMIZATION } from "../lib/discovery/defaults";
-import { discoveryDue, discoveryStallDecision, inspectionIntervalMs, scheduleNextInspection, startDiscoveryCadence } from "../lib/discovery/cadence";
+import { discoveryDue, discoveryStallDecision, formatInspectionDelay, inspectionIntervalMs, scheduleNextInspection, startDiscoveryCadence } from "../lib/discovery/cadence";
 import { outreachStallDecision } from "../lib/outreach/pace";
 import { formatCountdown } from "../lib/ui/countdown";
-import { censusFromScores, checkpointHoldDecision, formatHourlyWaitEvent, formatWorkerModes, rollingHourInspectionCount } from "../lib/discovery/pacing";
+import { censusFromScores, checkpointHoldDecision, discoveryConfigUpdates, formatDiscoveryConfig, formatHourlyWaitEvent, formatWorkerModes, rollingHourInspectionCount, type DiscoveryRuntimeConfig } from "../lib/discovery/pacing";
 import { readHourlyStamps } from "./discovery/hourly-history";
 import { readDiscoveryCadence, writeDiscoveryCadence } from "./discovery/cadence-file";
 import { startOfNextLocalDay } from "../lib/outreach/time";
@@ -122,6 +122,8 @@ export async function runWorker(mode: RunMode) {
     return;
   }
   console.log("✓ Version compatible");
+  let loggedDiscoveryConfig = runtimeDiscoveryConfig(startup);
+  console.log(formatDiscoveryConfig(loggedDiscoveryConfig));
   let { context, page } = await launchBrowser();
   const session = {
     closed: false,
@@ -281,7 +283,14 @@ export async function runWorker(mode: RunMode) {
   let discoveryWaitUntil = 0;
   let explorationChoice: { slot: number; explore: boolean } | null = null;
   let discoverySlotLogged = false;
+  let discoveryDelayLog = "";
   let outreachStallLogged = false;
+  function reportInspectionDelay(reason: string, interval: number) {
+    const line = formatInspectionDelay({ now: Date.now(), dueAt: discoveryNextAt, intervalMs: interval, reason });
+    if (!line || line === discoveryDelayLog) return;
+    discoveryDelayLog = line;
+    console.log(line);
+  }
   let dailyBlockedUntil = 0;
   let outreachDueAt = 0;
   const efficiency = emptyEfficiency();
@@ -527,6 +536,7 @@ export async function runWorker(mode: RunMode) {
       if (states.reason) console.log(`Reason: ${states.reason}`);
       modeLine = line;
     }
+    reportInspectionDelay("Browser recovery", inspectionIntervalMs(config.maxProfilesPerHour));
     live.browserConnected = false;
     live.task = reported === "restarting" ? "browser_restarting" : "browser_closed";
     live.lastEvent = line;
@@ -677,6 +687,12 @@ export async function runWorker(mode: RunMode) {
           continue;
         }
         backoff = 5_000;
+        const nextDiscoveryConfig = runtimeDiscoveryConfig(freshConfig);
+        const configUpdate = discoveryConfigUpdates(loggedDiscoveryConfig, nextDiscoveryConfig);
+        if (configUpdate) {
+          console.log(configUpdate);
+          loggedDiscoveryConfig = nextDiscoveryConfig;
+        }
         const outreachDueNow = config.automationEnabled && (activeSideEffect != null || Date.now() >= outreachDueAt);
         const intervalMs = inspectionIntervalMs(config.maxProfilesPerHour);
         if (Date.now() >= dailyBlockedUntil) dailyBlockedUntil = 0;
@@ -846,6 +862,8 @@ export async function runWorker(mode: RunMode) {
               singleTurn: true,
               allowInspect: discoveryIsDue,
               exploreDecision: discoveryIsDue ? explorationChoice?.explore === true : false,
+              inspectionDueAt: discoveryNextAt,
+              intervalMs,
               onProgress: () => {
                 lastDiscoveryProgressAt = Date.now();
                 discoveryStallLogged = false;
@@ -910,6 +928,7 @@ export async function runWorker(mode: RunMode) {
                 limit: config.maxProfilesPerHour,
                 resumesAt: discoveryNextAt,
               });
+              discoveryDelayLog = "";
               console.log(`Discovery inspection completed: @${live.username ?? "profile"}`);
               console.log(`Next inspection: ${formatCountdown(discoveryNextAt, completedAt)}`);
             } else if (typeof live.lastEvent === "string" && live.lastEvent.includes("daily")) {
@@ -924,6 +943,14 @@ export async function runWorker(mode: RunMode) {
           continue;
         } else {
           live.task = config.automationEnabled && outreachDueAt > Date.now() ? "outreach_spacing_wait" : "idle";
+          if (config.discoveryEnabled && Date.now() > discoveryNextAt) {
+            const waitingReason = control.pauseDiscovery
+              ? "Paused"
+              : discoveryWaitUntil > Date.now() || Date.now() < discoveryRetryAt
+                ? "Waiting for eligible candidate"
+                : "Waiting for inspection slot";
+            reportInspectionDelay(waitingReason, intervalMs);
+          }
           await beat(cloud, identity, live.task, stats, true, true, live.attention, live.username, live.lastEvent);
           if (stats.seen >= inspectionCap) console.log("Session profile limit reached. Waiting.");
           const wakeAt = Math.min(
@@ -1664,6 +1691,18 @@ async function runSingleOutreach(
   }
   console.log("Single outreach finished.");
   void stats;
+}
+
+function runtimeDiscoveryConfig(config: CloudConfig): DiscoveryRuntimeConfig {
+  const tuning = clampTuning(config.tuning);
+  return {
+    profilesPerHour: config.maxProfilesPerHour,
+    minimumPreScore: config.minCandidatePreScore ?? DEFAULT_DISCOVERY_OPTIMIZATION.minCandidatePreScore,
+    explorationFloor: tuning.explorationFloor,
+    strategy: config.discoveryStrategy ?? "balanced",
+    poolTarget: tuning.poolTarget,
+    lowWater: tuning.poolLowWater,
+  };
 }
 
 function inspectComposerArgument() {

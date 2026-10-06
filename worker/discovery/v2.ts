@@ -19,12 +19,14 @@ import { isExcludedRelationship } from "../instagram/parse";
 import { readDom } from "../instagram/read-dom";
 import { log } from "../logger";
 import { discoveryQueuePath } from "../paths";
+import { formatInspectionDelay } from "../../lib/discovery/cadence";
 import {
   acquisitionDecision,
   candidateRefillDecision,
   formatRefillComplete,
   getDiscoveryHourlyState,
   poolStatusLine,
+  REFILL_BUDGET_MS,
   REFILL_PASS_LIMIT,
   releaseInspectionSlot,
   reserveInspectionSlot,
@@ -118,6 +120,8 @@ export async function runDiscoveryV2(input: {
   singleTurn?: boolean;
   allowInspect?: boolean;
   exploreDecision?: boolean;
+  inspectionDueAt?: number;
+  intervalMs?: number;
   onProgress?: () => void;
   onOutcome?: (outcome: { action: "inspected" | "waiting" }) => void;
   readSeedProfile?: (username: string) => Promise<import("../instagram/types").DomSnapshot | null>;
@@ -180,6 +184,7 @@ export async function runDiscoveryV2(input: {
       }
     }
     latestConfig = await input.cloud.config();
+    queue.applyFloor(latestConfig.minCandidatePreScore ?? DEFAULT_DISCOVERY_OPTIMIZATION.minCandidatePreScore);
     if (input.singleTurn) {
       await orchestrateTurn();
     } else {
@@ -452,15 +457,28 @@ export async function runDiscoveryV2(input: {
     return { queued, deferred, considered: fresh.length + merges.length, survived: accepted.length };
   }
 
+  let inspectionDelayLog = "";
+  function noteInspectionDelay(reason: string) {
+    if (input.inspectionDueAt == null || input.intervalMs == null) return;
+    const line = formatInspectionDelay({
+      now: Date.now(),
+      dueAt: input.inspectionDueAt,
+      intervalMs: input.intervalMs,
+      reason,
+    });
+    if (!line || line === inspectionDelayLog) return;
+    inspectionDelayLog = line;
+    console.log(line);
+  }
+
   async function orchestrateTurn() {
     const config = latestConfig ?? await input.cloud.config();
     latestConfig = config;
     const limits = poolLimits(config);
     queue.setTarget(limits.highWater);
-    const floor = config.minCandidatePreScore ?? DEFAULT_DISCOVERY_OPTIMIZATION.minCandidatePreScore;
-    const explorationFloor = clampTuning(config.tuning).explorationFloor;
     const allowInspect = input.allowInspect !== false;
     const explore = input.exploreDecision === true;
+    const refillStarted = Date.now();
     let passes = 0;
     let emptyPasses = 0;
     let refillLogged = false;
@@ -469,7 +487,11 @@ export async function runDiscoveryV2(input: {
         exitReason = "yield";
         return;
       }
+      const floor = latestConfig?.minCandidatePreScore ?? DEFAULT_DISCOVERY_OPTIMIZATION.minCandidatePreScore;
+      const explorationFloor = clampTuning(latestConfig?.tuning).explorationFloor;
+      queue.applyFloor(floor);
       const census = queue.census(floor, explorationFloor);
+      const slotDue = input.inspectionDueAt != null && Date.now() >= input.inspectionDueAt;
       const action = candidateRefillDecision({
         census,
         lowWater: limits.lowWater,
@@ -478,7 +500,15 @@ export async function runDiscoveryV2(input: {
         passes,
         maxPasses: REFILL_PASS_LIMIT,
         consecutiveEmptyPasses: emptyPasses,
+        elapsedMs: Date.now() - refillStarted,
+        budgetMs: REFILL_BUDGET_MS,
+        slotDue,
       });
+      if (action === "yield_for_slot") {
+        noteInspectionDelay("Refilling candidate pool");
+        console.log("Inspection slot is due. Stopping candidate refill.");
+        return;
+      }
       if (action === "inspect_ranked" || action === "inspect_starvation") {
         if (action === "inspect_starvation") {
           console.log(formatRefillComplete({ census, floor, selection: "starvation fallback" }));
@@ -486,11 +516,12 @@ export async function runDiscoveryV2(input: {
         const tab = tabs.find((item) => item.id === input.preferredTab) ?? tabs[0];
         if (!tab) return;
         const seenBefore = input.stats.seen;
-        await inspectLoop(tab.id, tab.page, { once: true, bestEligible: action === "inspect_starvation" });
+        await inspectLoop(tab.id, tab.page, { once: true, explore: false, bestEligible: action === "inspect_starvation" });
         input.onOutcome?.({ action: input.stats.seen > seenBefore ? "inspected" : "waiting" });
         return;
       }
       if (action === "refill") {
+        noteInspectionDelay("Refilling candidate pool");
         if (!refillLogged) {
           console.log("No ranked candidate available.");
           console.log(`Pool: ${poolStatusLine(census)}`);
@@ -502,6 +533,7 @@ export async function runDiscoveryV2(input: {
         emptyPasses = added > 0 ? 0 : emptyPasses + 1;
         continue;
       }
+      noteInspectionDelay("Waiting for eligible candidate");
       const waitingLine = census.ranked === 0 && passes > 0
         ? formatRefillComplete({ census, floor, selection: "wait" })
         : `No ranked candidate available.\nPool: ${poolStatusLine(census)}`;
@@ -680,6 +712,7 @@ export async function runDiscoveryV2(input: {
       const strategy = latestConfig?.discoveryStrategy ?? "balanced";
       console.log(`Inspecting @${candidate.username}`);
       console.log(`Candidate pre-score: ${candidate.priorityScore ?? 0}`);
+      console.log(`Minimum pre-score: ${floor}`);
       console.log(`Selection: ${selection === "starvation" ? "starvation fallback" : selection}`);
       if (selection === "exploration") {
         const label = strategy === "conservative" ? "Conservative" : strategy === "exploratory" ? "Exploratory" : "Balanced";

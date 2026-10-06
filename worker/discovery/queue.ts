@@ -99,6 +99,15 @@ export class CandidateQueue {
     return [...this.items.values()].filter((item) => item.state === "deferred").length;
   }
 
+  applyFloor(floor: number) {
+    for (const item of this.items.values()) {
+      if (item.state !== "pending" && item.state !== "deferred") continue;
+      const score = item.candidate.priorityScore ?? 0;
+      if (score >= floor && item.state === "deferred" && this.pendingCount() < this.target) item.state = "pending";
+      else if (score < floor && item.state === "pending") item.state = "deferred";
+    }
+  }
+
   census(floor: number, explorationFloor: number): PoolCensus {
     const scores = [...this.items.values()]
       .filter((item) => item.state === "pending" || item.state === "deferred")
@@ -163,11 +172,12 @@ export class CandidateQueue {
     const floor = options?.floor ?? 0;
     const explore = options?.explore ?? false;
     const explorationFloor = options?.explorationFloor ?? 0;
-    const ranked = this.best((item) => item.state === "pending" && (item.candidate.priorityScore ?? 0) >= floor);
+    const ranked = this.best((item) => (item.state === "pending" || item.state === "deferred") && (item.candidate.priorityScore ?? 0) >= floor);
     if (ranked) {
+      const fromDeferred = ranked.state === "deferred";
       ranked.state = "in_progress";
       ranked.tab = tabId;
-      ranked.fromDeferred = false;
+      ranked.fromDeferred = fromDeferred;
       ranked.candidate.inspectionSelection = "ranked";
       return ranked.candidate;
     }
