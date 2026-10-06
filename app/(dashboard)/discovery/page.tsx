@@ -12,6 +12,7 @@ import { reviewYield } from "@/lib/discovery/seeds";
 import { fallbackSettings, getSettings } from "@/lib/db/settings";
 import { getLatestWorker } from "@/lib/db/workers";
 import { parseHourlyWaitEvent } from "@/lib/discovery/pacing";
+import { parseDiscoveryStatus } from "@/lib/worker/discovery-status";
 import { attentionKind, formatCurrentAction, formatDiscoveryStatus, outreachOwnsWorker, statusDotClass } from "@/lib/status/operations";
 import { parseBrowserHealthEvent } from "@/lib/worker/browser-health";
 import { getWorkerHealth } from "@/lib/utils/worker-health";
@@ -72,6 +73,7 @@ export default async function DiscoveryPage({
     yieldingToOutreach: settings.discovery.enabled && !hourly && outreachOwnsWorker(worker?.current_task),
   });
   const servicingOutreach = outreachOwnsWorker(worker?.current_task) && !worker?.current_task?.includes("spacing");
+  const candidatePool = parseDiscoveryStatus(worker?.last_event)?.pool ?? null;
   const action = hourly
     ? "Waiting for the hourly inspection slot"
     : servicingOutreach
@@ -124,6 +126,17 @@ export default async function DiscoveryPage({
           <Link href="/settings" className="text-indigo-700">Edit Discovery settings</Link>
         </p>
       </section>
+      {candidatePool ? (
+        <section className="mt-4 rounded-xl border border-slate-200 bg-white p-4 text-sm">
+          <h2 className="font-semibold text-slate-900">Candidate pool</h2>
+          <p className="mt-1 text-slate-600">Local Discovery candidates. A profile appears on Prospects only after it is opened and ingested.</p>
+          <p className="mt-3">{candidatePool.total} candidates</p>
+          <p className="mt-1">Ranked: {candidatePool.ranked}</p>
+          <p className="mt-1">Exploration eligible: {candidatePool.explorationEligible}</p>
+          <p className="mt-1">Deferred: {candidatePool.deferred}</p>
+          <p className="mt-1">Top candidate: {candidatePool.highest ?? "—"}</p>
+        </section>
+      ) : null}
       <section className="mt-4 rounded-xl border border-slate-200 bg-white p-4 text-sm">
         <h2 className="font-semibold text-slate-900">Discovery quality</h2>
         <p className="mt-1 text-slate-600">Review yield is Review prospects divided by profiles inspected. Approval yield is Approved prospects divided by profiles inspected.</p>

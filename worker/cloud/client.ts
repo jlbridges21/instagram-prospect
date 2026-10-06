@@ -1,5 +1,5 @@
 import { clampCandidateFloor } from "../../lib/discovery/candidate-priority";
-import { clampTuning, type DiscoveryTuning } from "../../lib/discovery/defaults";
+import { clampTuning, DEFAULT_DISCOVERY_OPTIMIZATION, type DiscoveryTuning } from "../../lib/discovery/defaults";
 import { clampSeedNetworkSample } from "../../lib/discovery/seeds";
 import { AUTH_FAILURE_MESSAGE } from "../version";
 
@@ -169,7 +169,7 @@ export class CloudClient {
       seedCooldownCycles: numberOr(json.seedCooldownCycles, 2),
       seedNetworkEnabled: json.seedNetworkEnabled !== false,
       seedNetworkSample: clampSeedNetworkSample(numberOr(json.seedNetworkSample, 15)),
-      minCandidatePreScore: clampCandidateFloor(numberOr(json.minCandidatePreScore, 35)),
+      minCandidatePreScore: clampCandidateFloor(numberOr(json.minCandidatePreScore, DEFAULT_DISCOVERY_OPTIMIZATION.minCandidatePreScore)),
       tuning: clampTuning(json.tuning),
       sourceYields: sourceYieldMap(json.sourceYields),
     } satisfies CloudConfig;

@@ -90,8 +90,8 @@ besideRanked.place(candidate("eight", "home_feed", 8), floor);
 besideRanked.place(candidate("thirty", "suggested_accounts", 30), floor);
 besideRanked.place(candidate("ranked", "seed_network", 80, { sourceSeedId: "seed-ranked", sourceSeedUsername: "coastal" }), floor);
 const beside = besideRanked.claim("profile-tab-1", { floor, explore: true, explorationFloor: 20, random: 0 });
-assert.equal(beside?.username, "thirty");
-assert.equal(beside?.inspectionSelection, "exploration");
+assert.equal(beside?.username, "ranked");
+assert.equal(beside?.inspectionSelection, "ranked");
 
 const slot = 1_000_000;
 const intervalMs = 120_000;

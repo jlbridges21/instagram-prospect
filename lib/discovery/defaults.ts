@@ -74,7 +74,7 @@ export const DEFAULT_DISCOVERY_OPTIMIZATION = {
   seedCooldownCycles: 2,
   seedNetworkEnabled: true,
   seedNetworkSample: 15,
-  minCandidatePreScore: 35,
+  minCandidatePreScore: 18,
 };
 
 export const DEFAULT_DISCOVERY_TUNING = {

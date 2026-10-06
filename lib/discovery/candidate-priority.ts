@@ -141,7 +141,7 @@ export function pickWeightedIndex(weights: number[], random: number) {
 }
 
 export function clampCandidateFloor(value: number) {
-  if (!Number.isFinite(value)) return 35;
+  if (!Number.isFinite(value)) return 18;
   return Math.min(100, Math.max(0, Math.round(value)));
 }
 

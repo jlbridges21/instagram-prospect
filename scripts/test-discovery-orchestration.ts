@@ -1,13 +1,16 @@
 import assert from "node:assert/strict";
 import { rememberExplorationDecision } from "../lib/discovery/candidate-priority";
 import { discoveryStallDecision } from "../lib/discovery/cadence";
+import { scoreCandidate } from "../lib/discovery/candidate-priority";
 import {
   REFILL_PASS_LIMIT,
   candidateRefillDecision,
   censusFromScores,
+  formatRefillComplete,
   logOnTransition,
   type PoolCensus,
 } from "../lib/discovery/pacing";
+import { CandidateQueue, mergeCandidateEvidence, type DiscoveryCandidate } from "../worker/discovery/queue";
 
 const floor = 35;
 const explorationFloor = 20;
@@ -46,7 +49,29 @@ assert.equal(rememberExplorationDecision({
 const oneExploration = censusFromScores([8, 9, 11, 12, 25], floor, explorationFloor);
 assert.equal(oneExploration.ranked, 0);
 assert.equal(oneExploration.explorationEligible, 1);
-assert.equal(decision(oneExploration, true), "inspect_exploration");
+assert.equal(decision(oneExploration, true), "refill");
+assert.equal(decision(oneExploration, true, REFILL_PASS_LIMIT), "inspect_starvation");
+assert.equal(decision(oneExploration, false, REFILL_PASS_LIMIT), "inspect_starvation");
+assert.equal(oneExploration.highest, 25);
+
+const midBand = censusFromScores([25, 26, 27, 28, 29, 30, 31, 32, 33, 34], floor, explorationFloor);
+assert.equal(midBand.ranked, 0);
+assert.equal(midBand.explorationEligible, 10);
+assert.equal(midBand.highest, 34);
+assert.equal(decision(midBand, false), "refill");
+assert.equal(decision(midBand, false, REFILL_PASS_LIMIT), "inspect_starvation");
+assert.equal(decision(midBand, false, 1, 2), "inspect_starvation");
+
+const rankedPresent = censusFromScores([25, 48], floor, explorationFloor);
+assert.equal(decision(rankedPresent, true), "inspect_ranked");
+
+const refillLog = formatRefillComplete({ census: midBand, floor, selection: "starvation fallback" });
+assert.match(refillLog, /Refill complete/);
+assert.match(refillLog, /0 ranked/);
+assert.match(refillLog, /10 exploration eligible/);
+assert.match(refillLog, /Highest pre-score:\n34/);
+assert.match(refillLog, /No candidate reached normal floor 35/);
+assert.match(refillLog, /Selection:\nstarvation fallback/);
 
 const afterExploration = censusFromScores([8, 11, 14], floor, explorationFloor);
 assert.equal(decision(afterExploration, false), "refill");
@@ -116,5 +141,78 @@ for (let slot = 0; slot < 100; slot += 1) {
   previous = null;
 }
 assert.ok(explorations > 8 && explorations < 40, `expected about 20 exploration decisions, got ${explorations}`);
+
+function stored(username: string, source: DiscoveryCandidate["source"], score: number, seed?: string): DiscoveryCandidate {
+  return {
+    username,
+    profileUrl: `https://www.instagram.com/${username}/`,
+    source,
+    sourcePostUrl: null,
+    sourceThumbnailUrl: null,
+    discoveredAt: "2026-10-06T00:00:00.000Z",
+    sourceSeedUsername: seed ?? null,
+    seedSupport: seed ? [seed] : [],
+    priorityScore: score,
+  };
+}
+
+const selection = new CandidateQueue(10);
+selection.place(stored("low", "seed_network", 20, "seed-a"), 35);
+selection.place(stored("best", "seed_network", 34, "seed-b"), 35);
+const fallback = selection.claim("profile-tab-1", { floor: 35, bestEligible: true, explorationFloor: 20 });
+assert.equal(fallback?.username, "best");
+assert.equal(fallback?.inspectionSelection, "starvation");
+
+const tooLow = new CandidateQueue(10);
+tooLow.place(stored("plain", "seed_network", 18, "seed-a"), 35);
+tooLow.place(stored("weaker", "suggested_accounts", 8), 35);
+assert.equal(tooLow.claim("profile-tab-1", { floor: 35, bestEligible: true, explorationFloor: 20 }), null);
+
+const preferred = new CandidateQueue(10);
+preferred.place(stored("explore", "home_feed", 30), 35);
+preferred.place(stored("ranked", "seed_network", 48, "seed-a"), 35);
+const rankedClaim = preferred.claim("profile-tab-1", { floor: 35, bestEligible: true, explore: true, explorationFloor: 20 });
+assert.equal(rankedClaim?.username, "ranked");
+assert.equal(rankedClaim?.inspectionSelection, "ranked");
+
+function rescore(candidate: DiscoveryCandidate) {
+  const support = [...new Set([...(candidate.seedSupport ?? []), candidate.sourceSeedUsername ?? ""].map((value) => value.trim().toLowerCase()).filter(Boolean))];
+  const seeded = candidate.source === "seed_network" || candidate.source === "seed_suggestion";
+  const priority = scoreCandidate({
+    source: seeded ? "seed" : candidate.source === "home_feed" ? "home_feed" : "suggested_accounts",
+    sourceDetail: candidate.source,
+    seedUsername: support[0] ?? null,
+    seedSupportCount: support.length,
+    username: candidate.username,
+    cardText: candidate.cardText,
+    positiveKeywords: ["drone"],
+    negativeKeywords: [],
+  });
+  return { ...candidate, seedSupport: support, sourcesSeen: candidate.sourcesSeen ?? [candidate.source], priorityScore: priority.score };
+}
+
+const firstSeed = rescore({
+  ...stored("johnsmith", "seed_network", 0, "listwell.media"),
+  cardText: "drone",
+  sourcesSeen: ["seed_network"],
+});
+assert.equal(firstSeed.priorityScore, 24);
+const evidence = new CandidateQueue(10);
+assert.equal(evidence.place(firstSeed, 35), "deferred");
+const secondSeed = mergeCandidateEvidence(firstSeed, {
+  ...stored("johnsmith", "seed_network", 0, "skydbproductions"),
+  cardText: "drone",
+  sourcesSeen: ["seed_network"],
+});
+const raised = rescore(secondSeed);
+assert.ok((raised.priorityScore ?? 0) > (firstSeed.priorityScore ?? 0));
+assert.equal(raised.priorityScore, 36);
+assert.deepEqual(raised.seedSupport, ["listwell.media", "skydbproductions"]);
+assert.deepEqual(raised.sourcesSeen, ["seed_network"]);
+assert.equal(evidence.place(raised, 35), "merged");
+assert.equal(evidence.pendingCount(), 1);
+assert.equal(evidence.deferredCount(), 0);
+assert.equal(evidence.census(35, 20).ranked, 1);
+assert.equal(evidence.hold("johnsmith")?.priorityScore, 36);
 
 console.log("discovery orchestration tests passed");

@@ -80,7 +80,15 @@ check("backfill true is following", backfillFollowRelationship(true) === "follow
 check("backfill false is unknown", backfillFollowRelationship(false) === "unknown");
 
 const status = parseDiscoveryStatus(formatDiscoveryStatus({ source: "Suggested Accounts", pending: 7, tab1: "alpha", tab2: null }));
-check("worker status keeps queue and tabs", status?.pending === "7" && status.tab1 === "@alpha" && status.tab2 === "idle");
+check("worker status keeps queue and tabs", status?.pending === "7" && status.tab1 === "@alpha" && status.tab2 === "idle" && status.pool === null);
+const pooled = parseDiscoveryStatus(formatDiscoveryStatus({
+  source: "Seed network",
+  pending: 0,
+  tab1: null,
+  tab2: null,
+  pool: { total: 34, ranked: 0, explorationEligible: 14, deferred: 20, highest: 33 },
+}));
+check("worker status keeps candidate pool health", pooled?.pool?.total === 34 && pooled.pool.ranked === 0 && pooled.pool.explorationEligible === 14 && pooled.pool.deferred === 20 && pooled.pool.highest === 33);
 
 async function checkQualification() {
   let started = 0;

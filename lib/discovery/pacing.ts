@@ -133,21 +133,24 @@ export type PoolCensus = {
   ranked: number;
   explorationEligible: number;
   deferred: number;
+  highest: number | null;
 };
 
 export function censusFromScores(scores: number[], floor: number, explorationFloor: number): PoolCensus {
   let ranked = 0;
   let explorationEligible = 0;
   let deferred = 0;
+  let highest: number | null = null;
   for (const score of scores) {
+    if (highest == null || score > highest) highest = score;
     if (score >= floor) ranked += 1;
     else if (score >= explorationFloor) explorationEligible += 1;
     else deferred += 1;
   }
-  return { total: scores.length, ranked, explorationEligible, deferred };
+  return { total: scores.length, ranked, explorationEligible, deferred, highest };
 }
 
-export type RefillAction = "inspect_ranked" | "inspect_exploration" | "refill" | "wait";
+export type RefillAction = "inspect_ranked" | "inspect_starvation" | "refill" | "wait";
 
 export function candidateRefillDecision(input: {
   census: PoolCensus;
@@ -161,10 +164,26 @@ export function candidateRefillDecision(input: {
   const maxPasses = input.maxPasses ?? REFILL_PASS_LIMIT;
   const exhausted = input.passes >= maxPasses || (input.consecutiveEmptyPasses ?? 0) >= 2;
   const starved = input.census.ranked < input.lowWater;
-  if (input.allowInspect && input.explore && input.census.explorationEligible > 0) return "inspect_exploration";
   if (input.allowInspect && input.census.ranked > 0) return "inspect_ranked";
   if (starved && !exhausted) return "refill";
+  if (input.allowInspect && input.census.ranked === 0 && input.census.explorationEligible > 0) return "inspect_starvation";
   return "wait";
+}
+
+export function formatRefillComplete(input: { census: PoolCensus; floor: number; selection: "starvation fallback" | "wait" }) {
+  return [
+    "Refill complete.",
+    "Pool:",
+    `${input.census.total} total`,
+    `${input.census.ranked} ranked`,
+    `${input.census.explorationEligible} exploration eligible`,
+    `${input.census.deferred} deferred`,
+    "Highest pre-score:",
+    input.census.highest == null ? "none" : String(input.census.highest),
+    `No candidate reached normal floor ${input.floor}.`,
+    "Selection:",
+    input.selection,
+  ].join("\n");
 }
 
 export function poolStatusLine(census: PoolCensus) {

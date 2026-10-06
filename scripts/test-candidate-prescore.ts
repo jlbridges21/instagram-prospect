@@ -156,8 +156,8 @@ const mixed = new CandidateQueue(10);
 mixed.place(base("weak", "home_feed", 12), 35);
 mixed.place(base("strong", "seed_network", 80), 35);
 const mixedClaim = mixed.claim("profile-tab-1", { floor: 35, explore: true });
-assert.equal(mixedClaim?.username, "weak");
-assert.equal(mixedClaim?.inspectionSelection, "exploration");
+assert.equal(mixedClaim?.username, "strong");
+assert.equal(mixedClaim?.inspectionSelection, "ranked");
 
 assert.equal(candidateExplorationPercent("conservative"), 10);
 assert.equal(candidateExplorationPercent("balanced"), 20);

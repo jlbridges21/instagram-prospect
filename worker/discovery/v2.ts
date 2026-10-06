@@ -5,7 +5,7 @@ import type { CloudClient, CloudConfig } from "../cloud/client";
 import { QualificationQueue } from "./qualify-queue";
 import { CandidateQueue, SessionUsernameCache, chunkUsernames, evidenceIsNew, mergeCandidateEvidence, unseenUsernames, type DiscoveryCandidate } from "./queue";
 import { scoreCandidate, shouldExploreCandidate } from "../../lib/discovery/candidate-priority";
-import { CANDIDATE_POOL_MAX_PASSES, CANDIDATE_POOL_TARGET, clampTuning } from "../../lib/discovery/defaults";
+import { CANDIDATE_POOL_MAX_PASSES, CANDIDATE_POOL_TARGET, clampTuning, DEFAULT_DISCOVERY_OPTIMIZATION } from "../../lib/discovery/defaults";
 import { shouldFlushDiscoveryUsage } from "../../lib/discovery/inspection-count";
 import { inspectionSeedId, pickSeed, prospectAttribution, seedCollectionResult, seedStatForCandidate, shouldOpenSeedNetwork, clampSeedNetworkSample, type SeededDiscoverySource } from "../../lib/discovery/seeds";
 import { applyEmptySeedCooldowns, seedTurnOutcome } from "../instagram/seed-page";
@@ -22,6 +22,7 @@ import { discoveryQueuePath } from "../paths";
 import {
   acquisitionDecision,
   candidateRefillDecision,
+  formatRefillComplete,
   getDiscoveryHourlyState,
   poolStatusLine,
   REFILL_PASS_LIMIT,
@@ -377,7 +378,7 @@ export async function runDiscoveryV2(input: {
   }
 
   async function rankAndPlace(ordered: DiscoveryCandidate[], config: CloudConfig) {
-    const floor = config.minCandidatePreScore ?? 35;
+    const floor = config.minCandidatePreScore ?? DEFAULT_DISCOVERY_OPTIMIZATION.minCandidatePreScore;
     const fresh: DiscoveryCandidate[] = [];
     const merges: DiscoveryCandidate[] = [];
     let skippedFromCache = 0;
@@ -456,7 +457,7 @@ export async function runDiscoveryV2(input: {
     latestConfig = config;
     const limits = poolLimits(config);
     queue.setTarget(limits.highWater);
-    const floor = config.minCandidatePreScore ?? 35;
+    const floor = config.minCandidatePreScore ?? DEFAULT_DISCOVERY_OPTIMIZATION.minCandidatePreScore;
     const explorationFloor = clampTuning(config.tuning).explorationFloor;
     const allowInspect = input.allowInspect !== false;
     const explore = input.exploreDecision === true;
@@ -478,11 +479,14 @@ export async function runDiscoveryV2(input: {
         maxPasses: REFILL_PASS_LIMIT,
         consecutiveEmptyPasses: emptyPasses,
       });
-      if (action === "inspect_ranked" || action === "inspect_exploration") {
+      if (action === "inspect_ranked" || action === "inspect_starvation") {
+        if (action === "inspect_starvation") {
+          console.log(formatRefillComplete({ census, floor, selection: "starvation fallback" }));
+        }
         const tab = tabs.find((item) => item.id === input.preferredTab) ?? tabs[0];
         if (!tab) return;
         const seenBefore = input.stats.seen;
-        await inspectLoop(tab.id, tab.page, { once: true, explore: action === "inspect_exploration" });
+        await inspectLoop(tab.id, tab.page, { once: true, bestEligible: action === "inspect_starvation" });
         input.onOutcome?.({ action: input.stats.seen > seenBefore ? "inspected" : "waiting" });
         return;
       }
@@ -498,7 +502,10 @@ export async function runDiscoveryV2(input: {
         emptyPasses = added > 0 ? 0 : emptyPasses + 1;
         continue;
       }
-      logPoolOnce(`No ranked candidate available.\nPool: ${poolStatusLine(census)}`);
+      const waitingLine = census.ranked === 0 && passes > 0
+        ? formatRefillComplete({ census, floor, selection: "wait" })
+        : `No ranked candidate available.\nPool: ${poolStatusLine(census)}`;
+      logPoolOnce(waitingLine);
       input.onProgress?.();
       input.onOutcome?.({ action: "waiting" });
       return;
@@ -623,20 +630,20 @@ export async function runDiscoveryV2(input: {
     }
   }
 
-  async function inspectLoop(tabId: (typeof PROFILE_TABS)[number], page: Page, options?: { once?: boolean; explore?: boolean }) {
+  async function inspectLoop(tabId: (typeof PROFILE_TABS)[number], page: Page, options?: { once?: boolean; explore?: boolean; bestEligible?: boolean }) {
     while (!finished()) {
       if (await input.shouldYield?.()) {
         exitReason = "yield";
         return;
       }
       const pace = hourPace();
-      const floor = latestConfig?.minCandidatePreScore ?? 35;
+      const floor = latestConfig?.minCandidatePreScore ?? DEFAULT_DISCOVERY_OPTIMIZATION.minCandidatePreScore;
       const explorationFloor = clampTuning(latestConfig?.tuning).explorationFloor;
       const exploreRoll = Math.random();
       const explore = typeof options?.explore === "boolean"
         ? options.explore
         : shouldExploreCandidate(latestConfig?.discoveryStrategy ?? "balanced", exploreRoll, latestConfig?.tuning);
-      const candidate = queue.claim(tabId, { floor, explore, explorationFloor, random: exploreRoll });
+      const candidate = queue.claim(tabId, { floor, explore: options?.bestEligible ? false : explore, bestEligible: options?.bestEligible, explorationFloor, random: exploreRoll });
       if (!candidate) {
         if (options?.once || input.singleTurn) return;
         await sleep(300);
@@ -673,7 +680,7 @@ export async function runDiscoveryV2(input: {
       const strategy = latestConfig?.discoveryStrategy ?? "balanced";
       console.log(`Inspecting @${candidate.username}`);
       console.log(`Candidate pre-score: ${candidate.priorityScore ?? 0}`);
-      console.log(`Selection: ${selection}`);
+      console.log(`Selection: ${selection === "starvation" ? "starvation fallback" : selection}`);
       if (selection === "exploration") {
         const label = strategy === "conservative" ? "Conservative" : strategy === "exploratory" ? "Exploratory" : "Balanced";
         console.log(`Exploration floor: ${explorationFloor}`);
@@ -769,12 +776,15 @@ export async function runDiscoveryV2(input: {
     const source = sourceLabel ?? (config.discoverySourcePriority === "home_first" ? "Home Feed" : "Suggested Accounts");
     const pace = hourPace();
     if (!pace.limited) {
+      const floor = config.minCandidatePreScore ?? DEFAULT_DISCOVERY_OPTIMIZATION.minCandidatePreScore;
+      const census = queue.census(floor, clampTuning(config.tuning).explorationFloor);
       input.live.lastEvent = formatDiscoveryStatus({
         source,
         pending: queue.pendingCount(),
         tab1: active.get("profile-tab-1") ?? null,
         tab2: active.get("profile-tab-2") ?? null,
         hour: `${pace.count}/${pace.limit}`,
+        pool: census,
       });
     }
   }

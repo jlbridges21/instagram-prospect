@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import { continuousOutreachStep } from "../lib/discovery/policy";
 import { rememberExplorationDecision } from "../lib/discovery/candidate-priority";
-import { clampTuning } from "../lib/discovery/defaults";
+import { clampTuning, DEFAULT_DISCOVERY_OPTIMIZATION } from "../lib/discovery/defaults";
 import { discoveryDue, discoveryStallDecision, inspectionIntervalMs, scheduleNextInspection, startDiscoveryCadence } from "../lib/discovery/cadence";
 import { outreachStallDecision } from "../lib/outreach/pace";
 import { formatCountdown } from "../lib/ui/countdown";
@@ -786,7 +786,7 @@ export async function runWorker(mode: RunMode) {
         });
         const outreachStillDue = config.automationEnabled && (activeSideEffect != null || Date.now() >= outreachDueAt);
         const poolTuning = clampTuning(config.tuning);
-        const storedSupply = persistedCandidateSupply(config.minCandidatePreScore ?? 35, poolTuning.explorationFloor);
+        const storedSupply = persistedCandidateSupply(config.minCandidatePreScore ?? DEFAULT_DISCOVERY_OPTIMIZATION.minCandidatePreScore, poolTuning.explorationFloor);
         const collectionDue = config.discoveryEnabled && !control.pauseDiscovery && storedSupply.ranked < poolTuning.poolLowWater && Date.now() >= discoveryCollectAt && Date.now() >= discoveryWaitUntil;
         if (discoveryIsDue) {
           explorationChoice = rememberExplorationDecision({
