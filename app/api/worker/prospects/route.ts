@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { PROSPECT_SOURCES } from "@/lib/constants/prospects";
-import { ingestWorkerProspect } from "@/lib/prospects/service";
+import { ingestWorkerProspect, recordPreOpenSnapshot } from "@/lib/prospects/service";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { isWorkerAuthorized, workerError, workerUnauthorized } from "@/lib/worker/auth";
 
@@ -29,6 +29,32 @@ const prospectSchema = z.object({
   follow_relationship: z.enum(["following", "not_following", "requested", "unknown"]).optional(),
 });
 
+const preOpenSnapshotSchema = z.object({
+  instagram_username: z.string().trim().min(1).max(80),
+  card_text: z.string().trim().max(1000).nullable(),
+  source: z.string().trim().min(1).max(40),
+  source_seed_id: z.string().uuid().nullable(),
+  source_seed_username: z.string().trim().max(30).nullable(),
+  seed_support_count: z.number().int().min(0).max(50),
+  supporting_seed_usernames: z.array(z.string().trim().max(30)).max(20),
+  pre_score: z.number().int().min(0).max(100).nullable(),
+  niche_component: z.number().int().min(0).max(100).nullable(),
+  commercial_component: z.number().int().min(0).max(100).nullable(),
+  network_component: z.number().int().min(0).max(100).nullable(),
+  source_review_yield: z.number().min(0).max(1).nullable(),
+  source_approval_yield: z.number().min(0).max(1).nullable(),
+  source_prior_points: z.number().int().min(-40).max(40).nullable(),
+  seed_review_yield: z.number().min(0).max(1).nullable(),
+  seed_approval_yield: z.number().min(0).max(1).nullable(),
+  seed_mature: z.boolean(),
+  strategy: z.string().trim().max(40).nullable(),
+  priority_band: z.string().trim().max(20).nullable(),
+  priority_label: z.string().trim().max(20).nullable(),
+  selection_reasons: z.string().trim().max(1000).nullable(),
+  runner_up_username: z.string().trim().max(80).nullable(),
+  runner_up_pre_score: z.number().int().min(0).max(100).nullable(),
+});
+
 export async function POST(request: Request) {
   if (!isWorkerAuthorized(request)) return workerUnauthorized();
 
@@ -49,6 +75,12 @@ export async function POST(request: Request) {
 
   const result = await ingestWorkerProspect(admin, parsed.data);
   if (!result.ok) return workerError(result.status, result.error);
+  const snapshot = preOpenSnapshotSchema.safeParse(
+    body && typeof body === "object" && "preopen_snapshot" in body ? body.preopen_snapshot : undefined,
+  );
+  if (result.prospectId && snapshot.success) {
+    await recordPreOpenSnapshot(admin, result.prospectId, snapshot.data).catch(() => undefined);
+  }
 
   return Response.json({
     created: result.created,

@@ -264,6 +264,35 @@ export type OutreachJobRow = {
   updated_at: string;
 };
 
+export type CandidateInspectionSnapshotRow = {
+  id: string;
+  prospect_id: string;
+  instagram_username: string;
+  card_text: string | null;
+  source: string;
+  source_seed_id: string | null;
+  source_seed_username: string | null;
+  seed_support_count: number;
+  supporting_seed_usernames: string[];
+  pre_score: number | null;
+  niche_component: number | null;
+  commercial_component: number | null;
+  network_component: number | null;
+  source_review_yield: number | null;
+  source_approval_yield: number | null;
+  source_prior_points: number | null;
+  seed_review_yield: number | null;
+  seed_approval_yield: number | null;
+  seed_mature: boolean;
+  strategy: string | null;
+  priority_band: string | null;
+  priority_label: string | null;
+  selection_reasons: string | null;
+  runner_up_username: string | null;
+  runner_up_pre_score: number | null;
+  created_at: string;
+};
+
 export type TargetingSettingsRow = {
   id: number;
   categories: string[];
@@ -402,6 +431,12 @@ export type Database = {
         Row: DiscoverySuppressionRow;
         Insert: Insert<DiscoverySuppressionRow> & { instagram_username_normalized: string; reason: string };
         Update: Insert<DiscoverySuppressionRow>;
+        Relationships: [];
+      };
+      candidate_inspection_snapshots: {
+        Row: CandidateInspectionSnapshotRow;
+        Insert: Insert<CandidateInspectionSnapshotRow> & { prospect_id: string; instagram_username: string; source: string };
+        Update: Insert<CandidateInspectionSnapshotRow>;
         Relationships: [];
       };
       discovery_sessions: {

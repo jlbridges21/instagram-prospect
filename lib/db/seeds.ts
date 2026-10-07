@@ -1,8 +1,8 @@
 import "server-only";
 
 import type { ProspectSource, ProspectStatus } from "@/lib/constants/prospects";
-import { PRE_SCORE_BANDS, qualityYield, summarizeScoreMix } from "@/lib/discovery/quality";
-import { exampleFromProspect, learnQualityModel, type LearnedToken } from "@/lib/discovery/learned-quality";
+import { PRE_SCORE_BANDS, qualityYield, summarizeInspectionWindow, summarizeScoreMix, type InspectionWindowRow } from "@/lib/discovery/quality";
+import { evaluateHistoricalGate, exampleFromProspect, learnQualityModel, type HistoricalGate, type LearnedToken } from "@/lib/discovery/learned-quality";
 import { clampTuning, effectiveKeywordList, DEFAULT_POSITIVE_KEYWORDS, LEGACY_POSITIVE_KEYWORDS } from "@/lib/discovery/defaults";
 import { suggestPositiveKeywords } from "@/lib/discovery/keyword-suggestions";
 import { reviewYield } from "@/lib/discovery/seeds";
@@ -174,6 +174,10 @@ export async function learnedSignalView() {
     .slice(0, 8);
   const held = model.tokens.filter((token) => token.active && ignoredSet.has(token.token)).slice(0, 12);
   const waiting = model.tokens.filter((token) => !token.active && token.sampleSize >= 5 && !ignoredSet.has(token.token)).slice(0, 8);
+  const gate = evaluateHistoricalGate(rows.flatMap((row) => {
+    const example = exampleFromProspect(row);
+    return example ? [example] : [];
+  }));
   return {
     positive,
     negative,
@@ -182,6 +186,7 @@ export async function learnedSignalView() {
     positiveExamples: model.positiveExamples,
     negativeExamples: model.negativeExamples,
     minimum: model.minimum,
+    gate,
   };
 }
 
@@ -193,7 +198,57 @@ export type LearnedSignalView = {
   positiveExamples: number;
   negativeExamples: number;
   minimum: number;
+  gate: HistoricalGate;
 };
+
+export async function inspectionRankingWindow() {
+  const supabase = await createClient();
+  const snapshots = await supabase
+    .from("candidate_inspection_snapshots")
+    .select("prospect_id, instagram_username, pre_score, priority_band, selection_reasons, runner_up_username, runner_up_pre_score, seed_mature, seed_review_yield, seed_approval_yield, created_at")
+    .order("created_at", { ascending: true })
+    .limit(500);
+  if (snapshots.error || !snapshots.data) return null;
+  const ids = snapshots.data.map((row) => row.prospect_id);
+  const statuses = ids.length === 0
+    ? { data: [] as Array<{ id: string; status: string }>, error: null }
+    : await supabase.from("prospects").select("id, status").in("id", ids);
+  if (statuses.error || !statuses.data) return null;
+  const statusById = new Map(statuses.data.map((row) => [row.id, row.status]));
+  const rows: InspectionWindowRow[] = snapshots.data.flatMap((row) => {
+    const status = statusById.get(row.prospect_id);
+    if (!status) return [];
+    return [{
+      preScore: row.pre_score,
+      status,
+      seedMature: row.seed_mature,
+      seedReviewYield: numericRate(row.seed_review_yield),
+      seedApprovalYield: numericRate(row.seed_approval_yield),
+      createdAt: row.created_at,
+    }];
+  });
+  const latest = snapshots.data.at(-1) ?? null;
+  return {
+    window: summarizeInspectionWindow(rows),
+    latest: latest ? {
+      username: latest.instagram_username,
+      preScore: latest.pre_score,
+      priorityBand: latest.priority_band,
+      reasons: latest.selection_reasons,
+      runnerUpUsername: latest.runner_up_username,
+      runnerUpPreScore: latest.runner_up_pre_score,
+    } : null,
+  };
+}
+
+function numericRate(value: number | string | null) {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string" && value.trim() !== "") {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  return null;
+}
 
 async function preScoreCount(
   supabase: Awaited<ReturnType<typeof createClient>>,

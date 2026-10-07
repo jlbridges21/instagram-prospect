@@ -3,7 +3,7 @@ import "server-only";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { logActivities } from "@/lib/activity/log";
 import type { ActivityEventType, ProspectSource, ProspectStatus } from "@/lib/constants/prospects";
-import type { Database, Json } from "@/lib/db/types";
+import type { CandidateInspectionSnapshotRow, Database, Json } from "@/lib/db/types";
 import { preAiStorage } from "@/lib/discovery/policy";
 import { isMissingRelation } from "@/lib/db/errors";
 import { canApprove, canSkip } from "@/lib/prospects/status";
@@ -514,4 +514,18 @@ export async function recheckWorkerRelationship(
   ]);
 
   return { ok: true as const, applied: true, relationship, prospectId: prospect.id };
+}
+
+export async function recordPreOpenSnapshot(
+  supabase: Client,
+  prospectId: string,
+  snapshot: Omit<CandidateInspectionSnapshotRow, "id" | "prospect_id" | "created_at">,
+) {
+  const saved = await supabase.from("candidate_inspection_snapshots").upsert(
+    { ...snapshot, prospect_id: prospectId },
+    { onConflict: "prospect_id", ignoreDuplicates: true },
+  );
+  if (!saved.error) return { ok: true as const };
+  if (saved.error.code === "23505" || isMissingRelation(saved.error)) return { ok: true as const, skipped: true as const };
+  return { ok: false as const, error: saved.error.message };
 }

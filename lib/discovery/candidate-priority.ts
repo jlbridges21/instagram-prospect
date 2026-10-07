@@ -8,6 +8,8 @@ const POSITIVE_HIT_CAP = 8;
 const NEGATIVE_HIT_CAP = 6;
 const COMMERCIAL_HIT_CAP = 6;
 const SOURCE_PRIOR_CAP = 8;
+const APPROVAL_ORIGIN = 0.08;
+const APPROVAL_POINT_CAP = 24;
 
 const COMMERCIAL_INTENT_TERMS = [
   "services",
@@ -118,19 +120,22 @@ export function scoreCandidate(input: {
     score += tuning.commercialIntentWeight;
     reasons.push(`+ commercial ${term}`);
   }
+  let sourcePriorPoints = 0;
   if (typeof input.sourceReviewYield === "number") {
     const prior = Math.max(-SOURCE_PRIOR_CAP, Math.min(SOURCE_PRIOR_CAP, Math.round((input.sourceReviewYield - 0.2) * tuning.sourceYieldWeight)));
     if (prior !== 0) {
       score += prior;
+      sourcePriorPoints += prior;
       reasons.push(`source yield prior ${prior > 0 ? "+" : ""}${prior}`);
     }
   }
   let approvalPoints = 0;
   if (typeof input.seedApprovalYield === "number" && input.seedMature) {
-    approvalPoints = Math.max(-tuning.approvalYieldWeight, Math.min(tuning.approvalYieldWeight, Math.round((input.seedApprovalYield - 0.15) * tuning.approvalYieldWeight)));
+    const raw = Math.round((input.seedApprovalYield - APPROVAL_ORIGIN) * tuning.approvalYieldWeight);
+    approvalPoints = Math.max(-APPROVAL_POINT_CAP, Math.min(APPROVAL_POINT_CAP, raw));
     if (approvalPoints !== 0) {
       score += approvalPoints;
-      reasons.push(`${approvalPoints > 0 ? "+" : ""}${approvalPoints} approval yield`);
+      reasons.push(`${approvalPoints > 0 ? "+" : ""}${approvalPoints} approval yield (${Math.round(input.seedApprovalYield * 100)}%)`);
     }
   } else if (input.seedOrigin === "manual" && !input.seedMature && tuning.manualApprovedSeedPrior !== 0) {
     approvalPoints = tuning.manualApprovedSeedPrior;
@@ -141,6 +146,7 @@ export function scoreCandidate(input: {
     const sourceApproval = Math.max(-4, Math.min(4, Math.round((input.sourceApprovalYield - 0.15) * tuning.sourceApprovalWeight)));
     if (sourceApproval !== 0) {
       score += sourceApproval;
+      sourcePriorPoints += sourceApproval;
       reasons.push(`${sourceApproval > 0 ? "+" : ""}${sourceApproval} source approval prior`);
     }
   }
@@ -160,8 +166,9 @@ export function scoreCandidate(input: {
     + supportBonus
     + Math.max(0, approvalPoints);
   const network = Math.max(0, Math.min(100, networkRaw));
-  reasons.unshift(`Historical quality: ${learned.component}/20`, `Network confidence: ${network}`, `Commercial intent: ${commercial}`, `Niche relevance: ${niche}`);
-  return { score, label: priorityLabel(score), reasons, niche, commercial, network, historical: learned.component };
+  if (tuning.historicalQualityWeight > 0) reasons.unshift(`Historical quality: ${learned.component}/20`);
+  reasons.unshift(`Network confidence: ${network}`, `Commercial intent: ${commercial}`, `Niche relevance: ${niche}`);
+  return { score, label: priorityLabel(score), reasons, niche, commercial, network, historical: learned.component, sourcePriorPoints };
 }
 
 export function qualityBand(score: number) {

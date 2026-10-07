@@ -20,6 +20,14 @@ export type DiscoveryCandidate = {
   sourcesSeen?: DiscoverySource[];
   seedSupport?: string[];
   networkScore?: number;
+  nicheComponent?: number;
+  commercialComponent?: number;
+  seedReviewYield?: number | null;
+  seedApprovalYield?: number | null;
+  seedMature?: boolean;
+  sourceReviewYield?: number | null;
+  sourceApprovalYield?: number | null;
+  sourcePriorPoints?: number | null;
   inspectionSelection?: "ranked" | "exploration" | "starvation";
 };
 
@@ -201,6 +209,10 @@ export class CandidateQueue {
       return picked.candidate;
     }
     return null;
+  }
+
+  peekNext() {
+    return this.best((item) => item.state === "pending" || item.state === "deferred")?.candidate ?? null;
   }
 
   complete(username: string, state: "done" | "skipped" = "done") {

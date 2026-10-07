@@ -224,15 +224,27 @@ export function DiscoverySeedsPanel({
           Save optimization
         </button>
         <details className="mt-4 rounded-lg border border-slate-200 p-3">
-          <summary className="cursor-pointer text-sm font-medium text-slate-900">Learned Signals</summary>
+          <summary className="cursor-pointer text-sm font-medium text-slate-900">Learned Signals — Experimental</summary>
+          {optimization.tuning.historicalQualityWeight === 0 ? (
+            <p className="mt-2 text-sm text-slate-700">Collecting data — not currently affecting Discovery ranking.</p>
+          ) : (
+            <p className="mt-2 text-sm text-slate-700">Historical quality weight is {optimization.tuning.historicalQualityWeight}, so these signals are affecting ranking.</p>
+          )}
           <p className="mt-2 text-sm text-slate-600">
-            These come from usernames and keyword hits saved before the profile was opened. A signal is used automatically once it has at least {learned?.minimum ?? 8} examples. Ignore a signal if it looks like a coincidence.
+            Tokens come from usernames and keyword hits saved before the profile was opened. A token needs at least {learned?.minimum ?? 8} examples before it can count, and it still stays off while Historical quality weight is 0.
           </p>
           {learned ? (
             <p className="mt-2 text-sm text-slate-600">{learned.positiveExamples} positive examples · {learned.negativeExamples} negative examples. Approved and Contacted on the same profile count once.</p>
           ) : (
             <p className="mt-2 text-sm text-slate-500">Learned signals appear after inspected prospects are available.</p>
           )}
+          {learned ? (
+            <div className="mt-3 text-sm text-slate-600">
+              <p className="font-medium text-slate-900">Validation gate</p>
+              <p className="mt-1">{learned.gate.readyToConsider ? "The holdout is strong enough to consider a non-zero weight. Ranking stays unchanged until you set Historical quality weight in Advanced." : "Historical scoring stays off."}</p>
+              {learned.gate.reasons.map((reason) => <p key={reason} className="mt-1">{reason}</p>)}
+            </div>
+          ) : null}
           <SignalList title="Positive signals learned from approvals" tokens={learned?.positive ?? []} action="ignore" pending={pending} onAction={(term) => run(() => ignoreSuggestedKeyword(term))} />
           {learned && learned.negative.length === 0 ? <p className="mt-3 text-sm text-slate-600">No negative signal has enough examples in the saved pre-open text yet.</p> : null}
           <SignalList title="Negative signals" tokens={learned?.negative ?? []} action="ignore" pending={pending} onAction={(term) => run(() => ignoreSuggestedKeyword(term))} />
@@ -271,10 +283,10 @@ export function DiscoverySeedsPanel({
             <NumberField label="Empty seed cooldown, second visit (minutes)" value={form.tuning.seedCooldownSecondMinutes} onChange={(value) => setTuning("seedCooldownSecondMinutes", value)} />
             <NumberField label="Empty seed cooldown, third visit (minutes)" value={form.tuning.seedCooldownThirdMinutes} onChange={(value) => setTuning("seedCooldownThirdMinutes", value)} />
             <NumberField label="Approved prospects before keyword suggestions" value={form.tuning.keywordSuggestionMinimum} onChange={(value) => setTuning("keywordSuggestionMinimum", value)} />
-            <NumberField label="Historical quality weight" value={form.tuning.historicalQualityWeight} onChange={(value) => setTuning("historicalQualityWeight", value)} />
+            <NumberField label="Historical quality weight (0 keeps it off)" value={form.tuning.historicalQualityWeight} onChange={(value) => setTuning("historicalQualityWeight", value)} />
             <NumberField label="Learned signal minimum examples" value={form.tuning.learnedTokenMinimum} onChange={(value) => setTuning("learnedTokenMinimum", value)} />
             <NumberField label="Learned signal smoothing" value={form.tuning.learnedSmoothing} onChange={(value) => setTuning("learnedSmoothing", value)} />
-            <NumberField label="Approval yield weight" value={form.tuning.approvalYieldWeight} onChange={(value) => setTuning("approvalYieldWeight", value)} />
+            <NumberField label="Approval yield weight (capped at ±24 points)" value={form.tuning.approvalYieldWeight} onChange={(value) => setTuning("approvalYieldWeight", value)} />
             <NumberField label="Manual approved-seed prior" value={form.tuning.manualApprovedSeedPrior} onChange={(value) => setTuning("manualApprovedSeedPrior", value)} />
             <NumberField label="Source approval weight" value={form.tuning.sourceApprovalWeight} onChange={(value) => setTuning("sourceApprovalWeight", value)} />
             <NumberField label="Fallback pre-score ceiling" value={form.tuning.fallbackCeiling} onChange={(value) => setTuning("fallbackCeiling", value)} />
@@ -403,7 +415,7 @@ function SignalList({ title, tokens, action, pending, onAction }: { title: strin
         {tokens.map((token) => (
           <li key={token.token} className="flex flex-wrap items-center gap-2 text-sm">
             <span className="font-medium text-slate-900">{token.token}</span>
-            <span className="text-slate-600">{Math.round(token.positiveRate * 100)}% positive · {token.sampleSize} examples</span>
+            <span className="text-slate-600">{token.positive} positive · {token.negative} negative · {token.sampleSize} examples · smoothed {Math.round(token.smoothedRate * 100)}%</span>
             <button type="button" className="rounded-lg border border-slate-200 px-2 py-1 disabled:opacity-50" disabled={pending} onClick={() => onAction(token.token)}>
               {action === "ignore" ? "Ignore" : "Use"}
             </button>

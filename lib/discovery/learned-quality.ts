@@ -237,6 +237,84 @@ export function matchedTokens(text: string, model: LearnedModel) {
   return [...tokens];
 }
 
+export const HISTORICAL_GATE = {
+  minimumPositives: 100,
+  minimumHoldoutPositives: 30,
+  minimumApprovalLift: 0.05,
+} as const;
+
+export type HistoricalGate = {
+  readyToConsider: boolean;
+  automatic: false;
+  positiveExamples: number;
+  holdoutPositives: number;
+  approvalPrecisionLift: number;
+  topQuartileApprovalLift: number;
+  reasons: string[];
+};
+
+export function historicalGateDecision(input: {
+  positiveExamples: number;
+  holdoutPositives: number;
+  approvalPrecisionLift: number;
+  topQuartileApprovalLift: number;
+}): HistoricalGate {
+  const reasons: string[] = [];
+  if (input.positiveExamples < HISTORICAL_GATE.minimumPositives) {
+    reasons.push(`Need ${HISTORICAL_GATE.minimumPositives} positive examples. Current history has ${input.positiveExamples}.`);
+  }
+  if (input.holdoutPositives < HISTORICAL_GATE.minimumHoldoutPositives) {
+    reasons.push(`Need ${HISTORICAL_GATE.minimumHoldoutPositives} positive examples in the holdout. This split has ${input.holdoutPositives}.`);
+  }
+  const lift = Math.max(input.approvalPrecisionLift, input.topQuartileApprovalLift);
+  if (lift < HISTORICAL_GATE.minimumApprovalLift) {
+    reasons.push("The holdout has not shown at least a 5 point gain in Approval precision@25 or top-quartile Approval yield.");
+  }
+  return {
+    readyToConsider: reasons.length === 0,
+    automatic: false,
+    positiveExamples: input.positiveExamples,
+    holdoutPositives: input.holdoutPositives,
+    approvalPrecisionLift: input.approvalPrecisionLift,
+    topQuartileApprovalLift: input.topQuartileApprovalLift,
+    reasons,
+  };
+}
+
+export function evaluateHistoricalGate(examples: LearnedExample[], weight = 10): HistoricalGate {
+  const labeled = examples.filter((example) => example.oldScore != null);
+  const train = labeled.filter((example) => holdoutSplit(example.username) === "train");
+  const validation = labeled.filter((example) => holdoutSplit(example.username) === "validation");
+  const model = learnQualityModel({ examples: train, minimum: 8, strength: 8 });
+  const rows = validation.map((example) => {
+    const points = historicalAdjustment({ text: example.text, model, weight }).points;
+    return {
+      oldScore: example.oldScore ?? 0,
+      nextScore: (example.oldScore ?? 0) + points,
+      approved: example.approved,
+    };
+  });
+  return historicalGateDecision({
+    positiveExamples: labeled.filter((example) => example.positive).length,
+    holdoutPositives: validation.filter((example) => example.positive).length,
+    approvalPrecisionLift: approvalPrecision(rows, "nextScore", 25) - approvalPrecision(rows, "oldScore", 25),
+    topQuartileApprovalLift: quartileApproval(rows, "nextScore") - quartileApproval(rows, "oldScore"),
+  });
+}
+
+function approvalPrecision(rows: Array<{ oldScore: number; nextScore: number; approved: boolean }>, key: "oldScore" | "nextScore", count: number) {
+  if (rows.length === 0) return 0;
+  const top = [...rows].sort((left, right) => right[key] - left[key]).slice(0, Math.min(count, rows.length));
+  return top.filter((row) => row.approved).length / top.length;
+}
+
+function quartileApproval(rows: Array<{ oldScore: number; nextScore: number; approved: boolean }>, key: "oldScore" | "nextScore") {
+  if (rows.length === 0) return 0;
+  const count = Math.max(1, Math.round(rows.length * 0.25));
+  const top = [...rows].sort((left, right) => right[key] - left[key]).slice(0, count);
+  return top.filter((row) => row.approved).length / top.length;
+}
+
 export function rankYield(rows: Array<{ score: number; positive: boolean; approved: boolean }>, fraction: number) {
   const ordered = [...rows].sort((left, right) => right.score - left.score);
   const count = Math.max(1, Math.round(ordered.length * fraction));

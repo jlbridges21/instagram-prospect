@@ -47,6 +47,66 @@ export function optimizationComparison(input: {
   };
 }
 
+const APPROVED_OUTCOMES = new Set(["approved", "contacted", "replied", "follow_up", "demo_booked", "converted"]);
+
+export type InspectionWindowRow = {
+  preScore: number | null;
+  status: string;
+  seedMature: boolean;
+  seedReviewYield: number | null;
+  seedApprovalYield: number | null;
+  createdAt: string;
+};
+
+export function summarizeInspectionWindow(rows: InspectionWindowRow[]) {
+  const ordered = [...rows].sort((left, right) => left.createdAt.localeCompare(right.createdAt));
+  return {
+    total: ordered.length,
+    first50: windowSlice(ordered, 50),
+    first100: windowSlice(ordered, 100),
+    first200: windowSlice(ordered, 200),
+    all: windowSlice(ordered, ordered.length),
+  };
+}
+
+function windowSlice(rows: InspectionWindowRow[], count: number) {
+  const slice = rows.slice(0, Math.max(0, count));
+  const scores = slice.flatMap((row) => (typeof row.preScore === "number" ? [row.preScore] : []));
+  const high = slice.filter((row) => matureHighYield(row));
+  const other = slice.filter((row) => !matureHighYield(row));
+  return {
+    ...outcomeYield(slice),
+    reached: slice.length >= count || (count === rows.length && slice.length > 0),
+    fallbackShare: scores.length > 0 ? scores.filter((score) => score >= 18 && score <= 24).length / scores.length : 0,
+    average: scores.length > 0 ? scores.reduce((sum, score) => sum + score, 0) / scores.length : null,
+    median: median(scores),
+    highYieldSeeds: outcomeYield(high),
+    otherSeeds: outcomeYield(other),
+  };
+}
+
+function matureHighYield(row: InspectionWindowRow) {
+  return row.seedMature && ((row.seedApprovalYield ?? 0) >= 0.15 || (row.seedReviewYield ?? 0) >= 0.2);
+}
+
+function outcomeYield(rows: InspectionWindowRow[]) {
+  const review = rows.filter((row) => isReviewStatus(row.status)).length;
+  const approved = rows.filter((row) => APPROVED_OUTCOMES.has(row.status)).length;
+  return {
+    inspected: rows.length,
+    review,
+    approved,
+    reviewYield: rows.length > 0 ? review / rows.length : 0,
+    approvalYield: rows.length > 0 ? approved / rows.length : 0,
+  };
+}
+
+function median(scores: number[]) {
+  if (scores.length === 0) return null;
+  const sorted = [...scores].sort((left, right) => left - right);
+  return sorted[Math.floor((sorted.length - 1) / 2)] ?? null;
+}
+
 export function summarizeScoreMix(scores: number[]) {
   const usable = scores.filter((score) => Number.isFinite(score));
   const fallback = usable.filter((score) => score >= 18 && score <= 24).length;

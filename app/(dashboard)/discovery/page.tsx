@@ -5,7 +5,7 @@ import { ProgressMetric } from "@/components/ui/progress-metric";
 import { StartDiscoveryButton } from "@/components/worker/start-discovery-button";
 import { DiscoveryRunButtons } from "@/components/worker/discovery-run-buttons";
 import { getDiscoveryV3Snapshot } from "@/lib/db/discovery";
-import { discoveryOutcomeWindow, discoveryQualityStats, discoverySourceStats, listDiscoverySeeds, optimizationStartedAt } from "@/lib/db/seeds";
+import { discoveryOutcomeWindow, discoveryQualityStats, discoverySourceStats, inspectionRankingWindow, listDiscoverySeeds, optimizationStartedAt } from "@/lib/db/seeds";
 import { optimizationComparison } from "@/lib/discovery/quality";
 import { QualityMarkerButton } from "@/components/discovery/quality-marker";
 import { reviewYield } from "@/lib/discovery/seeds";
@@ -34,7 +34,7 @@ export default async function DiscoveryPage({
   const worker = workerResult.ok ? workerResult.data : null;
   const now = Date.now();
   const marker = await optimizationStartedAt().catch(() => null);
-  const [progress, seedsResult, sources, quality, today, week, month, allTime, beforeOptimization, afterOptimization] = await Promise.all([
+  const [progress, seedsResult, sources, quality, today, week, month, allTime, beforeOptimization, afterOptimization, rankingWindow] = await Promise.all([
     getDiscoveryV3Snapshot(settings.timezone),
     listDiscoverySeeds(),
     discoverySourceStats(range),
@@ -45,6 +45,7 @@ export default async function DiscoveryPage({
     discoveryOutcomeWindow(null),
     marker ? discoveryOutcomeWindow(null, marker) : Promise.resolve(null),
     marker ? discoveryOutcomeWindow(marker) : Promise.resolve(null),
+    inspectionRankingWindow().catch(() => null),
   ]);
   const comparison = beforeOptimization && afterOptimization
     ? optimizationComparison({ before: beforeOptimization, after: afterOptimization })
@@ -137,6 +138,60 @@ export default async function DiscoveryPage({
           <p className="mt-1">Top candidate: {candidatePool.highest ?? "—"}</p>
         </section>
       ) : null}
+      <section className="mt-4 rounded-xl border border-slate-200 bg-white p-4 text-sm">
+        <h2 className="font-semibold text-slate-900">Latest selected candidate</h2>
+        <p className="mt-1 text-slate-600">This is the pre-open evidence used when the profile was chosen. Later qualification does not change it.</p>
+        {rankingWindow?.latest ? (
+          <div className="mt-3">
+            <p className="font-medium text-slate-900">@{rankingWindow.latest.username}</p>
+            <p className="mt-1">Pre-score: {rankingWindow.latest.preScore ?? "—"}</p>
+            <p>Priority: {rankingWindow.latest.priorityBand ?? "—"}</p>
+            <p className="mt-3 font-medium">Why selected:</p>
+            <p className="mt-1 whitespace-pre-line text-slate-700">{rankingWindow.latest.reasons || "Seed or source baseline only."}</p>
+            <p className="mt-3 font-medium">Compared with next candidate:</p>
+            <p className="mt-1">{rankingWindow.latest.runnerUpUsername ? `@${rankingWindow.latest.runnerUpUsername} — ${rankingWindow.latest.runnerUpPreScore ?? "—"}` : "No other candidate was waiting."}</p>
+          </div>
+        ) : (
+          <p className="mt-3 text-slate-500">The explanation appears after the next inspection saves a pre-open snapshot.</p>
+        )}
+      </section>
+      <section className="mt-4 rounded-xl border border-slate-200 bg-white p-4 text-sm">
+        <h2 className="font-semibold text-slate-900">Ranking window</h2>
+        <p className="mt-1 text-slate-600">This starts at the first saved pre-open snapshot. Earlier inspections are not included. Checkpoints are the first 50, 100, and 200 inspections in this window.</p>
+        {rankingWindow ? (
+          <>
+            <div className="mt-3 grid gap-3 sm:grid-cols-3">
+              {([
+                ["After 50", rankingWindow.window.first50, 50],
+                ["After 100", rankingWindow.window.first100, 100],
+                ["After 200", rankingWindow.window.first200, 200],
+              ] as const).map(([label, slice, target]) => (
+                <div key={label} className="rounded-lg bg-slate-50 p-3">
+                  <p className="font-medium text-slate-900">{label}</p>
+                  <p className="mt-1">{slice.inspected} of {target} inspections</p>
+                  <p>Review yield {slice.inspected === 0 ? "—" : `${Math.round(slice.reviewYield * 1000) / 10}%`}</p>
+                  <p>Approval yield {slice.inspected === 0 ? "—" : `${Math.round(slice.approvalYield * 1000) / 10}%`}</p>
+                  <p>Fallback 18–24: {slice.inspected === 0 ? "—" : `${Math.round(slice.fallbackShare * 100)}%`}</p>
+                  <p>Average pre-score: {slice.average == null ? "—" : Math.round(slice.average)}</p>
+                  <p>Median pre-score: {slice.median ?? "—"}</p>
+                </div>
+              ))}
+            </div>
+            <div className="mt-3 grid gap-3 sm:grid-cols-2">
+              <div className="rounded-lg bg-slate-50 p-3">
+                <p className="font-medium">Mature high-yield seeds</p>
+                <p className="mt-1">{rankingWindow.window.all.highYieldSeeds.inspected} inspected · Review {rankingWindow.window.all.highYieldSeeds.inspected === 0 ? "—" : `${Math.round(rankingWindow.window.all.highYieldSeeds.reviewYield * 1000) / 10}%`} · Approval {rankingWindow.window.all.highYieldSeeds.inspected === 0 ? "—" : `${Math.round(rankingWindow.window.all.highYieldSeeds.approvalYield * 1000) / 10}%`}</p>
+              </div>
+              <div className="rounded-lg bg-slate-50 p-3">
+                <p className="font-medium">Immature or low-yield seeds</p>
+                <p className="mt-1">{rankingWindow.window.all.otherSeeds.inspected} inspected · Review {rankingWindow.window.all.otherSeeds.inspected === 0 ? "—" : `${Math.round(rankingWindow.window.all.otherSeeds.reviewYield * 1000) / 10}%`} · Approval {rankingWindow.window.all.otherSeeds.inspected === 0 ? "—" : `${Math.round(rankingWindow.window.all.otherSeeds.approvalYield * 1000) / 10}%`}</p>
+              </div>
+            </div>
+          </>
+        ) : (
+          <p className="mt-3 text-slate-500">Snapshots start after the inspection snapshot migration and the next profile open.</p>
+        )}
+      </section>
       <section className="mt-4 rounded-xl border border-slate-200 bg-white p-4 text-sm">
         <h2 className="font-semibold text-slate-900">Discovery quality</h2>
         <p className="mt-1 text-slate-600">Review yield is Review prospects divided by profiles inspected. Approval yield is Approved prospects divided by profiles inspected.</p>

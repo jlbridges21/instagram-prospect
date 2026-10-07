@@ -4,7 +4,8 @@ import type { BrowserContext, Page } from "playwright";
 import type { CloudClient, CloudConfig } from "../cloud/client";
 import { QualificationQueue } from "./qualify-queue";
 import { CandidateQueue, SessionUsernameCache, chunkUsernames, evidenceIsNew, mergeCandidateEvidence, unseenUsernames, type DiscoveryCandidate } from "./queue";
-import { scoreCandidate, shouldExploreCandidate } from "../../lib/discovery/candidate-priority";
+import { qualityBand, scoreCandidate, shouldExploreCandidate } from "../../lib/discovery/candidate-priority";
+import { buildPreOpenSnapshot, formatSelectionExplanation } from "../../lib/discovery/inspection-snapshot";
 import { CANDIDATE_POOL_MAX_PASSES, CANDIDATE_POOL_TARGET, clampTuning, DEFAULT_DISCOVERY_OPTIMIZATION } from "../../lib/discovery/defaults";
 import { shouldFlushDiscoveryUsage } from "../../lib/discovery/inspection-count";
 import { inspectionSeedId, pickSeed, prospectAttribution, seedCollectionResult, seedStatForCandidate, shouldOpenSeedNetwork, clampSeedNetworkSample, type SeededDiscoverySource } from "../../lib/discovery/seeds";
@@ -684,6 +685,7 @@ export async function runDiscoveryV2(input: {
         ? options.explore
         : shouldExploreCandidate(latestConfig?.discoveryStrategy ?? "balanced", exploreRoll, latestConfig?.tuning);
       const candidate = queue.claim(tabId, { floor, explore: options?.bestEligible ? false : explore, bestEligible: options?.bestEligible, explorationFloor, random: exploreRoll });
+      const runnerUp = candidate ? queue.peekNext() : null;
       if (!candidate) {
         if (options?.once || input.singleTurn) return;
         await sleep(300);
@@ -729,6 +731,14 @@ export async function runDiscoveryV2(input: {
       }
       console.log(`Source: ${candidate.source}`);
       if ((candidate.source === "seed_suggestion" || candidate.source === "seed_network") && candidate.sourceSeedUsername) console.log(`Seed: @${candidate.sourceSeedUsername}`);
+      console.log(formatSelectionExplanation({
+        username: candidate.username,
+        preScore: candidate.priorityScore ?? null,
+        priorityBand: typeof candidate.priorityScore === "number" ? qualityBand(candidate.priorityScore) : null,
+        reasons: candidate.priorityReasons,
+        runnerUpUsername: runnerUp?.username ?? null,
+        runnerUpPreScore: runnerUp?.priorityScore ?? null,
+      }));
       log("info", tabId === "profile-tab-1" ? "candidate_claimed_tab_a" : "candidate_claimed_tab_b", {
         username: candidate.username,
       });
@@ -739,7 +749,7 @@ export async function runDiscoveryV2(input: {
         return;
       }
       try {
-        await inspectCandidate(page, candidate);
+        await inspectCandidate(page, candidate, runnerUp);
         input.onProgress?.();
         queue.complete(candidate.username, "done");
         failures.set(tabId, 0);
@@ -769,7 +779,30 @@ export async function runDiscoveryV2(input: {
     }
   }
 
-  async function inspectCandidate(page: Page, candidate: DiscoveryCandidate) {
+  async function inspectCandidate(page: Page, candidate: DiscoveryCandidate, runnerUp: DiscoveryCandidate | null) {
+    const preOpenSnapshot = buildPreOpenSnapshot({
+      username: candidate.username,
+      cardText: candidate.cardText,
+      source: candidate.source,
+      sourceSeedId: candidate.sourceSeedId,
+      sourceSeedUsername: candidate.sourceSeedUsername,
+      seedSupport: candidate.seedSupport,
+      preScore: candidate.priorityScore,
+      nicheComponent: candidate.nicheComponent,
+      commercialComponent: candidate.commercialComponent,
+      networkComponent: candidate.networkScore,
+      sourceReviewYield: candidate.sourceReviewYield,
+      sourceApprovalYield: candidate.sourceApprovalYield,
+      sourcePriorPoints: candidate.sourcePriorPoints,
+      seedReviewYield: candidate.seedReviewYield,
+      seedApprovalYield: candidate.seedApprovalYield,
+      seedMature: candidate.seedMature,
+      strategy: latestConfig?.discoveryStrategy ?? null,
+      priorityLabel: candidate.priorityLabel,
+      priorityReasons: candidate.priorityReasons,
+      runnerUpUsername: runnerUp?.username ?? null,
+      runnerUpPreScore: runnerUp?.priorityScore ?? null,
+    });
     const profile = await readProfile(page, candidate.username);
     if (!profile.profileExists) return;
     const excluded = isExcludedRelationship(profile.relationship);
@@ -788,6 +821,7 @@ export async function runDiscoveryV2(input: {
       instagram_post_url: candidate.sourcePostUrl,
       ...prospectAttribution(candidate),
       follow_relationship: profile.relationship,
+      preopen_snapshot: preOpenSnapshot,
     });
     const creditedSeed = inspectionSeedId(candidate);
     if (creditedSeed && ingested.prospectId) {
@@ -943,8 +977,8 @@ function applyPriority(candidate: DiscoveryCandidate, config: CloudConfig): Disc
       if (!seed || seed.inspected < minSample || seed.inspected <= 0) continue;
       const yieldRate = seed.review / seed.inspected;
       const approvalRate = typeof seed.approved === "number" ? seed.approved / seed.inspected : null;
-      const quality = (approvalRate ?? 0) * 2 + yieldRate;
-      const bestQuality = (bestApproval ?? 0) * 2 + bestYield;
+      const quality = (approvalRate ?? 0) * 3 + yieldRate;
+      const bestQuality = (bestApproval ?? 0) * 3 + bestYield;
       if (!bestMature || quality >= bestQuality) {
         bestYield = yieldRate;
         bestApproval = approvalRate;
@@ -991,6 +1025,14 @@ function applyPriority(candidate: DiscoveryCandidate, config: CloudConfig): Disc
     priorityLabel: priority.label,
     priorityReasons: priority.reasons,
     networkScore: priority.network,
+    nicheComponent: priority.niche,
+    commercialComponent: priority.commercial,
+    seedReviewYield: bestMature ? bestYield : null,
+    seedApprovalYield: bestMature ? bestApproval : null,
+    seedMature: bestMature,
+    sourceReviewYield: config.sourceYields?.[candidate.source] ?? null,
+    sourceApprovalYield: config.sourceApprovalYields?.[candidate.source] ?? null,
+    sourcePriorPoints: priority.sourcePriorPoints,
   };
 }
 
