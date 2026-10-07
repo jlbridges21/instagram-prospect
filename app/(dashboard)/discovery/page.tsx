@@ -189,6 +189,14 @@ export default async function DiscoveryPage({
             <p className="mt-1">Review: {quality.review}</p>
             <p className="mt-1">Review yield per opened profile: {Math.round(quality.reviewPerOpened * 1000) / 10}%</p>
             <p className="mt-1">Review yield per collected candidate: {quality.reviewPerCollected == null ? "—" : `${Math.round(quality.reviewPerCollected * 1000) / 10}%`}</p>
+            {quality.mix ? (
+              <>
+                <p className="mt-3">Fallback 18–24 inspections: {quality.mix.fallback} of {quality.mix.inspected} ({Math.round(quality.mix.fallbackShare * 100)}%)</p>
+                <p className="mt-1">Score 25 or higher: {quality.mix.stronger}</p>
+                <p className="mt-1">Average stored pre-score: {quality.mix.average == null ? "—" : Math.round(quality.mix.average)}</p>
+                <p className="mt-1">Median stored pre-score: {quality.mix.median ?? "—"}</p>
+              </>
+            ) : null}
             <table className="mt-3 w-full text-left text-sm">
               <thead>
                 <tr className="text-xs text-slate-500">

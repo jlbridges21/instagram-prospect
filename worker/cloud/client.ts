@@ -1,5 +1,6 @@
 import { clampCandidateFloor } from "../../lib/discovery/candidate-priority";
 import { clampTuning, DEFAULT_DISCOVERY_OPTIMIZATION, type DiscoveryTuning } from "../../lib/discovery/defaults";
+import { coerceLearnedModel, type LearnedModel } from "../../lib/discovery/learned-quality";
 import { clampSeedNetworkSample } from "../../lib/discovery/seeds";
 import { AUTH_FAILURE_MESSAGE } from "../version";
 
@@ -35,6 +36,7 @@ export type CloudConfig = {
     priority: "low" | "normal" | "high";
     inspected: number;
     review: number;
+    approved?: number;
     consecutiveUses: number;
   }>;
   positiveKeywords?: string[];
@@ -50,6 +52,8 @@ export type CloudConfig = {
   minCandidatePreScore?: number;
   tuning?: DiscoveryTuning;
   sourceYields?: Partial<Record<"seed_network" | "seed_suggestion" | "suggested_accounts" | "home_feed", number>>;
+  sourceApprovalYields?: Partial<Record<"seed_network" | "seed_suggestion" | "suggested_accounts" | "home_feed", number>>;
+  learnedQuality?: LearnedModel | null;
 };
 
 export const CONFIG_CACHE_MS = 60_000;
@@ -158,7 +162,7 @@ export class CloudClient {
       discoveryRunInspectionLimit: typeof json.discoveryRunInspectionLimit === "number" ? json.discoveryRunInspectionLimit : null,
       discoveryRunStartedAt: typeof json.discoveryRunStartedAt === "string" ? json.discoveryRunStartedAt : null,
       timezone: typeof json.timezone === "string" && json.timezone ? json.timezone : "America/Chicago",
-      discoverySeeds: Array.isArray(json.discoverySeeds) ? json.discoverySeeds as CloudConfig["discoverySeeds"] : [],
+      discoverySeeds: seedList(json.discoverySeeds),
       positiveKeywords: stringList(json.positiveKeywords),
       negativeKeywords: stringList(json.negativeKeywords),
       homeFeedUsage: json.homeFeedUsage === "medium" || json.homeFeedUsage === "high" ? json.homeFeedUsage : "low",
@@ -172,6 +176,8 @@ export class CloudClient {
       minCandidatePreScore: clampCandidateFloor(numberOr(json.minCandidatePreScore, DEFAULT_DISCOVERY_OPTIMIZATION.minCandidatePreScore)),
       tuning: clampTuning(json.tuning),
       sourceYields: sourceYieldMap(json.sourceYields),
+      sourceApprovalYields: sourceYieldMap(json.sourceApprovalYields),
+      learnedQuality: coerceLearnedModel(json.learnedQuality),
     } satisfies CloudConfig;
     this.configCache = value;
     this.configCachedAt = Date.now();
@@ -320,6 +326,27 @@ function authError() {
   const error = new Error(AUTH_FAILURE_MESSAGE) as Error & { statusCode: number };
   error.statusCode = 401;
   return error;
+}
+
+function seedList(value: unknown): CloudConfig["discoverySeeds"] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((item) => {
+    if (!item || typeof item !== "object") return [];
+    const seed = item as Record<string, unknown>;
+    if (typeof seed.username !== "string" || typeof seed.id !== "string") return [];
+    const sourceType = seed.sourceType === "manual" || seed.sourceType === "auto_promoted" || seed.sourceType === "system_imported" ? seed.sourceType : "system_imported";
+    const priority = seed.priority === "low" || seed.priority === "high" ? seed.priority : "normal";
+    return [{
+      id: seed.id,
+      username: seed.username,
+      sourceType,
+      priority,
+      inspected: numberOr(seed.inspected, 0),
+      review: numberOr(seed.review, 0),
+      ...(typeof seed.approved === "number" ? { approved: seed.approved } : {}),
+      consecutiveUses: numberOr(seed.consecutiveUses, 0),
+    }];
+  });
 }
 
 function sourceYieldMap(value: unknown): CloudConfig["sourceYields"] {

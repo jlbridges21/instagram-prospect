@@ -1,10 +1,10 @@
 import "server-only";
 
 import type { ProspectSource, ProspectStatus } from "@/lib/constants/prospects";
-import { PRE_SCORE_BANDS } from "@/lib/discovery/quality";
+import { PRE_SCORE_BANDS, qualityYield, summarizeScoreMix } from "@/lib/discovery/quality";
+import { exampleFromProspect, learnQualityModel, type LearnedToken } from "@/lib/discovery/learned-quality";
 import { clampTuning, effectiveKeywordList, DEFAULT_POSITIVE_KEYWORDS, LEGACY_POSITIVE_KEYWORDS } from "@/lib/discovery/defaults";
 import { suggestPositiveKeywords } from "@/lib/discovery/keyword-suggestions";
-import { qualityYield } from "@/lib/discovery/quality";
 import { reviewYield } from "@/lib/discovery/seeds";
 import { databaseErrorMessage, isMissingRelation } from "@/lib/db/errors";
 import type { DataResult } from "@/lib/db/models";
@@ -125,6 +125,8 @@ export async function discoveryQualityStats(days: number | null) {
   const opened = bands.reduce((sum, band) => sum + band.inspected, 0);
   const review = bands.reduce((sum, band) => sum + band.review, 0);
   const funnel = await funnelTotals(supabase, since);
+  const scoreRows = await supabase.from("prospects").select("discovery_pre_score").not("discovery_pre_score", "is", null).limit(1000);
+  const mix = scoreRows.error ? null : summarizeScoreMix((scoreRows.data ?? []).flatMap((row) => typeof row.discovery_pre_score === "number" ? [row.discovery_pre_score] : []));
   return {
     collected: funnel?.collected ?? null,
     deferred: funnel?.deferred ?? null,
@@ -133,8 +135,65 @@ export async function discoveryQualityStats(days: number | null) {
     reviewPerOpened: reviewYield(opened, review),
     reviewPerCollected: funnel ? reviewYield(funnel.collected, review) : null,
     bands,
+    mix,
   };
 }
+
+export async function learnedSignalView() {
+  const supabase = await createClient();
+  const settings = await supabase.from("settings").select("discovery_ignored_keywords, discovery_tuning").eq("id", 1).maybeSingle();
+  const rows = [];
+  let from = 0;
+  for (;;) {
+    const page = await supabase.from("prospects").select("instagram_username, status, discovery_priority_reason, is_sample").order("discovered_at", { ascending: false }).range(from, from + 999);
+    if (page.error || !page.data) return null;
+    rows.push(...page.data);
+    if (page.data.length < 1000) break;
+    from += 1000;
+  }
+  const tuning = clampTuning(settings.data?.discovery_tuning);
+  const ignored = settings.error ? [] : settings.data?.discovery_ignored_keywords ?? [];
+  const model = learnQualityModel({
+    examples: rows.flatMap((row) => {
+      const example = exampleFromProspect(row);
+      return example ? [example] : [];
+    }),
+    minimum: tuning.learnedTokenMinimum,
+    strength: tuning.learnedSmoothing,
+    ignored,
+  });
+  const ignoredSet = new Set(model.ignored);
+  const active = model.tokens.filter((token) => token.active && !ignoredSet.has(token.token));
+  const positive = active
+    .filter((token) => token.smoothedRate > model.globalPositiveRate)
+    .sort((left, right) => right.positiveRate - left.positiveRate || right.sampleSize - left.sampleSize)
+    .slice(0, 12);
+  const negative = active
+    .filter((token) => token.smoothedRate < model.globalPositiveRate)
+    .sort((left, right) => left.positiveRate - right.positiveRate || right.sampleSize - left.sampleSize)
+    .slice(0, 8);
+  const held = model.tokens.filter((token) => token.active && ignoredSet.has(token.token)).slice(0, 12);
+  const waiting = model.tokens.filter((token) => !token.active && token.sampleSize >= 5 && !ignoredSet.has(token.token)).slice(0, 8);
+  return {
+    positive,
+    negative,
+    held,
+    waiting,
+    positiveExamples: model.positiveExamples,
+    negativeExamples: model.negativeExamples,
+    minimum: model.minimum,
+  };
+}
+
+export type LearnedSignalView = {
+  positive: LearnedToken[];
+  negative: LearnedToken[];
+  held: LearnedToken[];
+  waiting: LearnedToken[];
+  positiveExamples: number;
+  negativeExamples: number;
+  minimum: number;
+};
 
 async function preScoreCount(
   supabase: Awaited<ReturnType<typeof createClient>>,

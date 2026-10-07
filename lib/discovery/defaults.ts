@@ -117,6 +117,14 @@ export const DEFAULT_DISCOVERY_TUNING = {
   seedCooldownSecondMinutes: 120,
   seedCooldownThirdMinutes: 360,
   keywordSuggestionMinimum: 10,
+  historicalQualityWeight: 10,
+  learnedTokenMinimum: 8,
+  learnedSmoothing: 8,
+  approvalYieldWeight: 24,
+  manualApprovedSeedPrior: 6,
+  sourceApprovalWeight: 16,
+  fallbackCeiling: 24,
+  fallbackLookaheadSeconds: 40,
 };
 
 export type DiscoveryTuning = { [K in keyof typeof DEFAULT_DISCOVERY_TUNING]: number };
@@ -170,6 +178,14 @@ const TUNING_LIMITS: Record<keyof DiscoveryTuning, { min: number; max: number }>
   seedCooldownSecondMinutes: { min: 5, max: 48 * 60 },
   seedCooldownThirdMinutes: { min: 5, max: 7 * 24 * 60 },
   keywordSuggestionMinimum: { min: 1, max: 100 },
+  historicalQualityWeight: { min: 0, max: 25 },
+  learnedTokenMinimum: { min: 5, max: 30 },
+  learnedSmoothing: { min: 2, max: 20 },
+  approvalYieldWeight: { min: 0, max: 40 },
+  manualApprovedSeedPrior: { min: 0, max: 16 },
+  sourceApprovalWeight: { min: 0, max: 24 },
+  fallbackCeiling: { min: 18, max: 40 },
+  fallbackLookaheadSeconds: { min: 0, max: 90 },
 };
 
 export function clampTuning(input: unknown): DiscoveryTuning {

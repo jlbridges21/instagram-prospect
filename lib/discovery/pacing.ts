@@ -164,12 +164,18 @@ export function candidateRefillDecision(input: {
   elapsedMs?: number;
   budgetMs?: number;
   slotDue?: boolean;
+  fallbackCeiling?: number;
+  lookaheadBudgetMs?: number;
 }): RefillAction {
   const maxPasses = input.maxPasses ?? REFILL_PASS_LIMIT;
   const overBudget = (input.elapsedMs ?? 0) >= (input.budgetMs ?? REFILL_BUDGET_MS);
   const exhausted = input.passes >= maxPasses || (input.consecutiveEmptyPasses ?? 0) >= 2 || overBudget;
   const starved = input.census.ranked < input.lowWater;
+  const ceiling = input.fallbackCeiling ?? 24;
+  const lookaheadExhausted = input.passes >= maxPasses || (input.consecutiveEmptyPasses ?? 0) >= 2 || (input.elapsedMs ?? 0) >= (input.lookaheadBudgetMs ?? 40_000);
+  const fallbackOnly = input.census.ranked > 0 && (input.census.highest ?? 0) <= ceiling;
   if (!input.allowInspect && input.slotDue) return "yield_for_slot";
+  if (input.allowInspect && input.census.ranked > 0 && fallbackOnly && !lookaheadExhausted) return "refill";
   if (input.allowInspect && input.census.ranked > 0) return "inspect_ranked";
   if (starved && !exhausted) return "refill";
   if (input.allowInspect && input.census.ranked === 0 && input.census.explorationEligible > 0) return "inspect_starvation";

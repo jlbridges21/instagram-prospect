@@ -488,7 +488,8 @@ export async function runDiscoveryV2(input: {
         return;
       }
       const floor = latestConfig?.minCandidatePreScore ?? DEFAULT_DISCOVERY_OPTIMIZATION.minCandidatePreScore;
-      const explorationFloor = clampTuning(latestConfig?.tuning).explorationFloor;
+      const tuning = clampTuning(latestConfig?.tuning);
+      const explorationFloor = tuning.explorationFloor;
       queue.applyFloor(floor);
       const census = queue.census(floor, explorationFloor);
       const slotDue = input.inspectionDueAt != null && Date.now() >= input.inspectionDueAt;
@@ -503,6 +504,8 @@ export async function runDiscoveryV2(input: {
         elapsedMs: Date.now() - refillStarted,
         budgetMs: REFILL_BUDGET_MS,
         slotDue,
+        fallbackCeiling: tuning.fallbackCeiling,
+        lookaheadBudgetMs: tuning.fallbackLookaheadSeconds * 1000,
       });
       if (action === "yield_for_slot") {
         noteInspectionDelay("Refilling candidate pool");
@@ -523,7 +526,12 @@ export async function runDiscoveryV2(input: {
       if (action === "refill") {
         noteInspectionDelay("Refilling candidate pool");
         if (!refillLogged) {
-          console.log("No ranked candidate available.");
+          const lookingAhead = allowInspect && census.ranked > 0 && (census.highest ?? 0) <= clampTuning(latestConfig?.tuning).fallbackCeiling;
+          if (lookingAhead) {
+            console.log(`Best candidate is fallback score ${census.highest}. Looking for a stronger candidate before inspecting it.`);
+          } else {
+            console.log("No ranked candidate available.");
+          }
           console.log(`Pool: ${poolStatusLine(census)}`);
           console.log("Refilling candidate pool...");
           refillLogged = true;
@@ -925,16 +933,21 @@ function applyPriority(candidate: DiscoveryCandidate, config: CloudConfig): Disc
   const seeds = config.discoverySeeds ?? [];
   const minSample = config.minSeedSample ?? 10;
   let bestYield = 0;
+  let bestApproval: number | null = null;
   let bestMature = false;
   let bestName = candidate.sourceSeedUsername ?? null;
   let bestPriority: "low" | "normal" | "high" | undefined;
   if (config.favorYield !== false) {
     for (const name of support) {
       const seed = seeds.find((item) => item.username.toLowerCase() === name);
-      if (!seed || seed.inspected < minSample) continue;
-      const yieldRate = seed.inspected > 0 ? seed.review / seed.inspected : 0;
-      if (!bestMature || yieldRate >= bestYield) {
+      if (!seed || seed.inspected < minSample || seed.inspected <= 0) continue;
+      const yieldRate = seed.review / seed.inspected;
+      const approvalRate = typeof seed.approved === "number" ? seed.approved / seed.inspected : null;
+      const quality = (approvalRate ?? 0) * 2 + yieldRate;
+      const bestQuality = (bestApproval ?? 0) * 2 + bestYield;
+      if (!bestMature || quality >= bestQuality) {
         bestYield = yieldRate;
+        bestApproval = approvalRate;
         bestMature = true;
         bestName = seed.username;
         bestPriority = seed.priority;
@@ -942,6 +955,7 @@ function applyPriority(candidate: DiscoveryCandidate, config: CloudConfig): Disc
     }
   }
   if (!bestPriority && bestName) bestPriority = seeds.find((item) => item.username.toLowerCase() === bestName.toLowerCase())?.priority;
+  const manualNeighbor = !bestMature && support.some((name) => seeds.find((item) => item.username.toLowerCase() === name)?.sourceType === "manual");
   const supportYields = support.flatMap((name) => {
     const seed = seeds.find((item) => item.username.toLowerCase() === name);
     if (!seed || seed.inspected < minSample || seed.inspected <= 0) return [];
@@ -954,6 +968,8 @@ function applyPriority(candidate: DiscoveryCandidate, config: CloudConfig): Disc
     seedUsername: bestName,
     seedYield: bestYield,
     seedMature: bestMature,
+    seedApprovalYield: bestApproval,
+    seedOrigin: manualNeighbor ? "manual" : null,
     seedPriority: bestPriority,
     seedSupportCount: support.length,
     username: candidate.username,
@@ -962,7 +978,9 @@ function applyPriority(candidate: DiscoveryCandidate, config: CloudConfig): Disc
     positiveKeywords: config.positiveKeywords ?? [],
     negativeKeywords: config.negativeKeywords ?? [],
     tuning: config.tuning,
+    learned: config.learnedQuality ?? null,
     sourceReviewYield: config.sourceYields?.[candidate.source] ?? null,
+    sourceApprovalYield: config.sourceApprovalYields?.[candidate.source] ?? null,
     supportYields,
   });
   return {
@@ -972,6 +990,7 @@ function applyPriority(candidate: DiscoveryCandidate, config: CloudConfig): Disc
     priorityScore: priority.score,
     priorityLabel: priority.label,
     priorityReasons: priority.reasons,
+    networkScore: priority.network,
   };
 }
 

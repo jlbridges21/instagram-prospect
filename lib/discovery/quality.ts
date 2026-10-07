@@ -47,6 +47,23 @@ export function optimizationComparison(input: {
   };
 }
 
+export function summarizeScoreMix(scores: number[]) {
+  const usable = scores.filter((score) => Number.isFinite(score));
+  const fallback = usable.filter((score) => score >= 18 && score <= 24).length;
+  const stronger = usable.filter((score) => score >= 25).length;
+  const sorted = [...usable].sort((left, right) => left - right);
+  const average = usable.length > 0 ? usable.reduce((sum, score) => sum + score, 0) / usable.length : null;
+  const median = usable.length > 0 ? sorted[Math.floor((sorted.length - 1) / 2)] ?? null : null;
+  return {
+    inspected: usable.length,
+    fallback,
+    stronger,
+    fallbackShare: usable.length > 0 ? fallback / usable.length : 0,
+    average,
+    median,
+  };
+}
+
 export function summarizeFunnel(input: { collected: number; deferred: number; opened: number; review: number }) {
   return {
     collected: input.collected,

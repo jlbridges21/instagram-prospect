@@ -254,6 +254,18 @@ export async function ignoreSuggestedKeyword(term: string): Promise<SeedActionRe
   return { ok: true, message: `Ignored “${keyword}”. It will not be suggested again.` };
 }
 
+export async function restoreLearnedSignal(term: string): Promise<SeedActionResult> {
+  const { supabase } = await requireUser();
+  const keyword = term.trim().toLowerCase();
+  const current = await supabase.from("settings").select("discovery_ignored_keywords").eq("id", 1).maybeSingle();
+  if (current.error) return { ok: false, error: "Could not restore that signal." };
+  const ignored = (current.data?.discovery_ignored_keywords ?? []).filter((item) => item.trim().toLowerCase() !== keyword);
+  const saved = await supabase.from("settings").update({ discovery_ignored_keywords: ignored, updated_at: new Date().toISOString() }).eq("id", 1);
+  if (saved.error) return { ok: false, error: "Could not restore that signal." };
+  refresh();
+  return { ok: true, message: `“${keyword}” can affect ranking again.` };
+}
+
 export async function resetDiscoveryKeywords(): Promise<SeedActionResult> {
   return saveDiscoveryOptimization({
     ...(await currentOptimization()),

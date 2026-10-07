@@ -19,6 +19,7 @@ export type DiscoveryCandidate = {
   displayName?: string | null;
   sourcesSeen?: DiscoverySource[];
   seedSupport?: string[];
+  networkScore?: number;
   inspectionSelection?: "ranked" | "exploration" | "starvation";
 };
 
@@ -311,6 +312,9 @@ function higherPriority(item: QueueItem, best: QueueItem) {
   const score = item.candidate.priorityScore ?? 0;
   const bestScore = best.candidate.priorityScore ?? 0;
   if (score !== bestScore) return score > bestScore;
+  const network = item.candidate.networkScore ?? 0;
+  const bestNetwork = best.candidate.networkScore ?? 0;
+  if (network !== bestNetwork) return network > bestNetwork;
   return item.candidate.discoveredAt < best.candidate.discoveredAt;
 }
 

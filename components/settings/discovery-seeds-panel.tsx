@@ -5,6 +5,7 @@ import {
   acceptSuggestedKeyword,
   deleteSeeds,
   ignoreSuggestedKeyword,
+  restoreLearnedSignal,
   promoteExistingQualified,
   resetDiscoveryKeywords,
   saveDiscoveryOptimization,
@@ -15,8 +16,10 @@ import {
 import { DEFAULT_DISCOVERY_TUNING, DEFAULT_NEGATIVE_KEYWORDS, DEFAULT_POSITIVE_KEYWORDS, candidateExplorationPercent, explorationPercent, homeFeedPercent, seedSharePercent, type DiscoveryTuning } from "@/lib/discovery/defaults";
 import { approvalYield, reviewYield } from "@/lib/discovery/seeds";
 import { livePollDelay } from "@/lib/discovery/policy";
+import type { LearnedSignalView } from "@/lib/db/seeds";
 import type { DiscoveryOptimization } from "@/lib/db/models";
 import type { DiscoverySeedRow } from "@/lib/db/types";
+import type { LearnedToken } from "@/lib/discovery/learned-quality";
 
 function matureRate(inspected: number, hits: number, yieldOf: (inspected: number, hits: number) => number) {
   if (inspected < 10) return -1;
@@ -28,11 +31,13 @@ export function DiscoverySeedsPanel({
   optimization,
   migrationNeeded,
   suggestions = [],
+  learned = null,
 }: {
   seeds: DiscoverySeedRow[];
   optimization: DiscoveryOptimization;
   migrationNeeded: boolean;
   suggestions?: string[];
+  learned?: LearnedSignalView | null;
 }) {
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
@@ -164,7 +169,7 @@ export function DiscoverySeedsPanel({
                 <span className="mt-1 block text-slate-600">
                   {seed.profiles_inspected === 0 && seed.profiles_reaching_review === 0 && seed.profiles_approved === 0 && seed.profiles_contacted === 0
                     ? "No seed-sourced prospects yet"
-                    : `${seed.profiles_inspected} inspected · ${seed.profiles_reaching_review} Review · ${percent(reviewYield(seed.profiles_inspected, seed.profiles_reaching_review))} yield`}
+                    : `${seed.profiles_inspected} inspected · ${seed.profiles_reaching_review} Review · ${seed.profiles_approved} Approved · Review ${percent(reviewYield(seed.profiles_inspected, seed.profiles_reaching_review))} · Approval ${percent(approvalYield(seed.profiles_inspected, seed.profiles_approved))}`}
                 </span>
               </button>
             </li>
@@ -219,6 +224,22 @@ export function DiscoverySeedsPanel({
           Save optimization
         </button>
         <details className="mt-4 rounded-lg border border-slate-200 p-3">
+          <summary className="cursor-pointer text-sm font-medium text-slate-900">Learned Signals</summary>
+          <p className="mt-2 text-sm text-slate-600">
+            These come from usernames and keyword hits saved before the profile was opened. A signal is used automatically once it has at least {learned?.minimum ?? 8} examples. Ignore a signal if it looks like a coincidence.
+          </p>
+          {learned ? (
+            <p className="mt-2 text-sm text-slate-600">{learned.positiveExamples} positive examples · {learned.negativeExamples} negative examples. Approved and Contacted on the same profile count once.</p>
+          ) : (
+            <p className="mt-2 text-sm text-slate-500">Learned signals appear after inspected prospects are available.</p>
+          )}
+          <SignalList title="Positive signals learned from approvals" tokens={learned?.positive ?? []} action="ignore" pending={pending} onAction={(term) => run(() => ignoreSuggestedKeyword(term))} />
+          {learned && learned.negative.length === 0 ? <p className="mt-3 text-sm text-slate-600">No negative signal has enough examples in the saved pre-open text yet.</p> : null}
+          <SignalList title="Negative signals" tokens={learned?.negative ?? []} action="ignore" pending={pending} onAction={(term) => run(() => ignoreSuggestedKeyword(term))} />
+          <SignalList title="Waiting for more examples" tokens={learned?.waiting ?? []} action="ignore" pending={pending} onAction={(term) => run(() => ignoreSuggestedKeyword(term))} />
+          <SignalList title="Ignored" tokens={learned?.held ?? []} action="use" pending={pending} onAction={(term) => run(() => restoreLearnedSignal(term))} />
+        </details>
+        <details className="mt-4 rounded-lg border border-slate-200 p-3">
           <summary className="cursor-pointer text-sm font-medium text-slate-900">Advanced Discovery Tuning</summary>
           <p className="mt-2 text-sm text-slate-600">Most users should leave these at the recommended defaults.</p>
           <div className="mt-3 rounded-lg bg-slate-50 p-3 text-sm text-slate-700">
@@ -250,6 +271,14 @@ export function DiscoverySeedsPanel({
             <NumberField label="Empty seed cooldown, second visit (minutes)" value={form.tuning.seedCooldownSecondMinutes} onChange={(value) => setTuning("seedCooldownSecondMinutes", value)} />
             <NumberField label="Empty seed cooldown, third visit (minutes)" value={form.tuning.seedCooldownThirdMinutes} onChange={(value) => setTuning("seedCooldownThirdMinutes", value)} />
             <NumberField label="Approved prospects before keyword suggestions" value={form.tuning.keywordSuggestionMinimum} onChange={(value) => setTuning("keywordSuggestionMinimum", value)} />
+            <NumberField label="Historical quality weight" value={form.tuning.historicalQualityWeight} onChange={(value) => setTuning("historicalQualityWeight", value)} />
+            <NumberField label="Learned signal minimum examples" value={form.tuning.learnedTokenMinimum} onChange={(value) => setTuning("learnedTokenMinimum", value)} />
+            <NumberField label="Learned signal smoothing" value={form.tuning.learnedSmoothing} onChange={(value) => setTuning("learnedSmoothing", value)} />
+            <NumberField label="Approval yield weight" value={form.tuning.approvalYieldWeight} onChange={(value) => setTuning("approvalYieldWeight", value)} />
+            <NumberField label="Manual approved-seed prior" value={form.tuning.manualApprovedSeedPrior} onChange={(value) => setTuning("manualApprovedSeedPrior", value)} />
+            <NumberField label="Source approval weight" value={form.tuning.sourceApprovalWeight} onChange={(value) => setTuning("sourceApprovalWeight", value)} />
+            <NumberField label="Fallback pre-score ceiling" value={form.tuning.fallbackCeiling} onChange={(value) => setTuning("fallbackCeiling", value)} />
+            <NumberField label="Fallback lookahead (seconds)" value={form.tuning.fallbackLookaheadSeconds} onChange={(value) => setTuning("fallbackLookaheadSeconds", value)} />
             <NumberField label="Home Feed share, Low %" value={form.tuning.homeFeedLow} onChange={(value) => setTuning("homeFeedLow", value)} />
             <NumberField label="Home Feed share, Medium %" value={form.tuning.homeFeedMedium} onChange={(value) => setTuning("homeFeedMedium", value)} />
             <NumberField label="Home Feed share, High %" value={form.tuning.homeFeedHigh} onChange={(value) => setTuning("homeFeedHigh", value)} />
@@ -361,6 +390,26 @@ function SeedDetail({ seed, disabled, onClose, onSave }: { seed: DiscoverySeedRo
         <label className="flex items-center gap-2"><input type="checkbox" checked={active} onChange={(event) => setActive(event.target.checked)} /> Active</label>
       </div>
       <button type="button" className="mt-3 rounded-lg bg-slate-900 px-3 py-2 text-white" disabled={disabled} onClick={() => onSave({ id: seed.id, username: seed.instagram_username, category, notes, priority, active })}>Save seed</button>
+    </div>
+  );
+}
+
+function SignalList({ title, tokens, action, pending, onAction }: { title: string; tokens: LearnedToken[]; action: "ignore" | "use"; pending: boolean; onAction: (term: string) => void }) {
+  if (tokens.length === 0) return null;
+  return (
+    <div className="mt-3">
+      <p className="text-sm font-medium text-slate-900">{title}</p>
+      <ul className="mt-2 space-y-2">
+        {tokens.map((token) => (
+          <li key={token.token} className="flex flex-wrap items-center gap-2 text-sm">
+            <span className="font-medium text-slate-900">{token.token}</span>
+            <span className="text-slate-600">{Math.round(token.positiveRate * 100)}% positive · {token.sampleSize} examples</span>
+            <button type="button" className="rounded-lg border border-slate-200 px-2 py-1 disabled:opacity-50" disabled={pending} onClick={() => onAction(token.token)}>
+              {action === "ignore" ? "Ignore" : "Use"}
+            </button>
+          </li>
+        ))}
+      </ul>
     </div>
   );
 }

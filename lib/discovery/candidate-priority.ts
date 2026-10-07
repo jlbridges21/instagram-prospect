@@ -1,4 +1,5 @@
 import { HIGH_YIELD_MINIMUM, PRIORITY_HIGH_AT, PRIORITY_MEDIUM_AT, candidateExplorationPercent, clampTuning } from "@/lib/discovery/defaults";
+import { historicalAdjustment, type LearnedModel } from "@/lib/discovery/learned-quality";
 import type { SeedPriority } from "@/lib/discovery/seeds";
 
 export type PriorityLabel = "High" | "Medium" | "Low";
@@ -41,6 +42,10 @@ export function scoreCandidate(input: {
   seedSupportCount?: number;
   supportYields?: number[];
   sourceReviewYield?: number | null;
+  sourceApprovalYield?: number | null;
+  seedApprovalYield?: number | null;
+  seedOrigin?: "manual" | "auto" | null;
+  learned?: LearnedModel | null;
   username?: string | null;
   text?: string | null;
   cardText?: string | null;
@@ -98,8 +103,10 @@ export function scoreCandidate(input: {
     reasons.push(`+ ${support} seed matches`);
   }
   const matureSupport = (input.supportYields ?? []).filter((rate) => rate >= HIGH_YIELD_MINIMUM).length;
-  if (matureSupport > 0) {
-    const supportBonus = Math.min(tuning.multiSeedBonus, matureSupport * Math.round(tuning.networkConfidenceWeight / 2));
+  const supportBonus = matureSupport > 0
+    ? Math.min(tuning.multiSeedBonus, matureSupport * Math.round(tuning.networkConfidenceWeight / 2))
+    : 0;
+  if (supportBonus > 0) {
     score += supportBonus;
     reasons.push(`+ high-yield seed support`);
   }
@@ -118,15 +125,52 @@ export function scoreCandidate(input: {
       reasons.push(`source yield prior ${prior > 0 ? "+" : ""}${prior}`);
     }
   }
+  let approvalPoints = 0;
+  if (typeof input.seedApprovalYield === "number" && input.seedMature) {
+    approvalPoints = Math.max(-tuning.approvalYieldWeight, Math.min(tuning.approvalYieldWeight, Math.round((input.seedApprovalYield - 0.15) * tuning.approvalYieldWeight)));
+    if (approvalPoints !== 0) {
+      score += approvalPoints;
+      reasons.push(`${approvalPoints > 0 ? "+" : ""}${approvalPoints} approval yield`);
+    }
+  } else if (input.seedOrigin === "manual" && !input.seedMature && tuning.manualApprovedSeedPrior !== 0) {
+    approvalPoints = tuning.manualApprovedSeedPrior;
+    score += approvalPoints;
+    reasons.push(`+ ${approvalPoints} approved-seed prior`);
+  }
+  if (typeof input.sourceApprovalYield === "number") {
+    const sourceApproval = Math.max(-4, Math.min(4, Math.round((input.sourceApprovalYield - 0.15) * tuning.sourceApprovalWeight)));
+    if (sourceApproval !== 0) {
+      score += sourceApproval;
+      reasons.push(`${sourceApproval > 0 ? "+" : ""}${sourceApproval} source approval prior`);
+    }
+  }
+  const learned = historicalAdjustment({
+    text: corpus,
+    model: input.learned,
+    weight: tuning.historicalQualityWeight,
+  });
+  if (learned.points !== 0) score += learned.points;
+  reasons.push(...learned.reasons);
   score = Math.max(0, Math.min(100, Math.round(score)));
   const niche = positiveHits === 0 ? 0 : Math.max(0, Math.min(100, 40 + positiveHits * 15));
   const commercial = commercialHits === 0 ? 8 : Math.max(0, Math.min(100, 25 + commercialHits * 18));
   const networkRaw = (input.source === "seed" ? tuning.sourceBaseSeed : input.source === "suggested_accounts" ? tuning.sourceBaseSuggested : tuning.sourceBaseHome)
     + extraSeeds * tuning.multiSeedBonus
-    + (input.seedMature && (input.seedYield ?? 0) >= HIGH_YIELD_MINIMUM ? tuning.highYieldCandidateBonus : 0);
+    + (input.seedMature && (input.seedYield ?? 0) >= HIGH_YIELD_MINIMUM ? tuning.highYieldCandidateBonus : 0)
+    + supportBonus
+    + Math.max(0, approvalPoints);
   const network = Math.max(0, Math.min(100, networkRaw));
-  reasons.unshift(`Network confidence: ${network}`, `Commercial intent: ${commercial}`, `Niche relevance: ${niche}`);
-  return { score, label: priorityLabel(score), reasons, niche, commercial, network };
+  reasons.unshift(`Historical quality: ${learned.component}/20`, `Network confidence: ${network}`, `Commercial intent: ${commercial}`, `Niche relevance: ${niche}`);
+  return { score, label: priorityLabel(score), reasons, niche, commercial, network, historical: learned.component };
+}
+
+export function qualityBand(score: number) {
+  if (score >= 80) return "Excellent";
+  if (score >= 60) return "High";
+  if (score >= 40) return "Medium";
+  if (score >= 25) return "Low";
+  if (score >= 18) return "Fallback";
+  return "Deferred";
 }
 
 export function pickWeightedIndex(weights: number[], random: number) {

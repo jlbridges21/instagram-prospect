@@ -4,7 +4,7 @@ import { DatabaseSetup } from "@/components/layout/database-setup";
 import { PageHeader } from "@/components/layout/page-header";
 import { DiscoverySeedsPanel } from "@/components/settings/discovery-seeds-panel";
 import { SettingsPanel } from "@/components/settings/settings-panel";
-import { listDiscoverySeeds, suggestedDiscoveryKeywords } from "@/lib/db/seeds";
+import { learnedSignalView, listDiscoverySeeds, suggestedDiscoveryKeywords } from "@/lib/db/seeds";
 import { isOpenAiConfigured } from "@/lib/ai/env";
 import {
   fallbackSettings,
@@ -18,11 +18,12 @@ export const metadata: Metadata = { title: "Settings" };
 export const maxDuration = 60;
 
 export default async function SettingsPage() {
-  const [settingsResult, targetingResult, seedsResult, suggestions] = await Promise.all([
+  const [settingsResult, targetingResult, seedsResult, suggestions, learned] = await Promise.all([
     getSettings(),
     getTargetingSettings(),
     listDiscoverySeeds(),
     suggestedDiscoveryKeywords().catch(() => [] as string[]),
+    learnedSignalView().catch(() => null),
   ]);
   const settings = settingsResult.ok ? settingsResult.data : fallbackSettings();
   const targeting = targetingResult.ok ? targetingResult.data : fallbackTargeting();
@@ -85,6 +86,7 @@ export default async function SettingsPage() {
           optimization={settings.optimization}
           migrationNeeded={!seedsResult.ok && seedsResult.missingTable === true}
           suggestions={suggestions}
+          learned={learned}
         />
       ) : null}
       </div>

@@ -1,5 +1,6 @@
 import { clampCandidateFloor } from "@/lib/discovery/candidate-priority";
-import { DEFAULT_NEGATIVE_KEYWORDS, LEGACY_POSITIVE_KEYWORDS, effectiveKeywordList } from "@/lib/discovery/defaults";
+import { DEFAULT_NEGATIVE_KEYWORDS, LEGACY_POSITIVE_KEYWORDS, clampTuning, effectiveKeywordList } from "@/lib/discovery/defaults";
+import { exampleFromProspect, learnQualityModel } from "@/lib/discovery/learned-quality";
 import { fallbackSettings, fallbackTargeting } from "@/lib/db/settings";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { isWorkerAuthorized, workerError, workerUnauthorized } from "@/lib/worker/auth";
@@ -22,8 +23,8 @@ export async function GET(request: Request) {
       .maybeSingle();
   }
   const [seedResult, keywordResult, networkResult, floorResult] = await Promise.all([
-    admin.from("discovery_seeds").select("id, instagram_username, source_type, priority, profiles_inspected, profiles_reaching_review, consecutive_uses, is_active").eq("is_active", true).order("profiles_reaching_review", { ascending: false }).limit(100),
-    admin.from("settings").select("discovery_positive_keywords, discovery_negative_keywords, discovery_home_feed_usage, discovery_strategy, discovery_yield_strength, discovery_favor_yield, discovery_min_seed_sample, discovery_seed_cooldown_cycles, discovery_tuning").eq("id", 1).maybeSingle(),
+    admin.from("discovery_seeds").select("id, instagram_username, source_type, priority, profiles_inspected, profiles_reaching_review, profiles_approved, consecutive_uses, is_active").eq("is_active", true).order("profiles_reaching_review", { ascending: false }).limit(100),
+    admin.from("settings").select("discovery_positive_keywords, discovery_negative_keywords, discovery_home_feed_usage, discovery_strategy, discovery_yield_strength, discovery_favor_yield, discovery_min_seed_sample, discovery_seed_cooldown_cycles, discovery_tuning, discovery_ignored_keywords").eq("id", 1).maybeSingle(),
     admin.from("settings").select("discovery_seed_network_enabled, discovery_seed_network_sample").eq("id", 1).maybeSingle(),
     admin.from("settings").select("discovery_min_pre_score").eq("id", 1).maybeSingle(),
   ]);
@@ -41,7 +42,8 @@ export async function GET(request: Request) {
   const targeting = targetingResult.data;
   const fallback = fallbackSettings();
   const fallbackRules = fallbackTargeting();
-  const sourceYields = await sourceReviewYields(admin);
+  const sourceYields = await sourceOutcomeYields(admin);
+  const learnedQuality = await learnedQualityPayload(admin, keywordResult.data?.discovery_tuning, keywordResult.data?.discovery_ignored_keywords);
 
   return Response.json({
     workerEnabled: settings?.worker_enabled ?? fallback.workerEnabled,
@@ -91,6 +93,7 @@ export async function GET(request: Request) {
       priority: seed.priority,
       inspected: seed.profiles_inspected,
       review: seed.profiles_reaching_review,
+      approved: seed.profiles_approved ?? 0,
       consecutiveUses: seed.consecutive_uses,
     })),
     positiveKeywords: effectiveKeywordList(keywordResult.data?.discovery_positive_keywords, fallback.optimization.positiveKeywords, LEGACY_POSITIVE_KEYWORDS),
@@ -105,29 +108,72 @@ export async function GET(request: Request) {
     seedNetworkSample: networkResult.error ? fallback.optimization.seedNetworkSample : networkResult.data?.discovery_seed_network_sample ?? fallback.optimization.seedNetworkSample,
     minCandidatePreScore: floorResult.error ? fallback.optimization.minCandidatePreScore : clampCandidateFloor(floorResult.data?.discovery_min_pre_score ?? fallback.optimization.minCandidatePreScore),
     tuning: keywordResult.data?.discovery_tuning ?? fallback.optimization.tuning,
-    sourceYields,
+    sourceYields: sourceYields.review,
+    sourceApprovalYields: sourceYields.approval,
+    learnedQuality,
     workerVersion: "6",
     minSupportedWorkerVersion: "6",
   });
 }
 
-async function sourceReviewYields(admin: ReturnType<typeof createAdminClient>) {
-  const yields: Record<string, number> = {};
-  if (!admin) return yields;
+async function sourceOutcomeYields(admin: ReturnType<typeof createAdminClient>) {
+  const review: Record<string, number> = {};
+  const approval: Record<string, number> = {};
+  if (!admin) return { review, approval };
   const rows = await admin.from("prospects").select("source, status").order("discovered_at", { ascending: false }).limit(1000);
-  if (rows.error || !rows.data) return yields;
-  const review = new Set(["review", "approved", "contacted", "replied", "follow_up", "demo_booked", "converted"]);
-  const totals = new Map<string, { inspected: number; review: number }>();
+  if (rows.error || !rows.data) return { review, approval };
+  const reviewStatuses = new Set(["review", "approved", "contacted", "replied", "follow_up", "demo_booked", "converted"]);
+  const approvedStatuses = new Set(["approved", "contacted", "replied", "follow_up", "demo_booked", "converted"]);
+  const totals = new Map<string, { inspected: number; review: number; approved: number }>();
   for (const row of rows.data) {
     const source = row.source;
     if (!source) continue;
-    const current = totals.get(source) ?? { inspected: 0, review: 0 };
+    const current = totals.get(source) ?? { inspected: 0, review: 0, approved: 0 };
     current.inspected += 1;
-    if (review.has(row.status)) current.review += 1;
+    if (reviewStatuses.has(row.status)) current.review += 1;
+    if (approvedStatuses.has(row.status)) current.approved += 1;
     totals.set(source, current);
   }
   for (const [source, counts] of totals) {
-    if (counts.inspected >= 10) yields[source] = counts.review / counts.inspected;
+    if (counts.inspected < 10) continue;
+    review[source] = counts.review / counts.inspected;
+    approval[source] = counts.approved / counts.inspected;
   }
-  return yields;
+  return { review, approval };
+}
+
+async function learnedQualityPayload(
+  admin: ReturnType<typeof createAdminClient>,
+  tuning: unknown,
+  ignored: string[] | null | undefined,
+) {
+  if (!admin) return null;
+  const settings = clampTuning(tuning);
+  const rows = [];
+  let from = 0;
+  for (;;) {
+    const page = await admin
+      .from("prospects")
+      .select("instagram_username, status, discovery_priority_reason, is_sample")
+      .order("discovered_at", { ascending: false })
+      .range(from, from + 999);
+    if (page.error || !page.data) return null;
+    rows.push(...page.data);
+    if (page.data.length < 1000) break;
+    from += 1000;
+  }
+  const examples = rows.flatMap((row) => {
+    const example = exampleFromProspect(row);
+    return example ? [example] : [];
+  });
+  const model = learnQualityModel({
+    examples,
+    minimum: settings.learnedTokenMinimum,
+    strength: settings.learnedSmoothing,
+    ignored: ignored ?? [],
+  });
+  return {
+    ...model,
+    tokens: model.tokens.filter((token) => token.sampleSize >= 3).slice(0, 80),
+  };
 }

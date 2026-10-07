@@ -23,6 +23,7 @@ import {
 import { getProspectOutreach } from "@/lib/db/outreach";
 import { getProspectActivity } from "@/lib/db/stats";
 import { ProspectSeedToggle } from "@/components/prospects/seed-toggle";
+import { qualityBand } from "@/lib/discovery/candidate-priority";
 import { prospectDiscoveryLink, seedExists } from "@/lib/db/seeds";
 import { getProspectById } from "@/lib/db/prospects";
 import { fallbackSettings, getSettings } from "@/lib/db/settings";
@@ -159,9 +160,11 @@ export default async function ProspectDetailPage({
               <Fact label="Seed" value={seedUsername ? `@${seedUsername}` : "Not from a seed"} />
               <Fact label="Discovery priority" value={discoveryLink?.discovery_priority_label || "Not recorded"} />
               <Fact label="Candidate pre-score" value={discoveryLink?.discovery_pre_score == null ? "Not recorded" : String(discoveryLink.discovery_pre_score)} />
+              <Fact label="Priority band" value={discoveryLink?.discovery_pre_score == null ? "Not recorded" : qualityBand(discoveryLink.discovery_pre_score)} />
               <Fact label="Niche relevance" value={scoreComponent(discoveryLink?.discovery_priority_reason, "Niche relevance:")} />
               <Fact label="Commercial intent" value={scoreComponent(discoveryLink?.discovery_priority_reason, "Commercial intent:")} />
               <Fact label="Network confidence" value={scoreComponent(discoveryLink?.discovery_priority_reason, "Network confidence:")} />
+              <Fact label="Historical quality" value={scoreComponent(discoveryLink?.discovery_priority_reason, "Historical quality:")} />
               <div className="sm:col-span-2">
                 <Fact label="Why this profile was inspected" value={discoveryLink?.discovery_priority_reason || "No priority notes stored."} />
               </div>
