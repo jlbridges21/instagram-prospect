@@ -115,6 +115,11 @@ export function seedTurnOutcome(input: { newAfterDedupe: number; queuedAboveFloo
   return "productive" as const;
 }
 
+export function seedVisitAction(input: { newCandidates: number; rankedAdded: number; fallbackAdded: number }) {
+  if (input.rankedAdded > 0 || input.fallbackAdded > 0) return "reset" as const;
+  return "cooldown" as const;
+}
+
 export function applyEmptySeedCooldowns<T extends { username: string; cooldownUntil?: string | null }>(
   seeds: T[],
   pauses: Record<string, string>,

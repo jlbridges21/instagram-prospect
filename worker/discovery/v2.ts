@@ -9,7 +9,7 @@ import { buildPreOpenSnapshot, formatSelectionExplanation } from "../../lib/disc
 import { CANDIDATE_POOL_MAX_PASSES, CANDIDATE_POOL_TARGET, clampTuning, DEFAULT_DISCOVERY_OPTIMIZATION } from "../../lib/discovery/defaults";
 import { shouldFlushDiscoveryUsage } from "../../lib/discovery/inspection-count";
 import { inspectionSeedId, pickSeed, prospectAttribution, seedCollectionResult, seedStatForCandidate, shouldOpenSeedNetwork, clampSeedNetworkSample, type SeededDiscoverySource } from "../../lib/discovery/seeds";
-import { applyEmptySeedCooldowns, seedTurnOutcome } from "../instagram/seed-page";
+import { applyEmptySeedCooldowns, seedTurnOutcome, seedVisitAction } from "../instagram/seed-page";
 import { clearEmptySeed, readEmptySeedCooldowns, recordUnproductiveSeed } from "./seed-cooldowns";
 import { pickCollectionSource } from "../../lib/discovery/source-ranking";
 import { prioritizeCandidates } from "./sources";
@@ -20,12 +20,13 @@ import { isExcludedRelationship } from "../instagram/parse";
 import { readDom } from "../instagram/read-dom";
 import { log } from "../logger";
 import { discoveryQueuePath } from "../paths";
-import { formatInspectionDelay } from "../../lib/discovery/cadence";
+import { guardDiagnostic, openInspectionDelayLog } from "../../lib/discovery/cadence";
 import {
   acquisitionDecision,
   candidateRefillDecision,
   formatRefillComplete,
   getDiscoveryHourlyState,
+  inspectionPoolBlocksRefill,
   poolStatusLine,
   REFILL_BUDGET_MS,
   REFILL_PASS_LIMIT,
@@ -124,11 +125,13 @@ export async function runDiscoveryV2(input: {
   inspectionDueAt?: number;
   intervalMs?: number;
   onProgress?: () => void;
-  onOutcome?: (outcome: { action: "inspected" | "waiting" }) => void;
+  onOutcome?: (outcome: { action: "inspected" | "waiting" | "starved" }) => void;
+  onPhase?: (phase: "waiting" | "sourcing" | "inspecting") => void;
   readSeedProfile?: (username: string) => Promise<import("../instagram/types").DomSnapshot | null>;
   readSeedNetwork?: (username: string, limit: number, isKnown?: (username: string) => boolean, limits?: { maxScrolls?: number; staleScrolls?: number }) => Promise<import("../instagram/seed-network").SeedNetworkRead>;
 }) {
   const metrics = input.metrics ?? emptyEfficiency();
+  const inspectionDelayLog = openInspectionDelayLog();
   const queue = new CandidateQueue(10);
   let latestConfig: CloudConfig | null = null;
   const cache = new SessionUsernameCache();
@@ -142,6 +145,7 @@ export async function runDiscoveryV2(input: {
   let emptyCycles = 0;
   let acquisitionHeld = false;
   let refillSource = "";
+  let seedsUsedThisRefill: string[] = [];
   let exitReason: "hourly" | "yield" | "stopped" | "done" = "done";
   const qualify = new QualificationQueue(3, async (prospectId) => {
       metrics.qualificationRequests += 1;
@@ -266,8 +270,10 @@ export async function runDiscoveryV2(input: {
       now,
       random: Math.random,
       tuning: config.tuning,
+      avoidUsernames: seedsUsedThisRefill,
     });
     if (!seed) return null;
+    seedsUsedThisRefill.push(seed.username);
     for (const known of seeds) seedUses.set(known.id, known.id === seed.id ? (seedUses.get(known.id) ?? 0) + 1 : 0);
     console.log(`Discovery seed: @${seed.username}`);
     console.log("Opening seed suggestions...");
@@ -434,8 +440,16 @@ export async function runDiscoveryV2(input: {
       .sort((left, right) => (right.priorityScore ?? 0) - (left.priorityScore ?? 0) || left.discoveredAt.localeCompare(right.discoveredAt));
     let queued = 0;
     let deferred = 0;
+    let rankedAdded = 0;
+    let fallbackAdded = 0;
+    const ceiling = clampTuning(config.tuning).fallbackCeiling;
     for (const candidate of scored) {
       const result = queue.place(candidate, floor);
+      const score = candidate.priorityScore ?? 0;
+      if ((result === "queued" || result === "merged") && score >= floor) {
+        if (score > ceiling) rankedAdded += 1;
+        else fallbackAdded += 1;
+      }
       if (result === "queued") {
         queued += 1;
         console.log(`Queued @${candidate.username} (pre-score ${candidate.priorityScore ?? 0})`);
@@ -450,29 +464,37 @@ export async function runDiscoveryV2(input: {
       }
     }
     metrics.candidatesDeferred += deferred;
-    if (scored.length > 0) console.log(`Ranked ${scored.length} candidates. Queued ${queued}. Below pre-score ${floor}: ${deferred}.`);
+    if (scored.length > 0) console.log(`Ranked ${scored.length} candidates. Queued ${queued}. Below pre-score ${floor}: ${deferred}. Ranked added ${rankedAdded}. Fallback added ${fallbackAdded}.`);
     if ((fresh.length + merges.length > 0 || deferred > 0) && input.gate) {
       await input.gate({ inspections: 0, ai: 0, emptyCycles: 0, collected: fresh.length + merges.length, deferred }).catch(() => undefined);
     }
     input.onProgress?.();
-    return { queued, deferred, considered: fresh.length + merges.length, survived: accepted.length };
+    return {
+      queued,
+      deferred,
+      considered: fresh.length + merges.length,
+      survived: accepted.length,
+      rankedAdded,
+      fallbackAdded,
+      newCandidates: queued + deferred,
+    };
   }
 
-  let inspectionDelayLog = "";
   function noteInspectionDelay(reason: string) {
     if (input.inspectionDueAt == null || input.intervalMs == null) return;
-    const line = formatInspectionDelay({
-      now: Date.now(),
-      dueAt: input.inspectionDueAt,
-      intervalMs: input.intervalMs,
-      reason,
+    guardDiagnostic(() => {
+      const line = inspectionDelayLog.note({
+        now: Date.now(),
+        dueAt: input.inspectionDueAt ?? 0,
+        intervalMs: input.intervalMs ?? 0,
+        reason,
+      });
+      if (line) console.log(line);
     });
-    if (!line || line === inspectionDelayLog) return;
-    inspectionDelayLog = line;
-    console.log(line);
   }
 
   async function orchestrateTurn() {
+    seedsUsedThisRefill = [];
     const config = latestConfig ?? await input.cloud.config();
     latestConfig = config;
     const limits = poolLimits(config);
@@ -514,6 +536,7 @@ export async function runDiscoveryV2(input: {
         return;
       }
       if (action === "inspect_ranked" || action === "inspect_starvation") {
+        input.onPhase?.("inspecting");
         if (action === "inspect_starvation") {
           console.log(formatRefillComplete({ census, floor, selection: "starvation fallback" }));
         }
@@ -525,6 +548,7 @@ export async function runDiscoveryV2(input: {
         return;
       }
       if (action === "refill") {
+        input.onPhase?.("sourcing");
         noteInspectionDelay("Refilling candidate pool");
         if (!refillLogged) {
           const lookingAhead = allowInspect && census.ranked > 0 && (census.highest ?? 0) <= clampTuning(latestConfig?.tuning).fallbackCeiling;
@@ -542,6 +566,18 @@ export async function runDiscoveryV2(input: {
         emptyPasses = added > 0 ? 0 : emptyPasses + 1;
         continue;
       }
+      if (action === "candidate_starved") {
+        input.onPhase?.("waiting");
+        noteInspectionDelay("Waiting for eligible candidate");
+        logPoolOnce([
+          "Discovery candidate-starved.",
+          "No candidate reached the inspection floor.",
+          `Pool: ${poolStatusLine(census)}`,
+        ].join("\n"));
+        input.onOutcome?.({ action: "starved" });
+        return;
+      }
+      input.onPhase?.("waiting");
       noteInspectionDelay("Waiting for eligible candidate");
       const waitingLine = census.ranked === 0 && passes > 0
         ? formatRefillComplete({ census, floor, selection: "wait" })
@@ -567,19 +603,10 @@ export async function runDiscoveryV2(input: {
     }
     const ranked = collected.ordered.length > 0
       ? await rankAndPlace(collected.ordered, config)
-      : { queued: 0, deferred: 0, considered: 0, survived: 0 };
-    if (collected.seedUsername) {
-      const added = ranked.queued + ranked.deferred;
-      const outcome = seedTurnOutcome({ newAfterDedupe: added, queuedAboveFloor: ranked.queued });
-      if (added > 0) clearEmptySeed(collected.seedUsername);
-      else if (outcome === "empty" && collected.ordered.length > 0) {
-        const pause = recordUnproductiveSeed(collected.seedUsername, Date.now(), undefined, exhaustionDurations(config));
-        console.log("Seed network produced no new candidates.");
-        console.log(`Cooling down @${collected.seedUsername} for ${pause.minutes} minutes after ${pause.emptyVisits} empty visit${pause.emptyVisits === 1 ? "" : "s"}.`);
-      }
-    }
+      : { queued: 0, deferred: 0, considered: 0, survived: 0, rankedAdded: 0, fallbackAdded: 0, newCandidates: 0 };
+    if (collected.seedUsername) recordSeedVisit(collected.seedUsername, ranked, config);
     publish(config, collected.sourceLabel);
-    if (queue.pendingCount() + queue.deferredCount() < poolLimits(config).highWater) {
+    if (!inspectionPoolBlocksRefill({ pending: queue.pendingCount(), highWater: poolLimits(config).highWater })) {
       await scrollFeed(input.homePage);
       await sleep(1_000);
     }
@@ -605,8 +632,8 @@ export async function runDiscoveryV2(input: {
         exitReason = "yield";
         return;
       }
-      const poolSize = queue.pendingCount() + queue.deferredCount();
-      const acquisition = poolSize >= limits.highWater
+      const poolSize = queue.pendingCount();
+      const acquisition = inspectionPoolBlocksRefill({ pending: poolSize, highWater: limits.highWater })
         ? { acquire: false, holding: true }
         : acquisitionDecision({
           pending: Math.min(poolSize, limits.lowWater),
@@ -635,17 +662,8 @@ export async function runDiscoveryV2(input: {
       }
       const ranked = ordered.length > 0
         ? await rankAndPlace(ordered, config)
-        : { queued: 0, deferred: 0, considered: 0, survived: 0 };
-      if (collected.seedUsername) {
-        const added = ranked.queued + ranked.deferred;
-        const outcome = seedTurnOutcome({ newAfterDedupe: added, queuedAboveFloor: ranked.queued });
-        if (added > 0) clearEmptySeed(collected.seedUsername);
-        else if (outcome === "empty" && ordered.length > 0) {
-          const pause = recordUnproductiveSeed(collected.seedUsername, Date.now(), undefined, exhaustionDurations(config));
-          console.log("Seed network produced no new candidates.");
-          console.log(`Cooling down @${collected.seedUsername} for ${pause.minutes} minutes after ${pause.emptyVisits} empty visit${pause.emptyVisits === 1 ? "" : "s"}.`);
-        }
-      }
+        : { queued: 0, deferred: 0, considered: 0, survived: 0, rankedAdded: 0, fallbackAdded: 0, newCandidates: 0 };
+      if (collected.seedUsername) recordSeedVisit(collected.seedUsername, ranked, config);
       publish(config, sourceLabel);
       if (ranked.considered === 0) {
         emptyCycles += 1;
@@ -657,7 +675,7 @@ export async function runDiscoveryV2(input: {
         emptyCycles = 0;
         idleScrolls = 0;
       }
-      if (queue.pendingCount() + queue.deferredCount() < poolLimits(config).highWater) {
+      if (!inspectionPoolBlocksRefill({ pending: queue.pendingCount(), highWater: poolLimits(config).highWater })) {
         await scrollFeed(input.homePage);
         await sleep(input.singleTurn ? 1_000 : config.discoveryScrollDelaySeconds * 1000);
       }
@@ -665,8 +683,8 @@ export async function runDiscoveryV2(input: {
       if (input.singleTurn) {
         passes += 1;
         const limits = poolLimits(config);
-        const pool = queue.pendingCount() + queue.deferredCount();
-        if (pool >= limits.target || pool >= limits.highWater || passes >= CANDIDATE_POOL_MAX_PASSES) return;
+        const pool = queue.pendingCount();
+        if (pool >= limits.target || inspectionPoolBlocksRefill({ pending: pool, highWater: limits.highWater }) || passes >= CANDIDATE_POOL_MAX_PASSES) return;
       }
     }
   }
@@ -1044,6 +1062,23 @@ function poolLimits(config: CloudConfig | null) {
     lowWater: Math.min(target, Math.max(1, tuning.poolLowWater)),
     highWater: Math.max(target, tuning.poolHighWater),
   };
+}
+
+function recordSeedVisit(
+  username: string,
+  counts: { newCandidates: number; rankedAdded: number; fallbackAdded: number },
+  config: CloudConfig,
+) {
+  const action = seedVisitAction(counts);
+  console.log(`Seed @${username}: ${counts.newCandidates} new, ${counts.rankedAdded} ranked, ${counts.fallbackAdded} fallback.`);
+  if (action === "reset") {
+    clearEmptySeed(username);
+    return;
+  }
+  const pause = recordUnproductiveSeed(username, Date.now(), undefined, exhaustionDurations(config));
+  const outcome = seedTurnOutcome({ newAfterDedupe: counts.newCandidates, queuedAboveFloor: counts.rankedAdded + counts.fallbackAdded });
+  console.log(outcome === "empty" ? "Seed network produced no new candidates." : "No useful candidates.");
+  console.log(`Cooling down @${username} for ${pause.minutes} minutes after ${pause.emptyVisits} unproductive visit${pause.emptyVisits === 1 ? "" : "s"}.`);
 }
 
 function exhaustionDurations(config: CloudConfig) {

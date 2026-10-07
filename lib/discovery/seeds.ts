@@ -166,8 +166,12 @@ export function pickSeed(input: {
   now: Date;
   random: () => number;
   tuning?: unknown;
+  avoidUsernames?: string[];
 }) {
-  const available = input.seeds.filter((seed) => seed.active && !seedIsCooling(seed, input.now));
+  const cooling = input.seeds.filter((seed) => seed.active && !seedIsCooling(seed, input.now));
+  const blocked = new Set((input.avoidUsernames ?? []).map((name) => name.trim().toLowerCase()).filter(Boolean));
+  const alternatives = cooling.filter((seed) => !blocked.has(seed.username.trim().toLowerCase()));
+  const available = alternatives.length > 0 ? alternatives : cooling;
   if (available.length === 0) return null;
   const exploreRate = explorationPercent(input.strategy, input.tuning) / 100;
   const fresh = available.filter((seed) => seed.inspected < input.minSample);

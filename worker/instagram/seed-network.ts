@@ -63,10 +63,13 @@ export function followingScrollDecision(input: {
   staleScrolls: number;
   staleLimit: number;
   timedOut: boolean;
+  minimumNew?: number;
 }) {
   if (input.newCount >= input.target) return "target" as const;
   if (input.timedOut) return "timeout" as const;
   if (input.scrolls >= input.maxScrolls) return "max_scrolls" as const;
+  const usefulTarget = Math.min(input.minimumNew ?? 4, input.target);
+  if (input.newCount > 0 && input.newCount < usefulTarget) return "scroll" as const;
   if (input.staleScrolls >= input.staleLimit) return "no_new_usernames" as const;
   return "scroll" as const;
 }

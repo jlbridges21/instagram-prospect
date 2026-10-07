@@ -151,7 +151,11 @@ export function censusFromScores(scores: number[], floor: number, explorationFlo
   return { total: scores.length, ranked, explorationEligible, deferred, highest };
 }
 
-export type RefillAction = "inspect_ranked" | "inspect_starvation" | "refill" | "yield_for_slot" | "wait";
+export type RefillAction = "inspect_ranked" | "inspect_starvation" | "refill" | "yield_for_slot" | "candidate_starved" | "wait";
+
+export function inspectionPoolBlocksRefill(input: { pending: number; highWater: number }) {
+  return input.pending >= Math.max(1, input.highWater);
+}
 
 export function candidateRefillDecision(input: {
   census: PoolCensus;
@@ -179,6 +183,7 @@ export function candidateRefillDecision(input: {
   if (input.allowInspect && input.census.ranked > 0) return "inspect_ranked";
   if (starved && !exhausted) return "refill";
   if (input.allowInspect && input.census.ranked === 0 && input.census.explorationEligible > 0) return "inspect_starvation";
+  if (input.allowInspect && input.census.ranked === 0 && input.census.explorationEligible === 0 && exhausted) return "candidate_starved";
   return "wait";
 }
 

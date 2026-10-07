@@ -2,10 +2,11 @@ import fs from "node:fs";
 import { continuousOutreachStep } from "../lib/discovery/policy";
 import { rememberExplorationDecision } from "../lib/discovery/candidate-priority";
 import { clampTuning, DEFAULT_DISCOVERY_OPTIMIZATION } from "../lib/discovery/defaults";
-import { discoveryDue, discoveryStallDecision, formatInspectionDelay, inspectionIntervalMs, scheduleNextInspection, startDiscoveryCadence } from "../lib/discovery/cadence";
+import { discoveryDue, discoveryStallDecision, guardDiagnostic, inspectionIntervalMs, nextInspectionDelayLog, scheduleNextInspection, stallRecoveryAction, startDiscoveryCadence, type InspectionDelayState } from "../lib/discovery/cadence";
 import { outreachStallDecision } from "../lib/outreach/pace";
 import { formatCountdown } from "../lib/ui/countdown";
 import { censusFromScores, checkpointHoldDecision, discoveryConfigUpdates, formatDiscoveryConfig, formatHourlyWaitEvent, formatWorkerModes, rollingHourInspectionCount, type DiscoveryRuntimeConfig } from "../lib/discovery/pacing";
+import { createThroughputClock, formatThroughputReport, missedInspectionOpportunities, throughputDegraded } from "../lib/discovery/throughput";
 import { readHourlyStamps } from "./discovery/hourly-history";
 import { readDiscoveryCadence, writeDiscoveryCadence } from "./discovery/cadence-file";
 import { startOfNextLocalDay } from "../lib/outreach/time";
@@ -283,13 +284,47 @@ export async function runWorker(mode: RunMode) {
   let discoveryWaitUntil = 0;
   let explorationChoice: { slot: number; explore: boolean } | null = null;
   let discoverySlotLogged = false;
-  let discoveryDelayLog = "";
+  let discoveryDelayState: InspectionDelayState | null = null;
   let outreachStallLogged = false;
+  let throughputLoggedAt = 0;
+  const throughput = createThroughputClock();
   function reportInspectionDelay(reason: string, interval: number) {
-    const line = formatInspectionDelay({ now: Date.now(), dueAt: discoveryNextAt, intervalMs: interval, reason });
-    if (!line || line === discoveryDelayLog) return;
-    discoveryDelayLog = line;
-    console.log(line);
+    const wrote = guardDiagnostic(() => {
+      const next = nextInspectionDelayLog({
+        now: Date.now(),
+        dueAt: discoveryNextAt,
+        intervalMs: interval,
+        reason,
+        state: discoveryDelayState,
+      });
+      discoveryDelayState = next.state;
+      if (next.line) console.log(next.line);
+    });
+    if (!wrote) log("warn", "diagnostic_log_failed", { message: "inspection delay log failed" });
+  }
+  function reportThroughput(configuredPerHour: number, interval: number) {
+    const now = Date.now();
+    if (now - throughputLoggedAt < 60_000) return;
+    throughputLoggedAt = now;
+    const spent = throughput.spent(now);
+    const missed = missedInspectionOpportunities(now, discoveryNextAt, interval);
+    const overdueMs = Math.max(0, now - discoveryNextAt);
+    const degraded = throughputDegraded({
+      running: true,
+      inspectionsSinceProgress: lastDiscoveryProgressAt >= discoveryNextAt ? 1 : 0,
+      overdueMs,
+      intervalMs: interval,
+    });
+    guardDiagnostic(() => {
+      console.log(formatThroughputReport({
+        configuredPerHour,
+        actualLast60Minutes: rollingHourInspectionCount(stats.hour, now),
+        opportunities: configuredPerHour,
+        missed,
+        ...spent,
+        degraded,
+      }));
+    });
   }
   let dailyBlockedUntil = 0;
   let outreachDueAt = 0;
@@ -709,13 +744,11 @@ export async function runWorker(mode: RunMode) {
         discoveryOverdueSince = stall.overdueSince;
         if (stall.stalled && !discoveryStallLogged) {
           discoveryStallLogged = true;
-          console.log("Discovery stalled. Reconciling the inspection schedule.");
-          if (discoveryWaitUntil <= Date.now()) {
-            discoveryNextAt = Date.now();
-            discoveryOverdueSince = 0;
-            writeDiscoveryCadence({ nextInspectionAt: discoveryNextAt, lastInspectionAt: lastDiscoveryProgressAt || null });
-          }
+          const recovery = stallRecoveryAction();
+          console.log(recovery.message);
+          live.lastEvent = recovery.message;
         }
+        if (config.discoveryEnabled) reportThroughput(config.maxProfilesPerHour, intervalMs);
         const discoveryIsDue = config.discoveryEnabled && !control.pauseDiscovery && dailyBlockedUntil === 0 && discoveryDue(Date.now(), discoveryNextAt) && Date.now() >= discoveryRetryAt;
         const outreachStall = outreachStallDecision({
           now: Date.now(),
@@ -865,11 +898,11 @@ export async function runWorker(mode: RunMode) {
               inspectionDueAt: discoveryNextAt,
               intervalMs,
               onProgress: () => {
-                lastDiscoveryProgressAt = Date.now();
-                discoveryStallLogged = false;
+                // Collecting candidates does not complete an inspection slot.
               },
+              onPhase: (phase) => throughput.enter(phase),
               onOutcome: (outcome) => {
-                discoveryWaitUntil = outcome.action === "waiting" ? Date.now() + 60_000 : 0;
+                discoveryWaitUntil = outcome.action === "inspected" ? 0 : Date.now() + 15_000;
               },
               readSeedProfile: async (username) => {
                 const tab = tabs.find((item) => item && !item.isClosed()) ?? null;
@@ -915,6 +948,7 @@ export async function runWorker(mode: RunMode) {
               const completedAt = Date.now();
               discoveryRetryAt = 0;
               discoverySlotLogged = false;
+              discoveryStallLogged = false;
               discoveryNextAt = scheduleNextInspection({
                 now: completedAt,
                 intervalMs,
@@ -928,7 +962,8 @@ export async function runWorker(mode: RunMode) {
                 limit: config.maxProfilesPerHour,
                 resumesAt: discoveryNextAt,
               });
-              discoveryDelayLog = "";
+              if (discoveryDelayState?.active) console.log("Inspection resumed.");
+              discoveryDelayState = { reason: "", loggedAt: completedAt, active: false };
               console.log(`Discovery inspection completed: @${live.username ?? "profile"}`);
               console.log(`Next inspection: ${formatCountdown(discoveryNextAt, completedAt)}`);
             } else if (typeof live.lastEvent === "string" && live.lastEvent.includes("daily")) {
@@ -944,6 +979,7 @@ export async function runWorker(mode: RunMode) {
         } else {
           live.task = config.automationEnabled && outreachDueAt > Date.now() ? "outreach_spacing_wait" : "idle";
           if (config.discoveryEnabled && Date.now() > discoveryNextAt) {
+            throughput.enter(discoveryWaitUntil > Date.now() ? "waiting" : "sourcing");
             const waitingReason = control.pauseDiscovery
               ? "Paused"
               : discoveryWaitUntil > Date.now() || Date.now() < discoveryRetryAt

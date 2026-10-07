@@ -81,7 +81,7 @@ const starvedDeferred = censusFromScores(Array.from({ length: 25 }, () => 12), f
 assert.equal(starvedDeferred.total, 25);
 assert.equal(starvedDeferred.ranked, 0);
 assert.equal(decision(starvedDeferred, false), "refill");
-assert.equal(decision(starvedDeferred, false, REFILL_PASS_LIMIT), "wait");
+assert.equal(decision(starvedDeferred, false, REFILL_PASS_LIMIT), "candidate_starved");
 
 const same = logOnTransition("pool", "pool");
 assert.equal(same.log, false);

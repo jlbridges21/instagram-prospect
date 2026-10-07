@@ -44,6 +44,70 @@ export function formatInspectionDelay(input: { now: number; dueAt: number; inter
   return ["Inspection delayed:", `reason: ${input.reason}`, `overdue by: ${formatElapsed(overdue)}`].join("\n");
 }
 
+export type InspectionDelayState = { reason: string; loggedAt: number; active: boolean };
+
+export function nextInspectionDelayLog(input: {
+  now: number;
+  dueAt: number;
+  intervalMs: number;
+  reason: string;
+  state: InspectionDelayState | null;
+  minGapMs?: number;
+}) {
+  const overdueMs = input.now - input.dueAt;
+  const visible = overdueMs > input.intervalMs * 2;
+  const previous = input.state ?? { reason: "", loggedAt: 0, active: false };
+  if (!visible) {
+    if (previous.active) {
+      return {
+        line: "Inspection resumed.",
+        state: { reason: "", loggedAt: input.now, active: false },
+      };
+    }
+    return { line: null as string | null, state: previous };
+  }
+  const gap = input.minGapMs ?? 60_000;
+  const started = !previous.active || previous.reason !== input.reason;
+  const due = started || input.now - previous.loggedAt >= gap;
+  if (!due) return { line: null as string | null, state: { ...previous, reason: input.reason, active: true } };
+  const overdue = formatElapsed(overdueMs);
+  const line = started
+    ? ["Inspection delayed:", input.reason, `overdue ${overdue}`].join("\n")
+    : ["Still waiting:", `overdue ${overdue}`].join("\n");
+  return { line, state: { reason: input.reason, loggedAt: input.now, active: true } };
+}
+
+export function openInspectionDelayLog() {
+  const inspectionDelayLog: { state: InspectionDelayState | null } = { state: null };
+  return {
+    note(input: { now: number; dueAt: number; intervalMs: number; reason: string }) {
+      const next = nextInspectionDelayLog({ ...input, state: inspectionDelayLog.state });
+      inspectionDelayLog.state = next.state;
+      return next.line;
+    },
+    active() {
+      return inspectionDelayLog.state?.active === true;
+    },
+  };
+}
+
+export function guardDiagnostic(write: () => void) {
+  try {
+    write();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export function stallRecoveryAction() {
+  return {
+    moveInspectionClock: false as const,
+    state: "degraded" as const,
+    message: "Discovery degraded — candidate starvation",
+  };
+}
+
 export function discoveryGraceMs(intervalMs: number) {
   return Math.max(60_000, intervalMs * 3);
 }
