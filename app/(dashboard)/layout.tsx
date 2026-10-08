@@ -49,6 +49,7 @@ export default async function DashboardLayout({ children }: { children: React.Re
     pacingWait: null,
     acting: worker?.current_task?.startsWith("executing_") === true,
     attention: attentionKind(worker?.current_task, worker?.attention_reason),
+    attentionText: worker?.attention_reason,
     browser,
   });
 

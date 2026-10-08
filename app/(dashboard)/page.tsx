@@ -73,6 +73,7 @@ export default async function OverviewPage() {
     pacingWait: outreachPacing,
     acting: worker?.current_task?.startsWith("executing_") === true,
     attention: attentionKind(worker?.current_task, worker?.attention_reason),
+    attentionText: worker?.attention_reason,
     stateSync: isStateSyncFailure(worker?.attention_reason) ? { username: worker?.current_username } : null,
     browser: browser?.state ?? "connected",
   });

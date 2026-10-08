@@ -1,3 +1,5 @@
+import { FOLLOW_RESTRICTION_MESSAGE } from "@/lib/outreach/follow-click";
+
 export type OperationTone = "running" | "ready" | "waiting" | "blocked" | "stopped" | "offline";
 
 export type OperationState = {
@@ -91,7 +93,7 @@ export function formatDiscoveryStatus(input: {
       action: null,
     };
   }
-  if (input.attention === "checkpoint" || input.attention === "logged_out" || input.attention === "other") {
+  if (input.attentionText !== FOLLOW_RESTRICTION_MESSAGE && (input.attention === "checkpoint" || input.attention === "logged_out" || input.attention === "other")) {
     const reason = input.attention === "logged_out"
       ? "Instagram logged out"
       : input.attention === "checkpoint"
@@ -157,6 +159,7 @@ export function formatOutreachStatus(input: {
   enabled: boolean;
   queueCount: number;
   attention: AttentionKind;
+  attentionText?: string | null;
   /** A real pacing wait, such as minimum spacing or the next scheduled step. Not a time-of-day window. */
   pacingWait?: { reason: string; nextAt: string | null } | null;
   acting?: boolean;
@@ -199,6 +202,18 @@ export function formatOutreachStatus(input: {
       detail: `${who ? `Affected prospect: @${who}. ` : ""}No DM was sent.`,
       resumesAt: null,
       action: "Retry state sync after restarting the worker. View the prospect error for details.",
+    };
+  }
+  if (input.attentionText === FOLLOW_RESTRICTION_MESSAGE) {
+    return {
+      desired: "PAUSED",
+      actual: "BLOCKED",
+      tone: "blocked",
+      label: "Needs Attention",
+      reason: FOLLOW_RESTRICTION_MESSAGE,
+      detail: "Discovery can keep reading profiles. No further Follow click will be made.",
+      resumesAt: null,
+      action: "Review the Instagram window, then start Outreach again only after the restriction is gone.",
     };
   }
   if (input.attention) {

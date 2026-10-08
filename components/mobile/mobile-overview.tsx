@@ -93,6 +93,7 @@ export function MobileOverview({
         pacingWait: outreachOn && live.paceAt && live.paceReason ? { reason: live.paceReason, nextAt: live.paceAt } : null,
         acting: task?.startsWith("executing_") === true,
         attention,
+        attentionText: live.attentionReason,
         browser: live.browser?.state ?? "connected",
         stateSync: isStateSyncFailure(live.attentionReason) ? { username } : null,
       })

@@ -16,6 +16,7 @@ import {
   staleReclaimDecision,
   uncertainFollowResult,
 } from "@/lib/outreach/follow-confirm";
+import { PREVIOUS_FOLLOW_NOT_CONFIRMED, unconfirmedFollowShouldPark } from "@/lib/outreach/follow-click";
 import { claimBlockMessage, explainIdleQueue } from "@/lib/outreach/idle-reason";
 import { claimPaceDecision, formatEligibleIn, nextProspectSlot, paceReasonLabel, reflowPlan, type PaceJob } from "@/lib/outreach/pace";
 import { automationChange, requeueDecision } from "@/lib/outreach/requeue";
@@ -278,6 +279,7 @@ export async function claimNextJob(input: {
   }
 
   await stampExpiredFollowAttempts(input.admin, now);
+  await parkUnconfirmedFollows(input.admin, now);
   const resumed = await resumeOwnedFollow(
     input.admin,
     input.workerId,
@@ -664,6 +666,52 @@ async function sendContext(admin: Client, prospectId: string, result: unknown) {
     followCreatedBySequence: sequenceOwnsFollow(follow.data?.[0]?.result),
     sendAttempted: sendWasAttempted(result),
   };
+}
+
+async function parkUnconfirmedFollows(admin: Client, now: Date) {
+  const listed = await admin
+    .from("outreach_jobs")
+    .select("id, job_type, status, last_error, result, failed_at")
+    .eq("job_type", "follow_profile")
+    .in("status", ["failed", "retry_wait"])
+    .limit(50);
+  if (listed.error || !listed.data) return;
+  for (const job of listed.data) {
+    const result = job.result && typeof job.result === "object" && !Array.isArray(job.result) ? job.result as Record<string, unknown> : {};
+    const evidence = result.evidence && typeof result.evidence === "object" && !Array.isArray(result.evidence)
+      ? result.evidence as { relationship?: unknown }
+      : {};
+    const relationship = typeof evidence.relationship === "string"
+      ? evidence.relationship
+      : typeof result.relationshipStatus === "string"
+        ? result.relationshipStatus
+        : null;
+    if (!unconfirmedFollowShouldPark({
+      jobType: job.job_type,
+      status: job.status,
+      followClickAttempted: followClickWasAttempted(result),
+      relationship,
+      lastError: job.last_error,
+    })) continue;
+    await admin.from("outreach_jobs").update({
+      status: "failed",
+      failed_at: job.failed_at ?? now.toISOString(),
+      last_error: PREVIOUS_FOLLOW_NOT_CONFIRMED,
+      available_at: now.toISOString(),
+      claimed_by_worker_id: null,
+      claimed_at: null,
+      claim_expires_at: null,
+      result: {
+        ...result,
+        followClickAttempted: true,
+        confirmation: "uncertain",
+        state: "follow_not_confirmed",
+        startupVerified: true,
+        reconciliationReadAt: typeof result.reconciliationReadAt === "string" ? result.reconciliationReadAt : now.toISOString(),
+        evidence: { ...evidence, relationship: "not_following" },
+      },
+    }).eq("id", job.id).in("status", ["failed", "retry_wait"]);
+  }
 }
 
 async function stampExpiredFollowAttempts(admin: Client, now: Date) {
@@ -1332,7 +1380,7 @@ async function failOwnedJob(
         result: {
           ...prior,
           ...uncertainFollowResult(),
-          state: input.relationship === "not_following" ? "follow_click_not_confirmed" : plan.state,
+          state: input.relationship === "not_following" ? "follow_not_confirmed" : plan.state,
           clickedAt: priorRecord.clickedAt ?? input.now.toISOString(),
           evidence,
           verificationAttempts: plan.verificationAttempts,
@@ -1397,6 +1445,9 @@ async function failOwnedJob(
         ...prior,
         error_code: input.errorCode,
         sendAttempted: (prior as { sendAttempted?: boolean }).sendAttempted === true,
+        ...(job.job_type === "follow_profile" && (input.errorCode === "action_blocked" || input.errorCode === "rate_limited" || input.errorCode === "instagram_checkpoint")
+          ? { followClickAttempted: true, confirmation: "uncertain", state: "restricted" }
+          : {}),
       },
     })
     .eq("id", job.id)

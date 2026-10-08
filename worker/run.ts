@@ -64,6 +64,7 @@ export type RunMode = "agent" | "smoke" | "login";
 let stopRequested = false;
 let openedSession = false;
 let activeSideEffect: SideEffect = null;
+let followActionRestricted = false;
 const browserLock = new BrowserActionLock();
 const quarantine = new JobQuarantine();
 let outreachSyncBlocked: { jobId: string; username: string } | null = null;
@@ -751,7 +752,7 @@ export async function runWorker(mode: RunMode) {
           console.log(configUpdate);
           loggedDiscoveryConfig = nextDiscoveryConfig;
         }
-        const outreachDueNow = config.automationEnabled && (activeSideEffect != null || Date.now() >= outreachDueAt);
+        const outreachDueNow = config.automationEnabled && !followActionRestricted && (activeSideEffect != null || Date.now() >= outreachDueAt);
         const intervalMs = inspectionIntervalMs(config.maxProfilesPerHour);
         if (Date.now() >= dailyBlockedUntil) dailyBlockedUntil = 0;
         const discoveryBlocked = !config.discoveryEnabled || control.pauseDiscovery || dailyBlockedUntil > Date.now() || currentState() !== "connected" || activeSideEffect != null;
@@ -801,7 +802,7 @@ export async function runWorker(mode: RunMode) {
           attention: false,
           heartbeatDueAt: Date.now() + Math.max(config.heartbeatIntervalSeconds, 15) * 1000,
           outreach: {
-            desired: config.automationEnabled,
+            desired: config.automationEnabled && !followActionRestricted,
             critical: activeSideEffect != null,
             eligibleNow: outreachDueNow,
             nextEligibleAt: outreachDueAt > Date.now() ? outreachDueAt : null,
@@ -820,6 +821,17 @@ export async function runWorker(mode: RunMode) {
             live.task = "outreach_state_sync";
             live.username = outcome.username;
             outreachDueAt = Date.now() + 60_000;
+          } else if (outcome.reason === "follow_restricted") {
+            followActionRestricted = true;
+            activeSideEffect = null;
+            browserLock.release("outreach");
+            live.attention = "Outreach paused — Instagram Follow action restricted";
+            live.lastEvent = live.attention;
+            live.task = "attention_required";
+            cloud.invalidateConfig();
+            await beat(cloud, identity, live.task, stats, true, true, live.attention, outcome.username, live.lastEvent);
+            outreachDueAt = Date.now() + 60_000;
+            continue;
           } else if (outcome.reason === "uncertain_side_effect") {
             throughput.noteOutreachBlock("followVerificationUncertain");
             activeSideEffect = null;
@@ -876,7 +888,7 @@ export async function runWorker(mode: RunMode) {
           desiredEnabled: config.discoveryEnabled && !stopping && stats.seen < inspectionCap && !singleOutreach,
           sideEffect: activeSideEffect,
         });
-        const outreachStillDue = config.automationEnabled && (activeSideEffect != null || Date.now() >= outreachDueAt);
+        const outreachStillDue = config.automationEnabled && !followActionRestricted && (activeSideEffect != null || Date.now() >= outreachDueAt);
         const poolTuning = clampTuning(config.tuning);
         const storedSupply = persistedCandidateSupply(config.minCandidatePreScore ?? DEFAULT_DISCOVERY_OPTIMIZATION.minCandidatePreScore, poolTuning.explorationFloor);
         const collectionDue = config.discoveryEnabled && !control.pauseDiscovery && storedSupply.ranked < poolTuning.poolLowWater && Date.now() >= discoveryCollectAt && Date.now() >= discoveryWaitUntil;
@@ -933,7 +945,7 @@ export async function runWorker(mode: RunMode) {
               preferredTab: choice.assign,
               retainTabs: true,
               shouldStop: () => stopping || control.pauseDiscovery || session.closed,
-              shouldYield: () => config.automationEnabled && (activeSideEffect != null || Date.now() >= outreachDueAt),
+              shouldYield: () => config.automationEnabled && !followActionRestricted && (activeSideEffect != null || Date.now() >= outreachDueAt),
               browserLock,
               singleTurn: true,
               allowInspect: discoveryIsDue,
@@ -1103,7 +1115,7 @@ async function runOneJob(
       sequenceComplete: false,
     };
   }
-  if (!config.automationEnabled) {
+  if (followActionRestricted || !config.automationEnabled) {
     return { worked: false, reason: "outreach_paused" as const, nextAt: null, message: null, username: null, jobType: "", sequenceComplete: false };
   }
   const next = await cloud.nextJob(identity.worker_id, undefined, {
@@ -1137,6 +1149,17 @@ async function runOneJob(
   try {
     const result = await executeJob(page, job);
     const settlement = await settleExecution(cloud, identity.worker_id, job, result);
+    if (settlement.action === "restricted") {
+      return {
+        worked: false,
+        reason: "follow_restricted" as const,
+        nextAt: null,
+        message: "Outreach paused — Instagram Follow action restricted",
+        username: job.instagramUsername,
+        jobType: job.type,
+        sequenceComplete: false,
+      };
+    }
     if (settlement.action === "uncertain_side_effect") {
       followVerificationYieldUntil = Date.now() + 30_000;
       return {
@@ -1257,7 +1280,7 @@ async function executeJobBody(page: import("playwright").Page, job: JobPayload) 
       followClickAttempted,
       executionStarted: job.executionStarted,
       verifyNotFollowing: job.verifyNotFollowing,
-      onBeforeClick: () => latchFollowClick(job.id),
+      onClickDispatched: () => latchFollowClick(job.id),
     });
   }
   if (!job.message) throw new SelectorError("The send job did not include the locked message.");
@@ -1388,6 +1411,22 @@ async function settleExecution(
     console.log("Send confirmation is uncertain. No second send was made.");
     return { action: "stop" as const };
   }
+  if (result.restricted === true && job.type === "follow_profile") {
+    await cloud.pauseOutreach().catch(() => undefined);
+    cloud.invalidateConfig();
+    await reportFailure(
+      cloud,
+      workerId,
+      job.id,
+      "action_blocked",
+      "Outreach paused — Instagram Follow action restricted",
+      false,
+      job.instagramUsername,
+    );
+    console.log("Outreach paused — Instagram Follow action restricted");
+    console.log("No second click was made. No DM was sent.");
+    return { action: "restricted" as const };
+  }
   if (outcome.confirmation === "uncertain") {
     const saved = await reportFailure(
       cloud,
@@ -1408,7 +1447,7 @@ async function settleExecution(
     });
     if (released.released) clearFollowLatch(job.id);
     const observedRelationship = typeof result.relationshipStatus === "string" ? result.relationshipStatus : "unknown";
-    const persistedState = observedRelationship === "not_following" ? "follow_click_not_confirmed" : "follow_verification_uncertain";
+    const persistedState = observedRelationship === "not_following" ? "follow_not_confirmed" : "follow_verification_uncertain";
     if (saved.followState === "needs_review") {
       clearUncertainFollowAnnouncement(job.id);
       console.log(`Follow for @${job.instagramUsername} needs review. The follow state could not be verified after the click.`);

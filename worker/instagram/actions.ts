@@ -50,7 +50,14 @@ import {
   relationshipSourceLabel,
   shouldCompleteFollowWithoutClick,
 } from "../../lib/outreach/follow-confirm";
-import { controlRelationship, isExcludedRelationship, normalizeControlText, profileUrlFor, selectPrimaryRelationship, type FollowRelationship } from "./parse";
+import {
+  diagnosticFollowPlan,
+  FOLLOW_DIAGNOSTIC_DELAYS_MS,
+  followClickSettlement,
+  prepareFollowClick,
+  visibleFollowRestriction,
+} from "../../lib/outreach/follow-click";
+import { controlRelationship, isExcludedRelationship, normalizeControlText, profileUrlFor, selectPrimaryRelationship, usernameFromHref, type FollowRelationship } from "./parse";
 import { openUrl, readDom } from "./read-dom";
 import type { DomSnapshot } from "./types";
 
@@ -190,7 +197,7 @@ export async function followProfile(
     followClickAttempted?: boolean;
     executionStarted?: boolean;
     verifyNotFollowing?: boolean;
-    onBeforeClick?: () => void;
+    onClickDispatched?: () => void;
   },
 ) {
   const current = await readProfile(page, username);
@@ -203,12 +210,16 @@ export async function followProfile(
   if (!current.profileExists) return { followed: false, relationshipStatus: "unknown" as const, profileExists: false };
   const plan = followAttemptPlan(context);
   let observation = "";
+  let restriction: string | null = null;
   const readAfterClick = async () => {
-    const seen = await inspectCurrent(page, username, { quick: true });
-    if (seen.profileExists) observation = formatRelationshipRead(username, seen.dom);
+    const dom = await readDom(page);
+    const signal = pageSignal(dom) || visibleFollowRestriction(dom.bodyText);
+    if (signal) restriction = signal;
+    const profile = profileFromDom(dom, username);
+    observation = formatRelationshipRead(username, dom);
     return {
-      relationship: seen.relationship,
-      source: seen.profileExists ? seen.profile.strategies.relationship : "none",
+      relationship: signal ? "restricted" : profile.relationship,
+      source: profile.strategies.relationship || "none",
     };
   };
   if (plan.action === "verify" || (plan.action === "complete" && context.followClickAttempted)) {
@@ -251,25 +262,128 @@ export async function followProfile(
     throw new SelectorError(`Could not determine follow relationship for @${username}.`);
   }
   console.log(`Opening @${username}`);
-  console.log(`Relationship before action: ${current.relationship}`);
-  const target = acceptedRelationshipBox(current.dom, username, "not_following");
-  if (!target) throw new SelectorError(`Could not find the profile Follow control for @${username}.`);
-  prior?.onBeforeClick?.();
-  await page.mouse.click(target.x + target.width / 2, target.y + target.height / 2);
-  console.log("Follow clicked.");
+  const dispatched = await dispatchFreshFollow(page, username);
+  if (!dispatched.dispatched) {
+    throw new SelectorError(dispatched.reason === "username_mismatch"
+      ? `Profile username did not match @${username}. Follow was not clicked.`
+      : `Could not find the profile Follow control for @${username}.`);
+  }
+  prior?.onClickDispatched?.();
+  if (dispatched.restriction) {
+    return {
+      followed: false,
+      followClickAttempted: true,
+      clickDispatched: true,
+      restricted: true,
+      confirmation: "uncertain" as const,
+      relationshipStatus: "unknown" as const,
+      profileExists: true,
+    };
+  }
   const confirmation = await confirmRelationship(page, username, readAfterClick);
-  if (confirmation.confirmed) {
+  const settlement = followClickSettlement({
+    dispatched: true,
+    relationship: restriction ? "unknown" : confirmation.relationship,
+    restriction: Boolean(restriction),
+  });
+  if (settlement.pauseOutreach) {
+    return {
+      followed: false,
+      followClickAttempted: true,
+      clickDispatched: true,
+      restricted: true,
+      confirmation: "uncertain" as const,
+      relationshipStatus: "unknown" as const,
+      profileExists: true,
+    };
+  }
+  if (confirmation.confirmed && settlement.confirmed) {
     logFollowConfirmed(username, confirmation.relationship, confirmation.source);
-    return { followed: true, relationshipStatus: confirmation.relationship, profileExists: true };
+    return { followed: true, relationshipStatus: confirmation.relationship, profileExists: true, clickDispatched: true };
   }
   if (observation) console.log(observation);
+  console.log("Follow result: follow_not_confirmed");
   return {
     followed: false,
     followClickAttempted: true,
+    clickDispatched: true,
     confirmation: "uncertain" as const,
     relationshipStatus: confirmation.relationship,
     profileExists: true,
   };
+}
+
+export async function diagnoseFollowOnce(page: Page, username: string) {
+  const current = await readProfile(page, username);
+  const plan = diagnosticFollowPlan({ relationship: current.relationship, alreadyClicked: false });
+  console.log(`Expected profile:\n@${username}`);
+  console.log(`Relationship before:\n${current.relationship}`);
+  if (!plan.click) {
+    console.log(plan.reason === "not_ready"
+      ? "Follow was not clicked. The profile is not showing Follow."
+      : "Follow was not clicked.");
+    console.log("No DM was sent.");
+    return { clicked: false as const, sent: false as const, relationship: current.relationship };
+  }
+  const dispatched = await dispatchFreshFollow(page, username);
+  if (!dispatched.dispatched) {
+    console.log(dispatched.reason === "username_mismatch"
+      ? "Username mismatch. Follow was not clicked."
+      : "The profile Follow control was not found. Follow was not clicked.");
+    console.log("No DM was sent.");
+    return { clicked: false as const, sent: false as const, relationship: current.relationship };
+  }
+  const started = Date.now();
+  let relationship = "not_following";
+  let restriction: string | null = dispatched.restriction;
+  for (const mark of FOLLOW_DIAGNOSTIC_DELAYS_MS) {
+    const wait = started + mark - Date.now();
+    if (wait > 0) await page.waitForTimeout(wait);
+    const dom = await readDom(page);
+    restriction = restriction || pageSignal(dom) || visibleFollowRestriction(dom.bodyText);
+    relationship = profileFromDom(dom, username).relationship;
+    console.log(`+${mark}ms ${restriction ? `restriction=${restriction}` : relationship}`);
+    if (restriction || relationship === "following" || relationship === "requested") break;
+  }
+  if (restriction) console.log("Instagram showed a restriction. Follow will not be retried.");
+  else if (relationship === "following" || relationship === "requested") console.log(`Follow result: follow_confirmed (${relationship})`);
+  else console.log("Follow result: follow_not_confirmed");
+  console.log("No DM was sent. Follow was clicked once.");
+  return { clicked: true as const, sent: false as const, relationship, restriction };
+}
+
+async function dispatchFreshFollow(page: Page, username: string) {
+  const dom = await readDom(page);
+  const target = freshFollowTarget(dom);
+  if (!target) return { dispatched: false as const, reason: "not_follow_control" as const, restriction: null as string | null };
+  const ready = prepareFollowClick({
+    expectedUsername: username,
+    currentUsername: target.username,
+    label: target.label,
+    box: target.box,
+  });
+  if (!ready.click) return { dispatched: false as const, reason: ready.reason, restriction: null };
+  console.log(`Expected profile:\n@${username}`);
+  console.log("Click target:");
+  console.log(`tag=${target.tag.toUpperCase()}`);
+  console.log(`role=${target.role || "none"}`);
+  console.log(`accessibleName="${target.label}"`);
+  console.log(`text="${target.text}"`);
+  console.log(`aria-label="${target.ariaLabel}"`);
+  console.log(`href=${target.href || "(none)"}`);
+  console.log(`bbox=${target.box.x}/${target.box.y}/${target.box.width}/${target.box.height}`);
+  console.log("Relationship before:");
+  console.log("not_following");
+  try {
+    await page.mouse.click(target.box.x + target.box.width / 2, target.box.y + target.box.height / 2);
+  } catch {
+    console.log("Follow click was not dispatched.");
+    return { dispatched: false as const, reason: "click_failed" as const, restriction: null };
+  }
+  console.log("click dispatched successfully");
+  const after = await readDom(page);
+  const restriction = pageSignal(after) || visibleFollowRestriction(after.bodyText);
+  return { dispatched: true as const, reason: "dispatched" as const, restriction };
 }
 
 async function confirmRelationship(
@@ -313,14 +427,27 @@ async function confirmRelationship(
   return { ...confirmation, source };
 }
 
-function acceptedRelationshipBox(dom: DomSnapshot | undefined, username: string, relationship: FollowRelationship) {
-  if (!dom) return null;
+function freshFollowTarget(dom: DomSnapshot) {
+  let currentUsername: string | null = null;
+  try {
+    currentUsername = usernameFromHref(new URL(dom.url).pathname);
+  } catch {
+    currentUsername = null;
+  }
   const choice = selectPrimaryRelationship(dom.exactRelationshipHits ?? [], dom.usernameBox, dom.optionsBox);
-  const winner = choice.decisions.find((decision) => decision.accepted && controlRelationship(decision.label) === relationship);
-  if (!winner) return null;
-  const own = winner.box;
-  if (own && own.width >= 8 && own.height >= 8) return own;
-  return winner.ancestorBox || own;
+  const winner = choice.decisions.find((decision) => decision.accepted && controlRelationship(decision.label) === "not_following");
+  if (!winner?.box) return null;
+  const hit = (dom.exactRelationshipHits ?? []).find((candidate) => candidate.label === winner.label && candidate.box?.x === winner.box?.x && candidate.box?.y === winner.box?.y);
+  return {
+    username: currentUsername,
+    label: winner.label,
+    tag: hit?.tag || winner.tag || "button",
+    role: hit?.role || winner.ancestorRole || "button",
+    text: hit?.text || winner.label,
+    ariaLabel: hit?.ariaLabel || "",
+    href: hit?.href || "",
+    box: winner.box,
+  };
 }
 
 function formatRelationshipRead(username: string, dom: DomSnapshot) {

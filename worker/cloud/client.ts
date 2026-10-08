@@ -294,6 +294,10 @@ export class CloudClient {
     return this.request<{ ok: boolean }>(`/api/worker/jobs/${jobId}/complete`, { worker_id: workerId, result });
   }
 
+  async pauseOutreach() {
+    return this.request<{ ok: boolean }>("/api/worker/outreach/pause", {});
+  }
+
   async failJob(jobId: string, workerId: string, body: Record<string, unknown>) {
     return this.request<{ ok: boolean }>(`/api/worker/jobs/${jobId}/fail`, { worker_id: workerId, ...body });
   }

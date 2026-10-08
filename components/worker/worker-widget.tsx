@@ -92,6 +92,7 @@ export function WorkerWidget({ timeZone }: { timeZone: string }) {
         : null,
     acting: status?.currentAction?.startsWith("executing_") === true,
     attention,
+    attentionText: status?.attentionReason,
     browser: status?.browser?.state ?? "connected",
     stateSync: isStateSyncFailure(status?.attentionReason) ? { username: status?.username } : null,
   });
@@ -120,8 +121,8 @@ export function WorkerWidget({ timeZone }: { timeZone: string }) {
     <>
       {attention || versions.mismatch ? (
         <div className="fixed inset-x-0 top-36 z-30 hidden border-b border-red-400/30 bg-red-500/15 px-4 py-2 text-sm text-red-100 md:block lg:left-64" role="status">
-          <p className="font-semibold">{versions.mismatch ? "Worker update required" : "Instagram needs attention"}</p>
-          <p>{versions.mismatch ? versions.message : discovery.reason}</p>
+          <p className="font-semibold">{versions.mismatch ? "Worker update required" : status?.attentionReason === "Outreach paused — Instagram Follow action restricted" ? "Needs Attention" : "Instagram needs attention"}</p>
+          <p>{versions.mismatch ? versions.message : status?.attentionReason === "Outreach paused — Instagram Follow action restricted" ? status.attentionReason : discovery.reason}</p>
           <p>{versions.mismatch ? "Worker actions stay disabled until the Windows worker is updated." : discovery.detail}</p>
         </div>
       ) : null}

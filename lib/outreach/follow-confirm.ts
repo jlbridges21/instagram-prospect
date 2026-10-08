@@ -68,6 +68,14 @@ export function followStartupVerified(result: unknown) {
   return (result as { startupVerified?: boolean }).startupVerified === true;
 }
 
+function storedFollowRelationship(result: unknown) {
+  if (!result || typeof result !== "object" || Array.isArray(result)) return null;
+  const record = result as { evidence?: { relationship?: unknown }; relationshipStatus?: unknown };
+  const evidence = record.evidence;
+  if (evidence && typeof evidence === "object" && typeof evidence.relationship === "string") return evidence.relationship;
+  return typeof record.relationshipStatus === "string" ? record.relationshipStatus : null;
+}
+
 export function followReconciliationReadAt(result: unknown) {
   if (!result || typeof result !== "object" || Array.isArray(result)) return null;
   const value = (result as { reconciliationReadAt?: unknown }).reconciliationReadAt;
@@ -79,6 +87,7 @@ export function staleFollowReadReady(
   now: Date,
 ) {
   if (job.jobType !== "follow_profile" || job.status !== "failed" || !followStartupVerified(job.result)) return false;
+  if (storedFollowRelationship(job.result) === "not_following") return false;
   return orphanedFollowAction({
     status: job.status,
     followClickAttempted: followClickWasAttempted(job.result),
@@ -252,6 +261,7 @@ export async function confirmFollowAfterClick(input: {
       const wait = started + mark - input.now();
       if (wait > 0) await input.sleep(wait);
       relationship = await input.readRelationship();
+      if (relationship === "restricted") return { confirmed: false as const, relationship, clicks: 1 as const };
       if (isConfirmedFollow(relationship)) {
         return { confirmed: true as const, relationship, clicks: 1 as const };
       }
@@ -259,6 +269,7 @@ export async function confirmFollowAfterClick(input: {
         refreshed = true;
         await input.refresh();
         relationship = await input.readRelationship();
+        if (relationship === "restricted") return { confirmed: false as const, relationship, clicks: 1 as const };
         if (isConfirmedFollow(relationship)) {
           return { confirmed: true as const, relationship, clicks: 1 as const };
         }
