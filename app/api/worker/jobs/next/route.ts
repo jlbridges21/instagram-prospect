@@ -38,15 +38,22 @@ export async function POST(request: Request) {
     deferFollowVerification: parsed.data.defer_follow_verification,
   });
   if (!claimed.ok) return workerError(500, claimed.error);
+  const selection = {
+    selectionReason: "selectionReason" in claimed ? claimed.selectionReason : null,
+    selectionDetail: "selectionDetail" in claimed ? claimed.selectionDetail : null,
+    queue: "queue" in claimed ? claimed.queue : null,
+    queueStatus: "queueStatus" in claimed ? claimed.queueStatus : null,
+  };
   if (!claimed.job) {
     return Response.json({
       job: null,
       reason: claimed.reason,
       message: claimed.message ?? null,
       nextAt: claimed.nextAt ?? null,
-      nextCheckAfterSeconds,
+      nextCheckAfterSeconds: claimed.reason === "scheduled_retry" ? 60 : nextCheckAfterSeconds,
+      ...selection,
     });
   }
 
-  return Response.json({ job: claimed.job, nextCheckAfterSeconds: 0 });
+  return Response.json({ job: claimed.job, nextCheckAfterSeconds: 0, ...selection });
 }

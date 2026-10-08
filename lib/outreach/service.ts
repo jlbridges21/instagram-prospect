@@ -18,7 +18,7 @@ import {
 } from "@/lib/outreach/follow-confirm";
 import { PREVIOUS_FOLLOW_NOT_CONFIRMED, unconfirmedFollowShouldPark } from "@/lib/outreach/follow-click";
 import { claimBlockMessage, explainIdleQueue } from "@/lib/outreach/idle-reason";
-import { claimPaceDecision, formatEligibleIn, nextProspectSlot, paceReasonLabel, reflowPlan, type PaceJob } from "@/lib/outreach/pace";
+import { claimPaceDecision, formatEligibleIn, formatOutreachSelection, nextProspectSlot, paceReasonLabel, reflowPlan, type PaceJob } from "@/lib/outreach/pace";
 import { automationChange, requeueDecision } from "@/lib/outreach/requeue";
 import {
   clipError,
@@ -314,13 +314,19 @@ export async function claimNextJob(input: {
   }
 
   const paced = await paceBeforeClaim(input.admin, input.settings, now, input.prospectId, input.deferFollowVerification);
+  const selection = {
+    selectionReason: paced.selectionReason,
+    selectionDetail: paced.selectionDetail,
+    queue: paced.queue,
+    queueStatus: paced.queueStatus,
+  };
   if (paced.action === "wait") {
-    return { ok: true as const, job: null, reason: paced.reason, message: paced.message, nextAt: paced.nextAt };
+    return { ok: true as const, job: null, reason: paced.reason, message: paced.message, nextAt: paced.nextAt, ...selection };
   }
   if (paced.action === "follow_verification" && paced.jobId) {
     const reopened = await reopenFollowVerification(input.admin, paced.jobId, input.workerId, now, input.settings.outreach.claimLeaseSeconds);
-    if (reopened) return { ok: true as const, reason: null, message: null, nextAt: null, job: reopened };
-    return { ok: true as const, job: null, reason: "scheduled_retry", message: "Follow verification is not due.", nextAt: null };
+    if (reopened) return { ok: true as const, reason: null, message: null, nextAt: null, job: reopened, ...selection };
+    return { ok: true as const, job: null, reason: "scheduled_retry", message: "Follow verification is not due.", nextAt: null, ...selection };
   }
 
   const claimed = await input.admin.rpc("claim_next_outreach_job", {
@@ -332,7 +338,7 @@ export async function claimNextJob(input: {
   if (claimed.error) return { ok: false as const, error: "Could not claim the next job." };
   if (!claimed.data || typeof claimed.data !== "object" || Array.isArray(claimed.data)) {
     const idle = await explainWhyNoJob(input.admin, input.settings, now, input.prospectId);
-    return { ok: true as const, job: null, reason: idle.reason, message: idle.message, nextAt: idle.nextAt };
+    return { ok: true as const, job: null, reason: idle.reason, message: idle.message, nextAt: idle.nextAt, ...selection };
   }
 
   const jobId = typeof claimed.data.id === "string" ? claimed.data.id : null;
@@ -366,6 +372,7 @@ export async function claimNextJob(input: {
     reason: null,
     message: null,
     nextAt: null,
+    ...selection,
     job: publicJob(
       jobId,
       jobType,
@@ -385,7 +392,16 @@ async function paceBeforeClaim(
   deferFollowVerification?: boolean,
 ) {
   const loaded = await loadPaceJobs(admin, prospectId);
-  if (!loaded.ok) return { action: "claim" as const, prospectId: prospectId ?? null };
+  if (!loaded.ok) {
+    return {
+      action: "claim" as const,
+      prospectId: prospectId ?? null,
+      selectionReason: "none" as const,
+      selectionDetail: "no eligible jobs",
+      queue: null,
+      queueStatus: null,
+    };
+  }
   const decision = claimPaceDecision({
     now,
     timeZone: settings.timezone,
@@ -396,10 +412,36 @@ async function paceBeforeClaim(
     jobs: loaded.jobs,
     deferFollowVerification,
   });
+  const status = formatOutreachSelection({
+    counts: decision.counts,
+    username: decision.username,
+    selection: decision.selection,
+    detail: decision.detail,
+    nextAt: decision.at,
+    timeZone: settings.timezone,
+    now,
+  });
   if (decision.kind === "follow_verification" && decision.jobIds[0]) {
-    return { action: "follow_verification" as const, jobId: decision.jobIds[0], prospectId: decision.prospectId };
+    return {
+      action: "follow_verification" as const,
+      jobId: decision.jobIds[0],
+      prospectId: decision.prospectId,
+      selectionReason: decision.selection,
+      selectionDetail: decision.detail,
+      queue: decision.counts,
+      queueStatus: status,
+    };
   }
-  if (decision.action === "idle") return { action: "claim" as const, prospectId: prospectId ?? null };
+  if (decision.action === "idle") {
+    return {
+      action: "claim" as const,
+      prospectId: prospectId ?? null,
+      selectionReason: "none" as const,
+      selectionDetail: decision.detail,
+      queue: decision.counts,
+      queueStatus: status,
+    };
+  }
   if (decision.action === "wait" && decision.at) {
     if (decision.reason !== "scheduled_retry" && decision.prospectId) {
       await schedulePendingProspect(admin, decision.prospectId, decision.at);
@@ -410,12 +452,23 @@ async function paceBeforeClaim(
       reason: decision.reason,
       nextAt: decision.at.toISOString(),
       message: `${paceReasonLabel(decision.reason)}. Next time: ${when}. Eligible in ${formatEligibleIn(decision.at, now)}.`,
+      selectionReason: "none" as const,
+      selectionDetail: decision.detail,
+      queue: decision.counts,
+      queueStatus: status,
     };
   }
   if (decision.action === "claim" && decision.prospectId && decision.reason === "ready") {
     await schedulePendingProspect(admin, decision.prospectId, now);
   }
-  return { action: "claim" as const, prospectId: decision.prospectId };
+  return {
+    action: "claim" as const,
+    prospectId: decision.prospectId,
+    selectionReason: decision.selection,
+    selectionDetail: decision.detail,
+    queue: decision.counts,
+    queueStatus: status,
+  };
 }
 
 async function schedulePendingProspect(admin: Client, prospectId: string, at: Date) {

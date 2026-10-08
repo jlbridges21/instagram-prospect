@@ -65,6 +65,8 @@ let stopRequested = false;
 let openedSession = false;
 let activeSideEffect: SideEffect = null;
 let followActionRestricted = false;
+let lastOutreachQueueLog = 0;
+let lastOutreachQueueText = "";
 const browserLock = new BrowserActionLock();
 const quarantine = new JobQuarantine();
 let outreachSyncBlocked: { jobId: string; username: string } | null = null;
@@ -752,6 +754,10 @@ export async function runWorker(mode: RunMode) {
           console.log(configUpdate);
           loggedDiscoveryConfig = nextDiscoveryConfig;
         }
+        if (lastOutreachQueueText && Date.now() - lastOutreachQueueLog >= 60_000) {
+          console.log(lastOutreachQueueText);
+          lastOutreachQueueLog = Date.now();
+        }
         const outreachDueNow = config.automationEnabled && !followActionRestricted && (activeSideEffect != null || Date.now() >= outreachDueAt);
         const intervalMs = inspectionIntervalMs(config.maxProfilesPerHour);
         if (Date.now() >= dailyBlockedUntil) dailyBlockedUntil = 0;
@@ -860,7 +866,7 @@ export async function runWorker(mode: RunMode) {
               nextAt: outcome.nextAt ?? null,
               now: new Date(),
             });
-            const block = outreachBlockReason(outcome.reason);
+            const block = outcome.reason === "scheduled_retry" ? null : outreachBlockReason(outcome.reason);
             if (block) throughput.noteOutreachBlock(block);
             if (outcome.reason === "no_queued_jobs") console.log("Outreach queue is empty.");
             else if (outcome.message && outcome.reason !== "state_sync_failed") console.log(outcome.message);
@@ -1097,6 +1103,21 @@ export async function runWorker(mode: RunMode) {
   }
 }
 
+function logOutreachSelection(next: {
+  job: { instagramUsername: string } | null;
+  queueStatus?: string | null;
+  selectionReason?: string | null;
+  selectionDetail?: string | null;
+}) {
+  const text = next.queueStatus
+    ?? (next.job
+      ? `Selected:\n@${next.job.instagramUsername}\nreason: ${next.selectionReason ?? "fresh_ready"}`
+      : `Selected:\nnone\nreason:\n${next.selectionDetail ?? "no eligible jobs"}`);
+  lastOutreachQueueText = text;
+  lastOutreachQueueLog = Date.now();
+  console.log(text);
+}
+
 async function runOneJob(
   cloud: CloudClient,
   page: import("playwright").Page,
@@ -1121,11 +1142,12 @@ async function runOneJob(
   const next = await cloud.nextJob(identity.worker_id, undefined, {
     deferFollowVerification: Date.now() < followVerificationYieldUntil,
   });
+  logOutreachSelection(next);
   if (!next.job) {
     return {
       worked: false,
       reason: next.reason ?? "no_queued_jobs",
-      nextAt: next.nextAt ?? null,
+      nextAt: next.reason === "scheduled_retry" ? null : next.nextAt ?? null,
       message: next.message ?? null,
       username: null,
       jobType: "",

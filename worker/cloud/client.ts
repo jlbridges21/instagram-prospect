@@ -249,6 +249,9 @@ export class CloudClient {
       message?: string | null;
       nextAt?: string | null;
       nextCheckAfterSeconds?: number;
+      selectionReason?: string | null;
+      selectionDetail?: string | null;
+      queueStatus?: string | null;
     }>("/api/worker/jobs/next", {
       worker_id: workerId,
       prospect_id: prospectId,

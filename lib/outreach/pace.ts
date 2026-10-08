@@ -32,7 +32,7 @@ export function nextProspectSlot(input: {
   dailyMaximum: number;
   completedSendTimes: Date[];
   notBefore?: Date | null;
-}) {
+}): { at: Date; reason: PaceReason } {
   const spacingMs = Math.max(0, input.minimumSpacingSeconds) * 1000;
   const hourlyMaximum = Math.max(1, input.hourlyMaximum);
   const dailyMaximum = Math.max(1, input.dailyMaximum);
@@ -176,6 +176,19 @@ export function reflowPlan(input: {
   };
 }
 
+export type OutreachSelection = "fresh_ready" | "due_retry" | "follow_verification" | "none";
+
+export type OutreachQueueCounts = {
+  freshReady: number;
+  dueRetries: number;
+  futureRetries: number;
+  dueFollowVerification: number;
+  futureFollowVerification: number;
+  needsReview: number;
+  completed: number;
+  spacingBlocked: number;
+};
+
 export type ClaimPaceDecision = {
   action: "claim" | "wait" | "idle";
   prospectId: string | null;
@@ -184,6 +197,9 @@ export type ClaimPaceDecision = {
   reason: PaceReason;
   jobIds: string[];
   kind?: "follow_verification";
+  selection: OutreachSelection;
+  detail: string;
+  counts: OutreachQueueCounts;
 };
 
 export function queueHealth(jobs: PaceJob[]) {
@@ -229,13 +245,14 @@ export function claimPaceDecision(input: {
   for (const job of input.jobs) grouped.set(job.prospectId, [...(grouped.get(job.prospectId) ?? []), job]);
   const prospects = [...grouped.entries()].filter(([, jobs]) => !jobs.some((job) => jobIsUncertain(job) || job.status === "running" || job.status === "claimed"));
 
+  const counts = queueCounts(input.jobs, prospects, input.now);
   const continuation = prospects
     .map(([prospectId, jobs]) => ({ prospectId, jobs, next: nextOpenJob(jobs) }))
     .filter((item) => item.next && item.next.status === "pending" && item.next.jobType !== "verify_profile" && item.jobs.some((job) => job.status === "completed"))
     .sort((left, right) => (left.next?.createdAt ?? "").localeCompare(right.next?.createdAt ?? ""));
   const firstContinuation = continuation[0];
   if (firstContinuation?.next) {
-    return claim(firstContinuation.prospectId, firstContinuation.next, input.now);
+    return claim(firstContinuation.prospectId, firstContinuation.next, input.now, counts, "fresh_ready");
   }
 
   const slot = nextProspectSlot(input);
@@ -251,24 +268,27 @@ export function claimPaceDecision(input: {
       at: slot.at,
       reason: slot.reason,
       jobIds: waiting?.[1].map((job) => job.id) ?? [],
+      selection: "none",
+      detail: slot.reason === "hourly_limit" ? "hourly limit" : slot.reason === "daily_limit" ? "daily limit" : "minimum spacing",
+      counts: { ...counts, spacingBlocked: fresh.length },
     };
   }
 
   const readyFresh = fresh[0];
-  if (readyFresh) return claim(readyFresh[0], readyFresh[1][0] ?? null, input.now);
+  if (readyFresh) return claim(readyFresh[0], readyFresh[1][0] ?? null, input.now, counts, "fresh_ready");
 
   const dueRetries = prospects
     .map(([prospectId, jobs]) => ({ prospectId, jobs, next: nextOpenJob(jobs) }))
     .filter((item) => item.next?.status === "retry_wait" && !isFollowVerificationJob(item.next) && availableAt(item.next, input.now).getTime() <= input.now.getTime())
     .sort((left, right) => availableAt(left.next, input.now).getTime() - availableAt(right.next, input.now).getTime());
   const due = dueRetries[0];
-  if (due?.next) return claim(due.prospectId, due.next, input.now);
+  if (due?.next) return claim(due.prospectId, due.next, input.now, counts, "due_retry");
 
   if (!input.deferFollowVerification) {
     const staleFollow = input.jobs
       .filter((job) => staleFollowReadReady(job, input.now))
       .sort((left, right) => left.scheduledFor.localeCompare(right.scheduledFor))[0];
-    if (staleFollow) return claim(staleFollow.prospectId, staleFollow, input.now, "follow_verification");
+    if (staleFollow) return claim(staleFollow.prospectId, staleFollow, input.now, counts, "follow_verification");
   }
 
   const futureRetry = prospects
@@ -277,7 +297,7 @@ export function claimPaceDecision(input: {
     .map((job) => availableAt(job, input.now))
     .sort((left, right) => left.getTime() - right.getTime())[0];
   if (futureRetry && futureRetry.getTime() > input.now.getTime()) {
-    return { action: "wait", prospectId: null, username: null, at: futureRetry, reason: "scheduled_retry", jobIds: [] };
+    return { action: "wait", prospectId: null, username: null, at: futureRetry, reason: "scheduled_retry", jobIds: [], selection: "none", detail: "all jobs future scheduled", counts };
   }
   const dueFollow = input.jobs
     .filter((job) => followVerificationReady(job, input.now))
@@ -292,9 +312,12 @@ export function claimPaceDecision(input: {
         at: new Date(input.now.getTime() + 30_000),
         reason: "scheduled_retry",
         jobIds: [readyFollow.id],
+        selection: "none",
+        detail: "all jobs future scheduled",
+        counts,
       };
     }
-    return claim(readyFollow.prospectId, readyFollow, input.now, "follow_verification");
+    return claim(readyFollow.prospectId, readyFollow, input.now, counts, "follow_verification");
   }
 
   const laterFollow = input.jobs
@@ -303,12 +326,9 @@ export function claimPaceDecision(input: {
     .filter((at) => at.getTime() > input.now.getTime())
     .sort((left, right) => left.getTime() - right.getTime())[0];
   if (laterFollow && fresh.length === 0 && dueRetries.length === 0) {
-    return { action: "wait", prospectId: null, username: null, at: laterFollow, reason: "scheduled_retry", jobIds: [] };
+    return { action: "wait", prospectId: null, username: null, at: laterFollow, reason: "scheduled_retry", jobIds: [], selection: "none", detail: "all jobs future scheduled", counts };
   }
-  if (fresh.length === 0 && dueRetries.length === 0) {
-    return { action: "idle", prospectId: null, username: null, at: null, reason: "ready", jobIds: [] };
-  }
-  return { action: "idle", prospectId: null, username: null, at: null, reason: "ready", jobIds: [] };
+  return { action: "idle", prospectId: null, username: null, at: null, reason: "ready", jobIds: [], selection: "none", detail: "no eligible jobs", counts };
 }
 
 function nextOpenJob(jobs: PaceJob[]) {
@@ -342,7 +362,8 @@ function claim(
   prospectId: string,
   job: PaceJob | null,
   now: Date,
-  kind?: "follow_verification",
+  counts: OutreachQueueCounts,
+  selection: Exclude<OutreachSelection, "none">,
 ): ClaimPaceDecision {
   return {
     action: "claim",
@@ -351,8 +372,73 @@ function claim(
     at: now,
     reason: "ready",
     jobIds: job ? [job.id] : [],
-    kind,
+    kind: selection === "follow_verification" ? "follow_verification" : undefined,
+    selection,
+    detail: selection,
+    counts,
   };
+}
+
+function queueCounts(jobs: PaceJob[], prospects: Array<[string, PaceJob[]]>, now: Date): OutreachQueueCounts {
+  const freshReady = prospects.filter(([, prospectJobs]) => prospectCanReflow(prospectJobs)).length;
+  const dueRetries = prospects.filter(([, prospectJobs]) => {
+    const next = nextOpenJob(prospectJobs);
+    return next?.status === "retry_wait" && !isFollowVerificationJob(next) && availableAt(next, now).getTime() <= now.getTime();
+  }).length;
+  const futureRetries = prospects.filter(([, prospectJobs]) => {
+    const next = nextOpenJob(prospectJobs);
+    return next?.status === "retry_wait" && !isFollowVerificationJob(next) && availableAt(next, now).getTime() > now.getTime();
+  }).length;
+  const dueFollowVerification = jobs.filter((job) => followVerificationReady(job, now)).length;
+  const futureFollowVerification = jobs.filter((job) => isFollowVerificationJob(job) && !followStartupVerified(job.result) && !followVerificationReady(job, now) && followDueAt(job, now).getTime() > now.getTime()).length;
+  const needsReview = jobs.filter((job) => job.jobType === "follow_profile" && job.status === "failed" && followStartupVerified(job.result)).length;
+  const completed = jobs.filter((job) => job.jobType === "send_message" && job.status === "completed").length;
+  return {
+    freshReady,
+    dueRetries,
+    futureRetries,
+    dueFollowVerification,
+    futureFollowVerification,
+    needsReview,
+    completed,
+    spacingBlocked: 0,
+  };
+}
+
+export function formatOutreachSelection(input: {
+  counts: OutreachQueueCounts;
+  username: string | null;
+  selection: OutreachSelection;
+  detail: string;
+  nextAt: Date | null;
+  timeZone: string;
+  now: Date;
+}) {
+  const future = input.counts.futureRetries + input.counts.futureFollowVerification;
+  const next = input.counts.freshReady > 0 && input.counts.spacingBlocked === 0
+    ? "Next eligible action: now"
+    : input.nextAt
+      ? `Next eligible action: ${new Intl.DateTimeFormat("en-US", { timeZone: input.timeZone, hour: "numeric", minute: "2-digit" }).format(input.nextAt)}`
+      : "Next eligible action: none";
+  const selected = input.selection === "none" || !input.username
+    ? `Selected:\nnone\nreason:\n${input.detail}`
+    : `Selected:\n@${input.username}\nreason: ${input.selection}`;
+  return [
+    "Outreach:",
+    `Ready now: ${input.counts.freshReady}`,
+    `Due retries: ${input.counts.dueRetries}`,
+    `Future retries: ${future}`,
+    `Due follow verification: ${input.counts.dueFollowVerification}`,
+    `Future follow verification: ${input.counts.futureFollowVerification}`,
+    `Needs Review: ${input.counts.needsReview}`,
+    `Completed: ${input.counts.completed}`,
+    `Blocked by spacing: ${input.counts.spacingBlocked}`,
+    next,
+    `Fresh ready candidates: ${input.counts.freshReady}`,
+    `Due retries: ${input.counts.dueRetries}`,
+    `Future retries: ${future}`,
+    selected,
+  ].join("\n");
 }
 
 function latestSend(times: Date[]) {
