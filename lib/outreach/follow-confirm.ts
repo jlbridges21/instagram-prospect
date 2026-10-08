@@ -1,6 +1,7 @@
 export const FOLLOW_CONFIRM_WINDOW_MS = 12_000;
 export const FOLLOW_VERIFY_WINDOW_MS = 20_000;
 export const FOLLOW_CONFIRM_POLL_MS = 1_000;
+export const FOLLOW_VERIFY_DELAYS_MS = [0, 1_000, 2_000, 4_000, 7_000];
 export const FOLLOW_VERIFY_BACKOFF_MINUTES = [8, 25] as const;
 
 const latchedFollowClicks = new Set<string>();
@@ -137,6 +138,52 @@ export function isPreexistingFollow(input: {
   return !shouldCompleteFollowWithoutClick(input);
 }
 
+export function relationshipEvidenceLabel(relationship: string) {
+  if (relationship === "following") return "Following";
+  if (relationship === "requested") return "Requested";
+  if (relationship === "not_following") return "Follow";
+  return "unknown";
+}
+
+export function relationshipSourceLabel(strategy: string | null | undefined) {
+  if (
+    strategy === "global-exact-action-near-profile-header" ||
+    strategy === "exact header relationship button" ||
+    strategy === "header-button"
+  ) {
+    return "exact header relationship button";
+  }
+  return strategy && strategy !== "none" ? strategy : "no exact header relationship control";
+}
+
+export function advanceAfterFollow(result: { followed?: boolean; confirmation?: string; relationshipStatus?: string }) {
+  if (result.confirmation === "uncertain") return "wait" as const;
+  if (result.followed === true && (result.relationshipStatus === "following" || result.relationshipStatus === "requested")) {
+    return "send" as const;
+  }
+  return "stop" as const;
+}
+
+export function followVerificationFacts(job: {
+  status: string;
+  job_type: string;
+  result?: unknown;
+}) {
+  if (job.job_type !== "follow_profile" || !followClickWasAttempted(job.result)) return null;
+  const result = job.result && typeof job.result === "object" && !Array.isArray(job.result)
+    ? job.result as { confirmation?: string; relationshipStatus?: string; nextVerificationAt?: string; evidence?: { relationship?: string } }
+    : {};
+  const relationship = result.evidence?.relationship || result.relationshipStatus || "unknown";
+  return {
+    state: followNeedsManualReview(job) ? "Needs Review" : "Follow verification",
+    clickRecorded: true,
+    relationship,
+    attempt: Math.max(1, followVerificationAttempts(job.result)),
+    maxAttempts: 3,
+    nextCheck: typeof result.nextVerificationAt === "string" ? result.nextVerificationAt : null,
+  };
+}
+
 export async function confirmFollowAfterClick(input: {
   now: () => number;
   sleep: (ms: number) => Promise<void>;
@@ -144,7 +191,32 @@ export async function confirmFollowAfterClick(input: {
   refresh: () => Promise<void>;
   windowMs?: number;
   pollMs?: number;
+  delaysMs?: number[];
 }) {
+  if (input.delaysMs && input.delaysMs.length > 0) {
+    const started = input.now();
+    const windowMs = input.windowMs ?? FOLLOW_VERIFY_WINDOW_MS;
+    let relationship = "unknown";
+    let refreshed = false;
+    for (const mark of input.delaysMs) {
+      if (mark > windowMs) break;
+      const wait = started + mark - input.now();
+      if (wait > 0) await input.sleep(wait);
+      relationship = await input.readRelationship();
+      if (isConfirmedFollow(relationship)) {
+        return { confirmed: true as const, relationship, clicks: 1 as const };
+      }
+      if (!refreshed && mark >= 4_000) {
+        refreshed = true;
+        await input.refresh();
+        relationship = await input.readRelationship();
+        if (isConfirmedFollow(relationship)) {
+          return { confirmed: true as const, relationship, clicks: 1 as const };
+        }
+      }
+    }
+    return { confirmed: false as const, relationship, clicks: 1 as const };
+  }
   const windowMs = input.windowMs ?? FOLLOW_CONFIRM_WINDOW_MS;
   const pollMs = input.pollMs ?? FOLLOW_CONFIRM_POLL_MS;
   const started = input.now();

@@ -240,6 +240,7 @@ export async function claimNextJob(input: {
   now?: Date;
   prospectId?: string | null;
   recoverOnly?: boolean;
+  deferFollowVerification?: boolean;
 }) {
   const now = input.now ?? new Date();
   const workers = await input.admin
@@ -310,7 +311,7 @@ export async function claimNextJob(input: {
     };
   }
 
-  const paced = await paceBeforeClaim(input.admin, input.settings, now, input.prospectId);
+  const paced = await paceBeforeClaim(input.admin, input.settings, now, input.prospectId, input.deferFollowVerification);
   if (paced.action === "wait") {
     return { ok: true as const, job: null, reason: paced.reason, message: paced.message, nextAt: paced.nextAt };
   }
@@ -379,6 +380,7 @@ async function paceBeforeClaim(
   settings: AppSettings,
   now: Date,
   prospectId?: string | null,
+  deferFollowVerification?: boolean,
 ) {
   const loaded = await loadPaceJobs(admin, prospectId);
   if (!loaded.ok) return { action: "claim" as const, prospectId: prospectId ?? null };
@@ -390,6 +392,7 @@ async function paceBeforeClaim(
     dailyMaximum: settings.outreach.dailyMaximum,
     completedSendTimes: loaded.completedSendTimes,
     jobs: loaded.jobs,
+    deferFollowVerification,
   });
   if (decision.kind === "follow_verification" && decision.jobIds[0]) {
     return { action: "follow_verification" as const, jobId: decision.jobIds[0], prospectId: decision.prospectId };

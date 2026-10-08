@@ -242,7 +242,7 @@ export class CloudClient {
     }>(`/api/worker/prospects/${prospectId}/qualify`, {});
   }
 
-  async nextJob(workerId: string, prospectId?: string, options?: { recoverOnly?: boolean }) {
+  async nextJob(workerId: string, prospectId?: string, options?: { recoverOnly?: boolean; deferFollowVerification?: boolean }) {
     return this.request<{
       job: JobPayload | null;
       reason?: string | null;
@@ -253,6 +253,7 @@ export class CloudClient {
       worker_id: workerId,
       prospect_id: prospectId,
       recover_only: options?.recoverOnly,
+      defer_follow_verification: options?.deferFollowVerification,
     });
   }
 

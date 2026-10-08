@@ -234,7 +234,15 @@ export const READ_DOM_SOURCE = `() => {
     const text = directText(el);
     const aria = undouble(el.getAttribute("aria-label") || "");
     const titleAttr = undouble(el.getAttribute("title") || "");
-    const label = exactLabel(text) || exactLabel(aria) || exactLabel(titleAttr);
+    const names = namesOf(el);
+    let label = "";
+    for (const name of names) {
+      const exact = exactLabel(name);
+      if (exact) {
+        label = exact;
+        break;
+      }
+    }
     if (!label) continue;
     const nested = [...el.querySelectorAll("span, div, a, button")].some((child) => exactLabel(directText(child)) === label || exactLabel(child.getAttribute("aria-label") || "") === label);
     if (nested) continue;

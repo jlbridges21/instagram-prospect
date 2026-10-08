@@ -41,6 +41,7 @@ export const claimJobSchema = z.object({
   machine_name: z.string().trim().max(200).optional(),
   prospect_id: z.string().uuid().optional(),
   recover_only: z.boolean().optional(),
+  defer_follow_verification: z.boolean().optional(),
 });
 
 export const workerJobSchema = z.object({

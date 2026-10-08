@@ -42,9 +42,12 @@ import {
 } from "../../lib/outreach/dm";
 import {
   confirmFollowAfterClick,
+  FOLLOW_VERIFY_DELAYS_MS,
   FOLLOW_VERIFY_WINDOW_MS,
   followAttemptPlan,
   isPreexistingFollow,
+  relationshipEvidenceLabel,
+  relationshipSourceLabel,
   shouldCompleteFollowWithoutClick,
 } from "../../lib/outreach/follow-confirm";
 import { isExcludedRelationship, profileUrlFor, selectPrimaryRelationship, type FollowRelationship } from "./parse";
@@ -80,12 +83,12 @@ export async function readProfile(page: Page, username: string, options?: { debu
   return inspectCurrent(page, username, options);
 }
 
-async function inspectCurrent(page: Page, username: string, options?: { debug?: boolean; screenshot?: boolean }) {
+async function inspectCurrent(page: Page, username: string, options?: { debug?: boolean; screenshot?: boolean; quick?: boolean }) {
   await page.waitForSelector("header, main", { timeout: ACTION_TIMEOUT_MS }).catch(() => undefined);
   let dom = await readDom(page);
   let profile = profileFromDom(dom, username);
   const started = Date.now();
-  while (Date.now() - started < ACTION_TIMEOUT_MS && profile.relationship === "unknown") {
+  while (!options?.quick && Date.now() - started < ACTION_TIMEOUT_MS && profile.relationship === "unknown") {
     await new Promise((resolve) => setTimeout(resolve, 500));
     dom = await readDom(page);
     profile = profileFromDom(dom, username);
@@ -199,17 +202,17 @@ export async function followProfile(
   };
   if (!current.profileExists) return { followed: false, relationshipStatus: "unknown" as const, profileExists: false };
   const plan = followAttemptPlan(context);
+  const readAfterClick = async () => {
+    const seen = await inspectCurrent(page, username, { quick: true });
+    return {
+      relationship: seen.relationship,
+      source: seen.profileExists ? seen.profile.strategies.relationship : "none",
+    };
+  };
   if (plan.action === "verify" || (plan.action === "complete" && context.followClickAttempted)) {
-    const confirmation = await confirmFollowAfterClick({
-      now: () => Date.now(),
-      sleep: (ms) => page.waitForTimeout(ms),
-      readRelationship: async () => (await inspectCurrent(page, username)).relationship,
-      refresh: async () => {
-        await page.reload({ waitUntil: "domcontentloaded" });
-      },
-      windowMs: FOLLOW_VERIFY_WINDOW_MS,
-    });
+    const confirmation = await confirmRelationship(page, readAfterClick);
     if (confirmation.confirmed) {
+      logFollowConfirmed(username, confirmation.relationship, confirmation.source);
       return {
         followed: true,
         relationshipStatus: confirmation.relationship,
@@ -244,19 +247,15 @@ export async function followProfile(
   if (current.relationship !== "not_following") {
     throw new SelectorError(`Could not determine follow relationship for @${username}.`);
   }
-  const button = page.getByRole("button", { name: /^Follow$/ });
+  console.log(`Opening @${username}`);
+  console.log(`Relationship before action: ${current.relationship}`);
+  const button = page.getByRole("button", { name: /^Follow( Back)?$/ });
   prior?.onBeforeClick?.();
   await button.click({ timeout: ACTION_TIMEOUT_MS });
-  const confirmation = await confirmFollowAfterClick({
-    now: () => Date.now(),
-    sleep: (ms) => page.waitForTimeout(ms),
-    readRelationship: async () => (await inspectCurrent(page, username)).relationship,
-    refresh: async () => {
-      await page.reload({ waitUntil: "domcontentloaded" });
-    },
-    windowMs: FOLLOW_VERIFY_WINDOW_MS,
-  });
+  console.log("Follow clicked.");
+  const confirmation = await confirmRelationship(page, readAfterClick);
   if (confirmation.confirmed) {
+    logFollowConfirmed(username, confirmation.relationship, confirmation.source);
     return { followed: true, relationshipStatus: confirmation.relationship, profileExists: true };
   }
   return {
@@ -266,6 +265,79 @@ export async function followProfile(
     relationshipStatus: confirmation.relationship,
     profileExists: true,
   };
+}
+
+async function confirmRelationship(
+  page: Page,
+  readAfterClick: () => Promise<{ relationship: string; source: string }>,
+) {
+  let source = "none";
+  const confirmation = await confirmFollowAfterClick({
+    now: () => Date.now(),
+    sleep: (ms) => page.waitForTimeout(ms),
+    readRelationship: async () => {
+      const seen = await readAfterClick();
+      source = seen.source;
+      return seen.relationship;
+    },
+    refresh: async () => {
+      await page.reload({ waitUntil: "domcontentloaded" });
+    },
+    windowMs: FOLLOW_VERIFY_WINDOW_MS,
+    delaysMs: FOLLOW_VERIFY_DELAYS_MS,
+  });
+  return { ...confirmation, source };
+}
+
+function logFollowConfirmed(username: string, relationship: string, source: string) {
+  console.log("Follow verification:");
+  console.log(relationshipEvidenceLabel(relationship));
+  console.log(`Source: ${relationshipSourceLabel(source)}`);
+  console.log(`Follow confirmed for @${username}.`);
+}
+
+function recipientSourceLabel(strategy: string | null | undefined) {
+  if (!strategy) return "unconfirmed";
+  return strategy.replaceAll("_", " ");
+}
+
+export async function inspectFollow(page: Page, username: string) {
+  const current = await readProfile(page, username);
+  const dom = await readDom(page);
+  const choice = selectPrimaryRelationship(dom.exactRelationshipHits ?? [], dom.usernameBox, dom.optionsBox);
+  const header = (dom.headerButtons ?? []).map((button) => button.name).filter(Boolean);
+  const interactive = (dom.buttons ?? [])
+    .filter((button) => /^(follow|follow back|following|requested|message)$/i.test(button.name))
+    .map((button) => `button text="${button.text || button.name}"${button.label ? ` aria-label="${button.label}"` : ""}`);
+  const anchors = (dom.links ?? [])
+    .filter((link) => /follow|requested|message/i.test(`${link.text} ${link.label} ${link.href}`))
+    .slice(0, 20)
+    .map((link) => `${link.href || "(no href)"} text="${link.text}"${link.label ? ` aria-label="${link.label}"` : ""}`);
+  const aria = [...(dom.headerButtons ?? []), ...(dom.buttons ?? [])]
+    .map((button) => button.label)
+    .filter((label) => label && /follow|requested|message/i.test(label));
+  console.log(`@${username}`);
+  console.log("Visible header buttons:");
+  console.log(header.length > 0 ? header.join("\n") : "(none)");
+  console.log("Interactive elements:");
+  console.log(interactive.length > 0 ? interactive.join("\n") : "(none)");
+  console.log("Anchors:");
+  console.log(anchors.length > 0 ? anchors.join("\n") : "(none)");
+  console.log("ARIA labels:");
+  console.log(aria.length > 0 ? [...new Set(aria)].join("\n") : "(none)");
+  console.log("Relationship detector:");
+  console.log(current.relationship);
+  const accepted = choice.decisions.find((decision) => decision.accepted);
+  console.log("Evidence:");
+  if (accepted) console.log(`exact button text "${accepted.label}" (${accepted.reason})`);
+  else if (current.profileExists && current.profile.strategies.relationship === "exact header relationship button") {
+    const named = header.find((name) => /^(follow|follow back|following|requested)$/i.test(name));
+    console.log(named ? `exact header button "${named}"` : current.profile.strategies.relationship);
+  } else if (choice.decisions.length > 0) {
+    choice.decisions.slice(0, 8).forEach((decision) => console.log(`"${decision.label}" rejected: ${decision.reason}`));
+  } else console.log("no exact header relationship control");
+  console.log("Read only. Follow was not clicked. No DM was sent.");
+  return { relationship: current.relationship, clicked: false as const };
 }
 
 export async function getPrimaryMessageAction(page: Page, username: string) {
@@ -335,6 +407,7 @@ export async function sendExactMessage(
   message: string,
   prior?: { followCreatedBySequence?: boolean; sendAttempted?: boolean },
 ) {
+  console.log("Opening Direct...");
   const current = await readProfile(page, username);
   if (!current.profileExists) return { sent: false, profileExists: false };
   if (current.profile.username && current.profile.username !== username.toLowerCase()) {
@@ -371,6 +444,12 @@ export async function sendExactMessage(
   ) {
     throw new AttentionError(opened.signal, attentionMessage(opened.signal));
   }
+  if (opened.recipient.confirmed) {
+    console.log("Recipient:");
+    console.log(`@${username}`);
+    console.log(`Confirmed via: ${recipientSourceLabel(opened.recipient.strategy)}`);
+  }
+  console.log(`Existing conversation: ${opened.existingConversation ? "Yes" : "No"}`);
   if (opened.exactOutbound) return { sent: true, alreadyPresent: true, profileExists: true };
   const decision = sendRecoveryDecision({
     sendAttempted: prior?.sendAttempted === true,
@@ -418,6 +497,8 @@ export async function sendExactMessage(
     return { sent: false, sendAttempted: false, existingDraftMismatch: true, profileExists: true };
   }
   const verification = verifyComposerMessage(inserted.composerText, message);
+  console.log(`Composer: ${inserted.composerSelected ? "Verified" : "Not verified"}`);
+  console.log(verification.semanticMatch ? "Queued message:\nExact match" : "Queued message:\nNot an exact match");
   const gate = {
     recipientConfirmed: opened.recipient.confirmed,
     followOwnedBySequence: owned,
@@ -459,7 +540,10 @@ export async function sendExactMessage(
   const send = page.getByRole("button", { name: /^Send$/ });
   await send.click({ timeout: ACTION_TIMEOUT_MS });
   const confirmed = await confirmSend(page, message);
-  if (confirmed === "confirmed") return { sent: true, profileExists: true };
+  if (confirmed === "confirmed") {
+    console.log("Message sent.");
+    return { sent: true, profileExists: true };
+  }
   return { sent: false, sendAttempted: true, confirmation: "uncertain" as const, profileExists: true };
 }
 

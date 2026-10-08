@@ -9,7 +9,7 @@ import type { Json, OutreachJobRow } from "@/lib/db/types";
 import { livePollDelay } from "@/lib/discovery/policy";
 import { compareQueueJobs, mergeTabJobs, statusesForTab } from "@/lib/outreach/queue-sort";
 import { queueSendStatusLabel } from "@/lib/outreach/dm";
-import { followNeedsManualReview, queueFollowStatusLabel } from "@/lib/outreach/follow-confirm";
+import { followNeedsManualReview, followVerificationFacts, queueFollowStatusLabel } from "@/lib/outreach/follow-confirm";
 import {
   JOB_STATUS_LABELS,
   JOB_TYPE_LABELS,
@@ -348,6 +348,9 @@ export function QueueBoard({
               <Detail label="Completed" value={formatDateTime(selected.job.completed_at, timeZone, dateFormat)} />
               <Detail label="Attempts" value={`${selected.job.attempt_count} of ${selected.job.max_attempts}`} />
               <Detail label="Error" value={jobErrorText(selected.job)} />
+              {followVerificationFacts(selected.job) ? (
+                <Detail label="Follow" value={followVerificationText(selected.job, timeZone, dateFormat)} />
+              ) : null}
               <Detail label="Result" value={resultText(selected.job.result)} />
             </dl>
             {selected.job.status === "pending" || selected.job.status === "retry_wait" ? (
@@ -457,7 +460,7 @@ function Detail({ label, value }: { label: string; value: string }) {
   return (
     <div className="grid grid-cols-[8rem_1fr] gap-3">
       <dt className="text-slate-500">{label}</dt>
-      <dd className="text-slate-900">{value}</dd>
+      <dd className="whitespace-pre-line text-slate-900">{value}</dd>
     </div>
   );
 }
@@ -496,6 +499,19 @@ function matchesTab(status: OutreachJobStatus, tab: TabId) {
   if (tab === "failed") return status === "failed";
   if (tab === "cancelled") return status === "cancelled";
   return status === "completed";
+}
+
+function followVerificationText(job: OutreachJobRow, timeZone: string, dateFormat: DateFormat) {
+  const facts = followVerificationFacts(job);
+  if (!facts) return "—";
+  const next = facts.nextCheck ? formatDateTime(facts.nextCheck, timeZone, dateFormat) : "—";
+  return [
+    `State: ${facts.state}`,
+    `Follow click recorded: ${facts.clickRecorded ? "yes" : "no"}`,
+    `Relationship now: ${facts.relationship}`,
+    `Verification attempt: ${facts.attempt}/${facts.maxAttempts}`,
+    `Next check: ${next}`,
+  ].filter((line) => line.length > 0).join("\n");
 }
 
 function jobErrorText(job: OutreachJobRow) {

@@ -86,24 +86,27 @@ export function extractInstagramProfile(dom: DomSnapshot, expectedUsername: stri
   const fromHits = dom.exactRelationshipHits
     ? selectPrimaryRelationship(dom.exactRelationshipHits, dom.usernameBox, dom.optionsBox)
     : null;
-  const fromRegion = !fromHits && dom.relationshipCandidates
+  const namedButtons = (dom.headerButtons?.length ? dom.headerButtons : dom.buttons) ?? [];
+  const buttonRelationship = relationshipFromLabels(namedButtons.flatMap(buttonNames));
+  const fromRegion = (!fromHits || fromHits.relationship === "unknown") && buttonRelationship === "unknown" && dom.relationshipCandidates
     ? relationshipFromCandidates(dom.relationshipCandidates)
     : null;
-  const relationshipButtons = (dom.headerButtons?.length ? dom.headerButtons : dom.buttons).flatMap(buttonNames);
-  const relationship = fromHits
+  const relationship = fromHits && fromHits.relationship !== "unknown"
     ? fromHits.relationship
-    : fromRegion
-      ? fromRegion.relationship
-      : relationshipFromLabels(relationshipButtons);
-  strategies.relationship = fromHits
+    : buttonRelationship !== "unknown"
+      ? buttonRelationship
+      : fromRegion
+        ? fromRegion.relationship
+        : "unknown";
+  strategies.relationship = fromHits && fromHits.relationship !== "unknown"
     ? fromHits.strategy
-    : fromRegion
-      ? fromRegion.strategy
-      : dom.headerButtons?.length
-        ? "header-button"
-        : relationship === "unknown"
-          ? "none"
-          : "page-button";
+    : buttonRelationship !== "unknown"
+      ? dom.headerButtons?.length
+        ? "exact header relationship button"
+        : "page-button"
+      : fromRegion
+        ? fromRegion.strategy
+        : "none";
   const displayName = chooseDisplayName(dom, username, strategies);
   const bio = chooseBio(dom, username, displayName, strategies);
   const picture = dom.profileImageUrl

@@ -223,6 +223,7 @@ export function claimPaceDecision(input: {
   dailyMaximum: number;
   completedSendTimes: Date[];
   jobs: PaceJob[];
+  deferFollowVerification?: boolean;
 }): ClaimPaceDecision {
   const grouped = new Map<string, PaceJob[]>();
   for (const job of input.jobs) grouped.set(job.prospectId, [...(grouped.get(job.prospectId) ?? []), job]);
@@ -258,34 +259,40 @@ export function claimPaceDecision(input: {
 
   const dueRetries = prospects
     .map(([prospectId, jobs]) => ({ prospectId, jobs, next: nextOpenJob(jobs) }))
-    .filter((item) => item.next?.status === "retry_wait" && availableAt(item.next, input.now).getTime() <= input.now.getTime())
+    .filter((item) => item.next?.status === "retry_wait" && !isFollowVerificationJob(item.next) && availableAt(item.next, input.now).getTime() <= input.now.getTime())
     .sort((left, right) => availableAt(left.next, input.now).getTime() - availableAt(right.next, input.now).getTime());
   const due = dueRetries[0];
   if (due?.next) return claim(due.prospectId, due.next, input.now);
 
   const futureRetry = prospects
     .map(([, jobs]) => nextOpenJob(jobs))
-    .filter((job): job is PaceJob => job?.status === "retry_wait")
+    .filter((job): job is PaceJob => job?.status === "retry_wait" && !isFollowVerificationJob(job))
     .map((job) => availableAt(job, input.now))
     .sort((left, right) => left.getTime() - right.getTime())[0];
   if (futureRetry && futureRetry.getTime() > input.now.getTime()) {
     return { action: "wait", prospectId: null, username: null, at: futureRetry, reason: "scheduled_retry", jobIds: [] };
   }
   const dueFollow = input.jobs
-    .filter((job) => isFollowVerificationJob(job) && (job.status === "pending" || job.status === "retry_wait"))
-    .filter((job) => availableAt(job, input.now).getTime() <= input.now.getTime())
-    .sort((left, right) => availableAt(left, input.now).getTime() - availableAt(right, input.now).getTime());
+    .filter((job) => followVerificationReady(job, input.now))
+    .sort((left, right) => followDueAt(left, input.now).getTime() - followDueAt(right, input.now).getTime());
   const readyFollow = dueFollow[0];
-  if (readyFollow) return claim(readyFollow.prospectId, readyFollow, input.now, "follow_verification");
-
-  const failedFollow = input.jobs.find((job) =>
-    isFollowVerificationJob(job) && job.status === "failed" && !followStartupVerified(job.result),
-  );
-  if (failedFollow) return claim(failedFollow.prospectId, failedFollow, input.now, "follow_verification");
+  if (readyFollow) {
+    if (input.deferFollowVerification) {
+      return {
+        action: "wait",
+        prospectId: readyFollow.prospectId,
+        username: readyFollow.username ?? null,
+        at: new Date(input.now.getTime() + 30_000),
+        reason: "scheduled_retry",
+        jobIds: [readyFollow.id],
+      };
+    }
+    return claim(readyFollow.prospectId, readyFollow, input.now, "follow_verification");
+  }
 
   const laterFollow = input.jobs
-    .filter((job) => isFollowVerificationJob(job) && (job.status === "pending" || job.status === "retry_wait"))
-    .map((job) => availableAt(job, input.now))
+    .filter((job) => isFollowVerificationJob(job) && !followStartupVerified(job.result))
+    .map((job) => followDueAt(job, input.now))
     .filter((at) => at.getTime() > input.now.getTime())
     .sort((left, right) => left.getTime() - right.getTime())[0];
   if (laterFollow && fresh.length === 0 && dueRetries.length === 0) {
@@ -306,6 +313,22 @@ function nextOpenJob(jobs: PaceJob[]) {
 function availableAt(job: PaceJob | null, now: Date) {
   if (!job) return now;
   return new Date(job.availableAt ?? job.scheduledFor);
+}
+
+function followDueAt(job: PaceJob, now: Date) {
+  const available = availableAt(job, now).getTime();
+  const record = job.result && typeof job.result === "object" && !Array.isArray(job.result)
+    ? job.result as { nextVerificationAt?: unknown }
+    : null;
+  const scheduled = typeof record?.nextVerificationAt === "string" ? new Date(record.nextVerificationAt).getTime() : available;
+  const stamp = Number.isFinite(scheduled) ? Math.max(available, scheduled) : available;
+  return new Date(stamp);
+}
+
+function followVerificationReady(job: PaceJob, now: Date) {
+  if (!isFollowVerificationJob(job) || followStartupVerified(job.result)) return false;
+  if (job.status !== "pending" && job.status !== "retry_wait" && job.status !== "failed") return false;
+  return followDueAt(job, now).getTime() <= now.getTime();
 }
 
 function claim(

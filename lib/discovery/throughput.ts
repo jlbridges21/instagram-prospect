@@ -7,6 +7,45 @@ export function missedInspectionOpportunities(now: number, nextInspectionAt: num
   return Math.floor((now - nextInspectionAt) / intervalMs);
 }
 
+export const DISCOVERY_ROLLING_WINDOW_MS = 60 * 60 * 1000;
+export const DISCOVERY_STARTUP_GRACE_MS = 3 * 60 * 1000;
+
+export function rollingMissedOpportunities(input: {
+  now: number;
+  nextInspectionAt: number;
+  intervalMs: number;
+  sessionStartedAt: number;
+  windowMs?: number;
+}) {
+  const windowMs = input.windowMs ?? DISCOVERY_ROLLING_WINDOW_MS;
+  const windowStart = Math.max(input.sessionStartedAt, input.now - windowMs);
+  const overdueFrom = Math.max(input.nextInspectionAt, windowStart);
+  if (input.intervalMs <= 0 || input.now <= overdueFrom) return 0;
+  return Math.floor((input.now - overdueFrom) / input.intervalMs);
+}
+
+export function discoveryGraceElapsed(now: number, sessionStartedAt: number, graceMs = DISCOVERY_STARTUP_GRACE_MS) {
+  return now - sessionStartedAt >= graceMs;
+}
+
+export function currentDiscoveryDegraded(input: {
+  now: number;
+  sessionStartedAt: number;
+  nextInspectionAt: number;
+  intervalMs: number;
+  inspectionsSinceProgress: number;
+  running: boolean;
+}) {
+  if (!discoveryGraceElapsed(input.now, input.sessionStartedAt)) return false;
+  const missed = rollingMissedOpportunities(input);
+  return throughputDegraded({
+    running: input.running,
+    inspectionsSinceProgress: input.inspectionsSinceProgress,
+    overdueMs: missed * input.intervalMs,
+    intervalMs: input.intervalMs,
+  });
+}
+
 export function throughputDegraded(input: {
   running: boolean;
   inspectionsSinceProgress: number;
@@ -45,6 +84,7 @@ export function formatThroughputReport(input: {
   inspectingMs: number;
   degraded: boolean;
   degradedReason?: DiscoveryMissReason;
+  lifetimeMissed?: number;
   discoveryMisses?: Record<DiscoveryMissReason, number>;
   outreachBlocked?: {
     minimumSpacing: number;
@@ -59,6 +99,7 @@ export function formatThroughputReport(input: {
     `Actual: ${input.actualLast60Minutes}/hr`,
     `Opportunities: ${input.opportunities}`,
     `Missed: ${input.missed}`,
+    ...(typeof input.lifetimeMissed === "number" ? [`Lifetime missed slots: ${input.lifetimeMissed}`] : []),
     `Candidate-starved: ${formatElapsed(input.waitingMs)}`,
     `Sourcing: ${formatElapsed(input.sourcingMs)}`,
     `Inspecting: ${formatElapsed(input.inspectingMs)}`,

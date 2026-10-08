@@ -35,6 +35,7 @@ export async function POST(request: Request) {
     settings,
     prospectId: parsed.data.prospect_id,
     recoverOnly: parsed.data.recover_only,
+    deferFollowVerification: parsed.data.defer_follow_verification,
   });
   if (!claimed.ok) return workerError(500, claimed.error);
   if (!claimed.job) {
