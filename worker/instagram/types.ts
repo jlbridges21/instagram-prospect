@@ -77,6 +77,7 @@ export type DomSnapshot = {
   bioText: string | null;
   headerLines?: string[];
   headerButtons?: DomButton[];
+  profileButtons?: DomButton[];
   relationshipCandidates?: RelationshipCandidate[];
   exactRelationshipHits?: ExactRelationshipHit[];
   messageActionHits?: MessageActionHit[];

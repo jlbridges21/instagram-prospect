@@ -115,9 +115,22 @@ export function seedTurnOutcome(input: { newAfterDedupe: number; queuedAboveFloo
   return "productive" as const;
 }
 
-export function seedVisitAction(input: { newCandidates: number; rankedAdded: number; fallbackAdded: number }) {
-  if (input.rankedAdded > 0 || input.fallbackAdded > 0) return "reset" as const;
+export function seedVisitAction(input: { newCandidates?: number; rankedAdded: number; fallbackAdded: number; usefulMerges?: number }) {
+  if (input.rankedAdded > 0 || input.fallbackAdded > 0 || (input.usefulMerges ?? 0) > 0) return "reset" as const;
   return "cooldown" as const;
+}
+
+export function seedEvidenceUsefulness(input: {
+  beforeScore: number;
+  afterScore: number;
+  floor: number;
+  ceiling: number;
+  gainedSeed: boolean;
+}) {
+  if (input.gainedSeed) return true;
+  if (input.beforeScore < input.floor && input.afterScore >= input.floor) return true;
+  if (input.beforeScore <= input.ceiling && input.afterScore > input.ceiling) return true;
+  return input.afterScore >= input.beforeScore + 8;
 }
 
 export function applyEmptySeedCooldowns<T extends { username: string; cooldownUntil?: string | null }>(

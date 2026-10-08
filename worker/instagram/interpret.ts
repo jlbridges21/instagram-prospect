@@ -86,7 +86,7 @@ export function extractInstagramProfile(dom: DomSnapshot, expectedUsername: stri
   const fromHits = dom.exactRelationshipHits
     ? selectPrimaryRelationship(dom.exactRelationshipHits, dom.usernameBox, dom.optionsBox)
     : null;
-  const namedButtons = (dom.headerButtons?.length ? dom.headerButtons : dom.buttons) ?? [];
+  const namedButtons = (dom.profileButtons?.length ? dom.profileButtons : dom.headerButtons?.length ? dom.headerButtons : dom.buttons) ?? [];
   const buttonRelationship = relationshipFromLabels(namedButtons.flatMap(buttonNames));
   const fromRegion = (!fromHits || fromHits.relationship === "unknown") && buttonRelationship === "unknown" && dom.relationshipCandidates
     ? relationshipFromCandidates(dom.relationshipCandidates)
@@ -101,7 +101,7 @@ export function extractInstagramProfile(dom: DomSnapshot, expectedUsername: stri
   strategies.relationship = fromHits && fromHits.relationship !== "unknown"
     ? fromHits.strategy
     : buttonRelationship !== "unknown"
-      ? dom.headerButtons?.length
+      ? dom.profileButtons?.length || dom.headerButtons?.length
         ? "exact header relationship button"
         : "page-button"
       : fromRegion

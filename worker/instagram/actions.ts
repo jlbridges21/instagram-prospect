@@ -50,7 +50,7 @@ import {
   relationshipSourceLabel,
   shouldCompleteFollowWithoutClick,
 } from "../../lib/outreach/follow-confirm";
-import { isExcludedRelationship, profileUrlFor, selectPrimaryRelationship, type FollowRelationship } from "./parse";
+import { controlRelationship, isExcludedRelationship, normalizeControlText, profileUrlFor, selectPrimaryRelationship, type FollowRelationship } from "./parse";
 import { openUrl, readDom } from "./read-dom";
 import type { DomSnapshot } from "./types";
 
@@ -139,7 +139,7 @@ async function inspectCurrent(page: Page, username: string, options?: { debug?: 
       console.log(`Screenshot: ${file}`);
     }
   }
-  return { profileExists: true as const, relationship: profile.relationship, profile };
+  return { profileExists: true as const, relationship: profile.relationship, profile, dom };
 }
 
 function saveDebugSnapshot(username: string, dom: DomSnapshot) {
@@ -202,15 +202,18 @@ export async function followProfile(
   };
   if (!current.profileExists) return { followed: false, relationshipStatus: "unknown" as const, profileExists: false };
   const plan = followAttemptPlan(context);
+  let observation = "";
   const readAfterClick = async () => {
     const seen = await inspectCurrent(page, username, { quick: true });
+    if (seen.profileExists) observation = formatRelationshipRead(username, seen.dom);
     return {
       relationship: seen.relationship,
       source: seen.profileExists ? seen.profile.strategies.relationship : "none",
     };
   };
   if (plan.action === "verify" || (plan.action === "complete" && context.followClickAttempted)) {
-    const confirmation = await confirmRelationship(page, readAfterClick);
+    const confirmation = await confirmRelationship(page, username, readAfterClick);
+    if (observation) console.log(observation);
     if (confirmation.confirmed) {
       logFollowConfirmed(username, confirmation.relationship, confirmation.source);
       return {
@@ -249,11 +252,13 @@ export async function followProfile(
   }
   console.log(`Opening @${username}`);
   console.log(`Relationship before action: ${current.relationship}`);
-  const button = page.getByRole("button", { name: /^Follow( Back)?$/ });
+  const target = acceptedRelationshipBox(current.dom, username, "not_following");
+  if (!target) throw new SelectorError(`Could not find the profile Follow control for @${username}.`);
   prior?.onBeforeClick?.();
-  await button.click({ timeout: ACTION_TIMEOUT_MS });
+  await page.mouse.click(target.x + target.width / 2, target.y + target.height / 2);
   console.log("Follow clicked.");
-  const confirmation = await confirmRelationship(page, readAfterClick);
+  const confirmation = await confirmRelationship(page, username, readAfterClick);
+  if (observation) console.log(observation);
   if (confirmation.confirmed) {
     logFollowConfirmed(username, confirmation.relationship, confirmation.source);
     return { followed: true, relationshipStatus: confirmation.relationship, profileExists: true };
@@ -269,6 +274,7 @@ export async function followProfile(
 
 async function confirmRelationship(
   page: Page,
+  username: string,
   readAfterClick: () => Promise<{ relationship: string; source: string }>,
 ) {
   let source = "none";
@@ -282,11 +288,53 @@ async function confirmRelationship(
     },
     refresh: async () => {
       await page.reload({ waitUntil: "domcontentloaded" });
+      await page.waitForSelector("main", { timeout: ACTION_TIMEOUT_MS }).catch(() => undefined);
+      await page.waitForFunction(
+        `name => {
+          const main = document.querySelector("main");
+          return Boolean(main && (main.innerText || "").toLowerCase().includes(String(name || "").toLowerCase()));
+        }`,
+        username,
+        { timeout: ACTION_TIMEOUT_MS },
+      ).catch(() => undefined);
     },
     windowMs: FOLLOW_VERIFY_WINDOW_MS,
     delaysMs: FOLLOW_VERIFY_DELAYS_MS,
   });
   return { ...confirmation, source };
+}
+
+function acceptedRelationshipBox(dom: DomSnapshot | undefined, username: string, relationship: FollowRelationship) {
+  if (!dom) return null;
+  const choice = selectPrimaryRelationship(dom.exactRelationshipHits ?? [], dom.usernameBox, dom.optionsBox);
+  const winner = choice.decisions.find((decision) => decision.accepted && controlRelationship(decision.label) === relationship);
+  if (!winner) return null;
+  const ancestor = winner.ancestorBox;
+  const own = winner.box;
+  if (ancestor && own && ancestor.width * ancestor.height > own.width * own.height * 4) return own;
+  return ancestor || own;
+}
+
+function formatRelationshipRead(username: string, dom: DomSnapshot) {
+  const choice = selectPrimaryRelationship(dom.exactRelationshipHits ?? [], dom.usernameBox, dom.optionsBox);
+  const profile = profileFromDom(dom, username);
+  const controls = [...(dom.profileButtons ?? []), ...(dom.headerButtons ?? [])]
+    .map((button) => normalizeControlText(button.name))
+    .filter((name) => /^(follow|follow back|following|requested|message)$/i.test(name));
+  const unique = [...new Set(controls)];
+  const lines = [`Expected: @${username}`, "Observed controls:"];
+  if (unique.length === 0) lines.push("- none");
+  else unique.forEach((name) => lines.push(`- ${name}`));
+  lines.push("Accepted relationship:");
+  lines.push(profile.relationship);
+  if (profile.relationship === "unknown") {
+    lines.push("No accepted relationship control.");
+    lines.push("Rejected candidates:");
+    const rejected = choice.decisions.filter((decision) => !decision.accepted).slice(0, 8);
+    if (rejected.length === 0) lines.push("- no exact relationship candidate");
+    else rejected.forEach((decision) => lines.push(`- ${decision.label}: ${decision.reason}`));
+  }
+  return lines.join("\n");
 }
 
 function logFollowConfirmed(username: string, relationship: string, source: string) {
@@ -302,42 +350,74 @@ function recipientSourceLabel(strategy: string | null | undefined) {
 }
 
 export async function inspectFollow(page: Page, username: string) {
-  const current = await readProfile(page, username);
+  await readProfile(page, username);
   const dom = await readDom(page);
   const choice = selectPrimaryRelationship(dom.exactRelationshipHits ?? [], dom.usernameBox, dom.optionsBox);
+  const profile = profileFromDom(dom, username);
   const header = (dom.headerButtons ?? []).map((button) => button.name).filter(Boolean);
+  const profileButtons = (dom.profileButtons ?? []).map((button) => button.name).filter(Boolean);
   const interactive = (dom.buttons ?? [])
-    .filter((button) => /^(follow|follow back|following|requested|message)$/i.test(button.name))
+    .filter((button) => /follow|requested|message/i.test(`${button.name} ${button.text ?? ""} ${button.label ?? ""}`))
     .map((button) => `button text="${button.text || button.name}"${button.label ? ` aria-label="${button.label}"` : ""}`);
   const anchors = (dom.links ?? [])
     .filter((link) => /follow|requested|message/i.test(`${link.text} ${link.label} ${link.href}`))
     .slice(0, 20)
     .map((link) => `${link.href || "(no href)"} text="${link.text}"${link.label ? ` aria-label="${link.label}"` : ""}`);
-  const aria = [...(dom.headerButtons ?? []), ...(dom.buttons ?? [])]
-    .map((button) => button.label)
-    .filter((label) => label && /follow|requested|message/i.test(label));
   console.log(`@${username}`);
-  console.log("Visible header buttons:");
+  console.log("Chrome header buttons:");
   console.log(header.length > 0 ? header.join("\n") : "(none)");
+  console.log("Profile header buttons:");
+  console.log(profileButtons.length > 0 ? profileButtons.join("\n") : "(none)");
+  console.log("Username box:");
+  console.log(dom.usernameBox ? `${dom.usernameBox.x}/${dom.usernameBox.y}/${dom.usernameBox.width}/${dom.usernameBox.height}` : "none");
+  console.log("Options box:");
+  console.log(dom.optionsBox ? `${dom.optionsBox.x}/${dom.optionsBox.y}/${dom.optionsBox.width}/${dom.optionsBox.height}` : "none");
   console.log("Interactive elements:");
   console.log(interactive.length > 0 ? interactive.join("\n") : "(none)");
   console.log("Anchors:");
   console.log(anchors.length > 0 ? anchors.join("\n") : "(none)");
-  console.log("ARIA labels:");
-  console.log(aria.length > 0 ? [...new Set(aria)].join("\n") : "(none)");
-  console.log("Relationship detector:");
-  console.log(current.relationship);
-  const accepted = choice.decisions.find((decision) => decision.accepted);
-  console.log("Evidence:");
-  if (accepted) console.log(`exact button text "${accepted.label}" (${accepted.reason})`);
-  else if (current.profileExists && current.profile.strategies.relationship === "exact header relationship button") {
-    const named = header.find((name) => /^(follow|follow back|following|requested)$/i.test(name));
-    console.log(named ? `exact header button "${named}"` : current.profile.strategies.relationship);
-  } else if (choice.decisions.length > 0) {
-    choice.decisions.slice(0, 8).forEach((decision) => console.log(`"${decision.label}" rejected: ${decision.reason}`));
-  } else console.log("no exact header relationship control");
+  console.log("Relationship candidates:");
+  if ((dom.exactRelationshipHits ?? []).length === 0) console.log("(none)");
+  for (const hit of dom.exactRelationshipHits ?? []) {
+    const box = hit.box ? `${hit.box.x}/${hit.box.y}/${hit.box.width}/${hit.box.height}` : "none";
+    console.log(`- ${hit.tag} role=${hit.role || "none"} label="${hit.label}" text="${hit.text}" aria-label="${hit.ariaLabel}" href="${hit.href}" box=${box} ancestor="${hit.ancestor?.text || ""}"`);
+  }
+  console.log("Detector decision:");
+  console.log(profile.relationship);
+  console.log("Rejection reasons:");
+  if (choice.decisions.length === 0) console.log("- no exact relationship candidate");
+  for (const decision of choice.decisions) {
+    const box = decision.box ? `${decision.box.x}/${decision.box.y}/${decision.box.width}/${decision.box.height}` : "none";
+    console.log(`- "${decision.label}" accepted=${decision.accepted ? "yes" : "no"} reason=${decision.reason} box=${box} distance=${decision.distance ?? "unknown"}`);
+  }
+  const snapshot = {
+    username,
+    url: dom.url.split("?")[0],
+    relationship: profile.relationship,
+    strategy: profile.strategies.relationship,
+    usernameBox: dom.usernameBox ?? null,
+    optionsBox: dom.optionsBox ?? null,
+    chromeHeaderButtons: header,
+    profileButtons,
+    hits: (dom.exactRelationshipHits ?? []).map((hit) => ({
+      label: hit.label,
+      tag: hit.tag,
+      role: hit.role,
+      text: hit.text,
+      ariaLabel: hit.ariaLabel,
+      href: hit.href,
+      box: hit.box,
+      ancestorText: hit.ancestor?.text ?? "",
+      ancestorHref: hit.ancestor?.href ?? "",
+    })),
+    decisions: choice.decisions,
+  };
+  fs.mkdirSync(debugDir(), { recursive: true });
+  const file = path.join(debugDir(), `follow-inspect-${username}.json`);
+  fs.writeFileSync(file, JSON.stringify(snapshot, null, 2));
+  console.log(`Sanitized snapshot: ${file}`);
   console.log("Read only. Follow was not clicked. No DM was sent.");
-  return { relationship: current.relationship, clicked: false as const };
+  return { relationship: profile.relationship, clicked: false as const };
 }
 
 export async function getPrimaryMessageAction(page: Page, username: string) {

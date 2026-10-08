@@ -9,6 +9,8 @@ import {
 } from "../lib/outreach/follow-confirm";
 import { claimPaceDecision, type PaceJob } from "../lib/outreach/pace";
 import { profileFromDom } from "../worker/instagram/interpret";
+import { evidenceIsNew, mergeCandidateEvidence, type DiscoveryCandidate } from "../worker/discovery/queue";
+import { seedEvidenceUsefulness, seedVisitAction } from "../worker/instagram/seed-page";
 import { controlRelationship, relationshipFromLabels, selectPrimaryRelationship } from "../worker/instagram/parse";
 import type { DomSnapshot, ExactRelationshipHit } from "../worker/instagram/types";
 
@@ -217,6 +219,77 @@ assert.equal(currentDiscoveryDegraded({
   inspectionsSinceProgress: 0,
   running: true,
 }), false);
+
+const chromeHeader = profileFromDom(snapshot({
+  url: "https://www.instagram.com/doneganphotography/",
+  headerButtons: [{ name: "Home" }, { name: "Search" }],
+  profileButtons: [{ name: "Following", text: "Following" }, { name: "Message", text: "Message" }],
+  exactRelationshipHits: [],
+  usernameBox: null,
+}), "doneganphotography");
+assert.equal(chromeHeader.relationship, "following");
+assert.equal(chromeHeader.strategies.relationship, "exact header relationship button");
+
+const requestedHeader = profileFromDom(snapshot({
+  url: "https://www.instagram.com/pm_postproduction/",
+  headerButtons: [{ name: "Home" }],
+  profileButtons: [{ name: "Requested", text: "Requested" }, { name: "Message", text: "Message" }],
+  exactRelationshipHits: [],
+}), "pm_postproduction");
+assert.equal(requestedHeader.relationship, "requested");
+assert.equal(controlRelationship("Following ▾"), "following");
+assert.equal(controlRelationship("3,200 following"), null);
+assert.equal(controlRelationship("Followed by alice"), null);
+
+let phase = "not_following";
+let reads = 0;
+const reloaded = await confirmFollowAfterClick({
+  now: () => 0,
+  sleep: async () => undefined,
+  readRelationship: async () => {
+    reads += 1;
+    return phase;
+  },
+  refresh: async () => {
+    phase = "following";
+  },
+  delaysMs: FOLLOW_VERIFY_DELAYS_MS,
+  windowMs: 20_000,
+});
+assert.equal(reloaded.confirmed, true);
+assert.equal(reloaded.relationship, "following");
+assert.ok(reads > 1);
+
+const existing: DiscoveryCandidate = {
+  username: "studio.north",
+  profileUrl: "https://www.instagram.com/studio.north/",
+  source: "home_feed",
+  sourcePostUrl: null,
+  sourceThumbnailUrl: null,
+  discoveredAt: "2026-10-08T00:00:00.000Z",
+  sourceSeedUsername: "seed.one",
+  seedSupport: ["seed.one"],
+  priorityScore: 16,
+};
+const incoming: DiscoveryCandidate = {
+  ...existing,
+  source: "seed_network",
+  sourceSeedUsername: "seed.two",
+  seedSupport: ["seed.two"],
+  priorityScore: 30,
+};
+assert.equal(evidenceIsNew(existing, incoming), true);
+const mergedCandidate = mergeCandidateEvidence(existing, incoming);
+assert.ok(mergedCandidate.seedSupport?.includes("seed.two"));
+assert.equal(seedEvidenceUsefulness({
+  beforeScore: 16,
+  afterScore: 30,
+  floor: 18,
+  ceiling: 24,
+  gainedSeed: true,
+}), true);
+assert.equal(seedVisitAction({ rankedAdded: 0, fallbackAdded: 0, usefulMerges: 1 }), "reset");
+assert.equal(seedVisitAction({ rankedAdded: 0, fallbackAdded: 0, usefulMerges: 0 }), "cooldown");
 
 console.log("follow verification tests passed");
 }

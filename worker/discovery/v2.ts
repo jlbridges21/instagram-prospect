@@ -9,7 +9,7 @@ import { buildPreOpenSnapshot, formatSelectionExplanation } from "../../lib/disc
 import { CANDIDATE_POOL_MAX_PASSES, CANDIDATE_POOL_TARGET, clampTuning, DEFAULT_DISCOVERY_OPTIMIZATION } from "../../lib/discovery/defaults";
 import { shouldFlushDiscoveryUsage } from "../../lib/discovery/inspection-count";
 import { inspectionSeedId, pickSeed, prospectAttribution, seedCollectionResult, seedStatForCandidate, shouldOpenSeedNetwork, clampSeedNetworkSample, type SeededDiscoverySource } from "../../lib/discovery/seeds";
-import { applyEmptySeedCooldowns, seedTurnOutcome, seedVisitAction } from "../instagram/seed-page";
+import { applyEmptySeedCooldowns, seedEvidenceUsefulness, seedTurnOutcome, seedVisitAction } from "../instagram/seed-page";
 import { clearEmptySeed, readEmptySeedCooldowns, recordUnproductiveSeed } from "./seed-cooldowns";
 import { pickCollectionSource } from "../../lib/discovery/source-ranking";
 import { prioritizeCandidates } from "./sources";
@@ -440,16 +440,29 @@ export async function runDiscoveryV2(input: {
       .sort((left, right) => (right.priorityScore ?? 0) - (left.priorityScore ?? 0) || left.discoveredAt.localeCompare(right.discoveredAt));
     let queued = 0;
     let deferred = 0;
+    let merged = 0;
     let rankedAdded = 0;
     let fallbackAdded = 0;
+    let poolFull = 0;
+    let closed = 0;
+    let usefulMerges = 0;
     const ceiling = clampTuning(config.tuning).fallbackCeiling;
     for (const candidate of scored) {
+      const held = queue.hold(candidate.username);
+      const beforeScore = held?.priorityScore ?? 0;
+      const beforeSupport = new Set([...(held?.seedSupport ?? []), held?.sourceSeedUsername ?? ""].filter(Boolean)).size;
       const result = queue.place(candidate, floor);
       const score = candidate.priorityScore ?? 0;
-      if ((result === "queued" || result === "merged") && score >= floor) {
-        if (score > ceiling) rankedAdded += 1;
-        else fallbackAdded += 1;
+      const afterSupport = new Set([...(candidate.seedSupport ?? []), candidate.sourceSeedUsername ?? ""].filter(Boolean)).size;
+      const gainedSeed = afterSupport > beforeSupport;
+      const aboveFloor = score >= floor;
+      const ranked = aboveFloor && score > ceiling;
+      if (result === "queued" || result === "merged") {
+        if (ranked) rankedAdded += 1;
+        else if (aboveFloor) fallbackAdded += 1;
+        else deferred += 1;
       }
+      if (result === "merged" && seedEvidenceUsefulness({ beforeScore, afterScore: score, floor, ceiling, gainedSeed })) usefulMerges += 1;
       if (result === "queued") {
         queued += 1;
         console.log(`Queued @${candidate.username} (pre-score ${candidate.priorityScore ?? 0})`);
@@ -458,13 +471,32 @@ export async function runDiscoveryV2(input: {
         log("info", "candidate_queued", { username: candidate.username, source: candidate.source, seed: candidate.sourceSeedUsername ?? null, preScore: candidate.priorityScore ?? 0 });
         if (inspectionSeedId(candidate)) await input.cloud.bumpSeed(candidate.sourceSeedId ?? "", seedStatForCandidate("queued")).catch(() => undefined);
       } else if (result === "merged") {
-        console.log(`Updated @${candidate.username} (pre-score ${candidate.priorityScore ?? 0}, seeds ${candidate.seedSupport?.length ?? 0})`);
+        merged += 1;
+        console.log(`Merged @${candidate.username} (pre-score ${beforeScore} -> ${score}, seeds ${candidate.seedSupport?.length ?? 0})`);
       } else if (result === "deferred") {
         deferred += 1;
+      } else if (result === "full") {
+        poolFull += 1;
+        if (ranked) rankedAdded += 1;
+        else if (aboveFloor) fallbackAdded += 1;
+      } else if (result === "closed") {
+        closed += 1;
       }
     }
     metrics.candidatesDeferred += deferred;
-    if (scored.length > 0) console.log(`Ranked ${scored.length} candidates. Queued ${queued}. Below pre-score ${floor}: ${deferred}. Ranked added ${rankedAdded}. Fallback added ${fallbackAdded}.`);
+    if (scored.length > 0 || skippedFromCache > 0) {
+      console.log([
+        `Scored: ${scored.length}`,
+        `Newly added to pool: ${queued}`,
+        `Merged into existing: ${merged}`,
+        `Ranked after merge: ${rankedAdded}`,
+        `Fallback after merge: ${fallbackAdded}`,
+        `Below pre-score ${floor}: ${deferred}`,
+        `Pool full: ${poolFull}`,
+        `Already known: ${skippedFromCache}`,
+        ...(closed > 0 ? [`Closed: ${closed}`] : []),
+      ].join("\n"));
+    }
     if ((fresh.length + merges.length > 0 || deferred > 0) && input.gate) {
       await input.gate({ inspections: 0, ai: 0, emptyCycles: 0, collected: fresh.length + merges.length, deferred }).catch(() => undefined);
     }
@@ -472,10 +504,15 @@ export async function runDiscoveryV2(input: {
     return {
       queued,
       deferred,
+      merged,
       considered: fresh.length + merges.length,
       survived: accepted.length,
       rankedAdded,
       fallbackAdded,
+      usefulMerges,
+      poolFull,
+      alreadyKnown: skippedFromCache,
+      scored: scored.length,
       newCandidates: queued + deferred,
     };
   }
@@ -603,7 +640,7 @@ export async function runDiscoveryV2(input: {
     }
     const ranked = collected.ordered.length > 0
       ? await rankAndPlace(collected.ordered, config)
-      : { queued: 0, deferred: 0, considered: 0, survived: 0, rankedAdded: 0, fallbackAdded: 0, newCandidates: 0 };
+      : { queued: 0, deferred: 0, merged: 0, considered: 0, survived: 0, rankedAdded: 0, fallbackAdded: 0, usefulMerges: 0, poolFull: 0, alreadyKnown: 0, scored: 0, newCandidates: 0 };
     if (collected.seedUsername) recordSeedVisit(collected.seedUsername, ranked, config);
     publish(config, collected.sourceLabel);
     if (!inspectionPoolBlocksRefill({ pending: queue.pendingCount(), highWater: poolLimits(config).highWater })) {
@@ -662,7 +699,7 @@ export async function runDiscoveryV2(input: {
       }
       const ranked = ordered.length > 0
         ? await rankAndPlace(ordered, config)
-        : { queued: 0, deferred: 0, considered: 0, survived: 0, rankedAdded: 0, fallbackAdded: 0, newCandidates: 0 };
+        : { queued: 0, deferred: 0, merged: 0, considered: 0, survived: 0, rankedAdded: 0, fallbackAdded: 0, usefulMerges: 0, poolFull: 0, alreadyKnown: 0, scored: 0, newCandidates: 0 };
       if (collected.seedUsername) recordSeedVisit(collected.seedUsername, ranked, config);
       publish(config, sourceLabel);
       if (ranked.considered === 0) {
@@ -1066,18 +1103,23 @@ function poolLimits(config: CloudConfig | null) {
 
 function recordSeedVisit(
   username: string,
-  counts: { newCandidates: number; rankedAdded: number; fallbackAdded: number },
+  counts: { scored?: number; queued?: number; merged?: number; newCandidates: number; rankedAdded: number; fallbackAdded: number; usefulMerges?: number; alreadyKnown?: number },
   config: CloudConfig,
 ) {
   const action = seedVisitAction(counts);
-  console.log(`Seed @${username}: ${counts.newCandidates} new, ${counts.rankedAdded} ranked, ${counts.fallbackAdded} fallback.`);
+  console.log(`Seed @${username}: scored ${counts.scored ?? 0}, newly queued ${counts.queued ?? 0}, merged ${counts.merged ?? 0}, ranked ${counts.rankedAdded}, fallback ${counts.fallbackAdded}, already known ${counts.alreadyKnown ?? 0}.`);
   if (action === "reset") {
     clearEmptySeed(username);
+    if ((counts.usefulMerges ?? 0) > 0) console.log("Seed evidence improved existing candidates.");
     return;
   }
   const pause = recordUnproductiveSeed(username, Date.now(), undefined, exhaustionDurations(config));
   const outcome = seedTurnOutcome({ newAfterDedupe: counts.newCandidates, queuedAboveFloor: counts.rankedAdded + counts.fallbackAdded });
-  console.log(outcome === "empty" ? "Seed network produced no new candidates." : "No useful candidates.");
+  console.log(outcome === "empty"
+    ? (counts.alreadyKnown ?? 0) > 0
+      ? `Seed usernames were already known (${counts.alreadyKnown}).`
+      : "Seed network produced no new candidates."
+    : "No useful candidates.");
   console.log(`Cooling down @${username} for ${pause.minutes} minutes after ${pause.emptyVisits} unproductive visit${pause.emptyVisits === 1 ? "" : "s"}.`);
 }
 

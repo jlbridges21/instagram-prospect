@@ -432,6 +432,9 @@ export const READ_DOM_SOURCE = `() => {
   }
   const directPath = /\\/direct\\//.test(location.pathname) ? location.pathname.split("?")[0] : "";
   const suggestedProfiles = suggestedProfileCards();
+  const profileAnchor = usernameAnchor();
+  const profileOptions = optionsNear(profileAnchor);
+  const profileButtons = buttonsNear(profileAnchor);
   return {
     url: location.href,
     title: document.title,
@@ -446,6 +449,7 @@ export const READ_DOM_SOURCE = `() => {
     bioText: (bioNode && bioNode.textContent || "").trim().slice(0, 500) || null,
     headerLines,
     headerButtons,
+    profileButtons,
     relationshipCandidates,
     exactRelationshipHits,
     messageActionHits,
@@ -454,13 +458,72 @@ export const READ_DOM_SOURCE = `() => {
     recipientCandidates,
     activeConversationFound,
     directPath,
-    usernameBox: boxOf(heading),
-    optionsBox: boxOf(options),
+    usernameBox: boxOf(profileAnchor),
+    optionsBox: boxOf(profileOptions),
     metaDescription: meta ? (meta.getAttribute("content") || "").slice(0, 500) : null,
     profileIsPrivate: /this account is private/i.test(document.body && document.body.innerText || ""),
     profileImageUrl: profileAvatarUrl(),
     suggestedProfiles,
   };
+  function usernameAnchor() {
+    const root = document.querySelector("main") || document.body;
+    if (!pathUser || !root) return heading;
+    let best = null;
+    let bestArea = Infinity;
+    for (const node of root.querySelectorAll("h1, h2, h3, span, a, div")) {
+      if (node.closest("nav, [role='navigation'], [role='dialog'], [aria-modal='true']")) continue;
+      const direct = undouble(directText(node)).toLowerCase();
+      const whole = undouble(node.innerText || node.textContent || "").toLowerCase();
+      if (direct !== pathUser && whole !== pathUser) continue;
+      const box = boxOf(node);
+      if (!box || box.width > 420 || box.height > 80) continue;
+      const area = box.width * box.height;
+      if (area > 0 && area < bestArea) {
+        best = node;
+        bestArea = area;
+      }
+    }
+    return best || heading;
+  }
+  function optionsNear(anchor) {
+    const anchorBox = boxOf(anchor);
+    const nodes = [...document.querySelectorAll("button, [role='button']")].filter((node) => {
+      if (inDialog(node) || node.closest("nav, [role='navigation']")) return false;
+      return namesOf(node).some((name) => /^options$/i.test(name));
+    });
+    if (!anchorBox) return nodes[0] || options;
+    let best = null;
+    let bestDistance = Infinity;
+    for (const node of nodes) {
+      const box = boxOf(node);
+      if (!box) continue;
+      const distance = Math.hypot(box.x - anchorBox.x, box.y - anchorBox.y);
+      if (distance < bestDistance) {
+        best = node;
+        bestDistance = distance;
+      }
+    }
+    return best || options;
+  }
+  function buttonsNear(anchor) {
+    const anchorBox = boxOf(anchor);
+    if (!anchorBox) return [];
+    const found = [];
+    const root = document.querySelector("main") || document.body;
+    for (const node of root.querySelectorAll("button, [role='button']")) {
+      if (node.closest("nav, [role='navigation'], [role='dialog'], [aria-modal='true']")) continue;
+      if (inSuggestion(node)) continue;
+      const box = boxOf(node);
+      if (!box) continue;
+      const dy = box.y - anchorBox.y;
+      if (dy < -120 || dy > 360 || Math.abs(box.x - anchorBox.x) >= 1100) continue;
+      const button = buttonOf(node);
+      if (!button.name) continue;
+      found.push(button);
+      if (found.length >= 12) break;
+    }
+    return found;
+  }
   function suggestedProfileCards() {
     const found = [];
     const seen = {};

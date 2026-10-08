@@ -1408,13 +1408,16 @@ async function settleExecution(
       releaseLock: () => browserLock.release("outreach"),
     });
     if (released.released) clearFollowLatch(job.id);
+    const observedRelationship = typeof result.relationshipStatus === "string" ? result.relationshipStatus : "unknown";
+    const persistedState = observedRelationship === "not_following" ? "follow_click_not_confirmed" : "follow_verification_uncertain";
     if (saved.followState === "needs_review") {
       clearUncertainFollowAnnouncement(job.id);
       console.log(`Follow for @${job.instagramUsername} needs review. The follow state could not be verified after the click.`);
+      console.log(`Persisted state: ${persistedState}`);
     } else if (shouldAnnounceUncertainFollow(job.id)) {
       console.log("Follow clicked.");
       console.log("Unable to confirm relationship after bounded verification.");
-      console.log("Persisted state: follow_verification_uncertain");
+      console.log(`Persisted state: ${persistedState}`);
       if (saved.nextAt) console.log(`Next verification: ${saved.nextAt}`);
       console.log(released.released ? "Browser released." : "Browser release is waiting until the state is saved.");
       console.log("No second click made.");

@@ -1326,7 +1326,7 @@ async function failOwnedJob(
         result: {
           ...prior,
           ...uncertainFollowResult(),
-          state: plan.state,
+          state: input.relationship === "not_following" ? "follow_click_not_confirmed" : plan.state,
           clickedAt: priorRecord.clickedAt ?? input.now.toISOString(),
           evidence,
           verificationAttempts: plan.verificationAttempts,

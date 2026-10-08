@@ -63,7 +63,7 @@ export function profileUrlFor(username: string) {
 export type FollowRelationship = "following" | "not_following" | "requested" | "unknown";
 
 export function normalizeControlText(value: string) {
-  const compact = value.replace(/\s+/g, " ").trim();
+  const compact = value.replace(/\s+/g, " ").trim().replace(/[^\p{L}\s]+$/gu, "").trim();
   const half = Math.floor(compact.length / 2);
   if (half > 2 && compact.slice(0, half).toLowerCase() === compact.slice(half).toLowerCase()) {
     return compact.slice(0, half).trim();
