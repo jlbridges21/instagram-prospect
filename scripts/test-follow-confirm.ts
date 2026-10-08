@@ -5,12 +5,15 @@ import {
   confirmFollowAfterClick,
   expiredFollowNeedsStamp,
   isPreexistingFollow,
+  orphanedFollowAction,
   recoverFollowDecision,
   shouldCompleteFollowWithoutClick,
+  staleFollowRecovery,
   staleReclaimDecision,
   uncertainFollowResult,
 } from "../lib/outreach/follow-confirm";
 import { explainIdleQueue } from "../lib/outreach/idle-reason";
+import { formatThroughputReport, outreachBlockReason } from "../lib/discovery/throughput";
 
 async function main() {
   let clock = 0;
@@ -132,8 +135,9 @@ async function main() {
       },
     ],
   });
-  assert.equal(dependency.reason, "dependency_not_complete");
+  assert.equal(dependency.reason, "stale_follow");
   assert.equal(dependency.nextAt, null);
+  assert.doesNotMatch(dependency.message, /to complete/);
 
   const future = explainIdleQueue({
     now,
@@ -238,6 +242,71 @@ async function main() {
   assert.equal(claimError(stale, "worker-a", now), "The claim on this job has expired.");
   assert.equal(claimError(reclaimed, "worker-a", now), null);
   assert.notEqual(reclaimed.claimedAt, stale.claimedAt);
+
+  const failedFollow = explainIdleQueue({
+    now,
+    timeZone: "America/Chicago",
+    settings: evening,
+    completedSendTimes: [],
+    jobs: [
+      {
+        status: "pending",
+        jobType: "send_message",
+        scheduledFor: "2026-10-03T02:10:00.000Z",
+        availableAt: "2026-10-03T02:10:00.000Z",
+        dependsOnStatus: "failed",
+        dependsOnType: "follow_profile",
+        username: "greg.fabre",
+      },
+    ],
+  });
+  assert.equal(failedFollow.reason, "follow_needs_review");
+  assert.equal(failedFollow.nextAt, null);
+  assert.match(failedFollow.message, /@greg\.fabre/);
+  assert.match(failedFollow.message, /needs review/);
+  assert.doesNotMatch(failedFollow.message, /to complete/);
+  assert.equal(outreachBlockReason(failedFollow.reason), "followVerificationUncertain");
+  assert.equal(outreachBlockReason("stale_follow"), "followVerificationUncertain");
+  const overdue = formatThroughputReport({
+    configuredPerHour: 60,
+    actualLast60Minutes: 28,
+    opportunities: 60,
+    missed: 0,
+    lifetimeMissed: 0,
+    waitingMs: 0,
+    sourcingMs: 0,
+    inspectingMs: 0,
+    degraded: false,
+    outreachBlocked: {
+      minimumSpacing: 0,
+      followVerificationUncertain: 1,
+      recipientVerification: 0,
+      browserUnavailable: 0,
+      retryBackoff: 0,
+    },
+  });
+  assert.match(overdue, /Current overdue slots: 0/);
+  assert.match(overdue, /follow verification uncertain: 1/);
+  assert.doesNotMatch(overdue, /Lifetime missed slots/);
+
+  const restarted = {
+    followClickAttempted: true,
+    claimExpiresAt: "2026-10-03T02:00:00.000Z",
+    reconciliationReadAt: null,
+    localTaskAlive: false,
+    now: now.getTime(),
+  };
+  assert.equal(orphanedFollowAction({ ...restarted, status: "failed" }), "read");
+  assert.equal(orphanedFollowAction({ ...restarted, status: "running" }), "read");
+  assert.equal(orphanedFollowAction({ ...restarted, status: "running", localTaskAlive: true, claimExpiresAt: "2026-10-03T02:30:00.000Z" }), "active");
+  assert.equal(orphanedFollowAction({ ...restarted, status: "failed", reconciliationReadAt: now.toISOString() }), "terminal");
+  assert.equal(staleFollowRecovery({ followClickAttempted: true, relationship: "following", attempts: 3 }).click, false);
+  assert.equal(staleFollowRecovery({ followClickAttempted: true, relationship: "following", attempts: 3 }).action, "confirm");
+  assert.equal(staleFollowRecovery({ followClickAttempted: true, relationship: "requested", attempts: 3 }).action, "confirm");
+  assert.equal(staleFollowRecovery({ followClickAttempted: true, relationship: "not_following", attempts: 3 }).action, "needs_review");
+  assert.equal(staleFollowRecovery({ followClickAttempted: true, relationship: "not_following", attempts: 3 }).click, false);
+  assert.equal(staleFollowRecovery({ followClickAttempted: true, relationship: "unknown", attempts: 1 }).action, "retry");
+  assert.equal(staleFollowRecovery({ followClickAttempted: true, relationship: "unknown", attempts: 3 }).action, "needs_review");
 
   console.log("follow confirmation tests passed");
 }

@@ -1,4 +1,4 @@
-import { followStartupVerified, isFollowVerificationJob } from "@/lib/outreach/follow-confirm";
+import { followStartupVerified, isFollowVerificationJob, staleFollowReadReady } from "@/lib/outreach/follow-confirm";
 import { localDateKey, startOfNextLocalDay } from "@/lib/outreach/time";
 
 export const OUTREACH_HOUR_MS = 60 * 60 * 1000;
@@ -263,6 +263,13 @@ export function claimPaceDecision(input: {
     .sort((left, right) => availableAt(left.next, input.now).getTime() - availableAt(right.next, input.now).getTime());
   const due = dueRetries[0];
   if (due?.next) return claim(due.prospectId, due.next, input.now);
+
+  if (!input.deferFollowVerification) {
+    const staleFollow = input.jobs
+      .filter((job) => staleFollowReadReady(job, input.now))
+      .sort((left, right) => left.scheduledFor.localeCompare(right.scheduledFor))[0];
+    if (staleFollow) return claim(staleFollow.prospectId, staleFollow, input.now, "follow_verification");
+  }
 
   const futureRetry = prospects
     .map(([, jobs]) => nextOpenJob(jobs))

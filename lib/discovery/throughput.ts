@@ -74,6 +74,17 @@ export function discoveryMissReason(input: {
   return "other";
 }
 
+export function outreachBlockReason(reason: string) {
+  if (reason === "minimum_spacing") return "minimumSpacing" as const;
+  if (reason === "scheduled_retry") return "retryBackoff" as const;
+  if (/recipient/i.test(reason)) return "recipientVerification" as const;
+  if (reason === "dependency_not_complete" || reason === "follow_needs_review" || reason === "stale_follow") {
+    return "followVerificationUncertain" as const;
+  }
+  if (reason === "browser_unavailable") return "browserUnavailable" as const;
+  return null;
+}
+
 export function formatThroughputReport(input: {
   configuredPerHour: number;
   actualLast60Minutes: number;
@@ -99,7 +110,7 @@ export function formatThroughputReport(input: {
     `Actual: ${input.actualLast60Minutes}/hr`,
     `Opportunities: ${input.opportunities}`,
     `Missed: ${input.missed}`,
-    ...(typeof input.lifetimeMissed === "number" ? [`Lifetime missed slots: ${input.lifetimeMissed}`] : []),
+    ...(typeof input.lifetimeMissed === "number" ? [`Current overdue slots: ${input.lifetimeMissed}`] : []),
     `Candidate-starved: ${formatElapsed(input.waitingMs)}`,
     `Sourcing: ${formatElapsed(input.sourcingMs)}`,
     `Inspecting: ${formatElapsed(input.inspectingMs)}`,

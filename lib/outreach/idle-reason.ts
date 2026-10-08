@@ -15,6 +15,8 @@ export type IdleQueueReason =
   | "daily_limit_reached"
   | "next_job_scheduled_for"
   | "dependency_not_complete"
+  | "follow_needs_review"
+  | "stale_follow"
   | "job_in_progress"
   | "retry_wait";
 
@@ -59,7 +61,7 @@ export function explainIdleQueue(input: {
   const nowMs = input.now.getTime();
   const inProgress = open.find((job) => {
     if (job.status !== "running" && job.status !== "claimed") return false;
-    if (!job.claimExpiresAt) return true;
+    if (!job.claimExpiresAt) return false;
     return new Date(job.claimExpiresAt).getTime() > nowMs;
   });
   if (inProgress) {
@@ -82,15 +84,7 @@ export function explainIdleQueue(input: {
       (job.status === "pending" || job.status === "retry_wait") &&
       (job.dependsOnStatus == null || job.dependsOnStatus === "completed"),
   );
-  if (ready.length === 0 && blocked.length > 0) {
-    const blocker = blocked[0];
-    const who = blocker?.username ? ` for @${blocker.username}` : "";
-    return {
-      reason: "dependency_not_complete" as const,
-      message: `Waiting for ${stepName(blocker?.dependsOnType)} to complete${who}.`,
-      nextAt: null,
-    };
-  }
+  if (ready.length === 0 && blocked.length > 0) return blockedDependency(blocked[0]);
 
   const futureReady = ready
     .map((job) => job.scheduledFor)
@@ -146,15 +140,7 @@ export function explainIdleQueue(input: {
       nextAt,
     };
   }
-  if (blocked.length > 0) {
-    const blocker = blocked[0];
-    const who = blocker?.username ? ` for @${blocker.username}` : "";
-    return {
-      reason: "dependency_not_complete" as const,
-      message: `Waiting for ${stepName(blocker?.dependsOnType)} to complete${who}.`,
-      nextAt: null,
-    };
-  }
+  if (blocked.length > 0) return blockedDependency(blocked[0]);
   return {
     reason: "no_queued_jobs" as const,
     message: "No approved outreach jobs are currently queued.",
@@ -165,6 +151,29 @@ export function explainIdleQueue(input: {
 function futureStamp(iso: string | null, nowMs: number) {
   if (!iso) return null;
   return new Date(iso).getTime() > nowMs ? iso : null;
+}
+
+function blockedDependency(blocker: IdleJob | undefined) {
+  const who = blocker?.username ? ` for @${blocker.username}` : "";
+  if (blocker?.dependsOnStatus === "failed" || blocker?.dependsOnStatus === "cancelled") {
+    return {
+      reason: "follow_needs_review" as const,
+      message: `${stepName(blocker.dependsOnType)}${who} needs review. No second click will be made.`,
+      nextAt: null as string | null,
+    };
+  }
+  if (blocker?.dependsOnStatus === "running" || blocker?.dependsOnStatus === "claimed") {
+    return {
+      reason: "stale_follow" as const,
+      message: `${stepName(blocker.dependsOnType)}${who} has a stale claim and will be reconciled without another Follow click.`,
+      nextAt: null as string | null,
+    };
+  }
+  return {
+    reason: "dependency_not_complete" as const,
+    message: `Waiting for ${stepName(blocker?.dependsOnType)} to complete${who}.`,
+    nextAt: null as string | null,
+  };
 }
 
 function stepName(type: string | null | undefined) {

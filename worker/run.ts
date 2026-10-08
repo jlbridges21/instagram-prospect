@@ -6,7 +6,7 @@ import { discoveryDue, discoveryStallDecision, guardDiagnostic, inspectionInterv
 import { outreachStallDecision } from "../lib/outreach/pace";
 import { formatCountdown } from "../lib/ui/countdown";
 import { censusFromScores, checkpointHoldDecision, discoveryConfigUpdates, formatDiscoveryConfig, formatHourlyWaitEvent, formatWorkerModes, rollingHourInspectionCount, type DiscoveryRuntimeConfig } from "../lib/discovery/pacing";
-import { createThroughputClock, currentDiscoveryDegraded, discoveryGraceElapsed, discoveryMissReason, formatThroughputReport, missedInspectionOpportunities, rollingMissedOpportunities } from "../lib/discovery/throughput";
+import { createThroughputClock, currentDiscoveryDegraded, discoveryGraceElapsed, discoveryMissReason, formatThroughputReport, missedInspectionOpportunities, outreachBlockReason, rollingMissedOpportunities } from "../lib/discovery/throughput";
 import { readHourlyStamps } from "./discovery/hourly-history";
 import { readDiscoveryCadence, writeDiscoveryCadence } from "./discovery/cadence-file";
 import { startOfNextLocalDay } from "../lib/outreach/time";
@@ -848,9 +848,8 @@ export async function runWorker(mode: RunMode) {
               nextAt: outcome.nextAt ?? null,
               now: new Date(),
             });
-            if (outcome.reason === "minimum_spacing") throughput.noteOutreachBlock("minimumSpacing");
-            else if (outcome.reason === "scheduled_retry") throughput.noteOutreachBlock("retryBackoff");
-            else if (/recipient/i.test(outcome.reason)) throughput.noteOutreachBlock("recipientVerification");
+            const block = outreachBlockReason(outcome.reason);
+            if (block) throughput.noteOutreachBlock(block);
             if (outcome.reason === "no_queued_jobs") console.log("Outreach queue is empty.");
             else if (outcome.message && outcome.reason !== "state_sync_failed") console.log(outcome.message);
             if (!config.discoveryEnabled || !discoveryIsDue) {

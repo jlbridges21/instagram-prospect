@@ -1309,7 +1309,13 @@ async function failOwnedJob(
 
   if (input.errorCode === "follow_confirmation_uncertain") {
     const prior = job.result && typeof job.result === "object" && !Array.isArray(job.result) ? job.result : {};
-    const priorRecord = prior as { clickedAt?: string; manualVerification?: boolean; evidence?: unknown };
+    const priorRecord = prior as {
+      clickedAt?: string;
+      manualVerification?: boolean;
+      evidence?: unknown;
+      startupVerified?: boolean;
+      reconciliationReadAt?: string;
+    };
     const plan = nextFollowVerification({
       attemptsSoFar: followVerificationAttempts(prior),
       now: input.now.getTime(),
@@ -1332,6 +1338,7 @@ async function failOwnedJob(
           verificationAttempts: plan.verificationAttempts,
           nextVerificationAt: plan.availableAt,
           startupVerified: plan.startupVerified,
+          reconciliationReadAt: priorRecord.startupVerified === true ? input.now.toISOString() : priorRecord.reconciliationReadAt ?? null,
           manualVerification: false,
         },
         available_at: plan.availableAt,

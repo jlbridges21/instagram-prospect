@@ -203,6 +203,22 @@ const reviewedFollow = job("reviewed", "reviewed", "failed", {
 });
 const freshApproved = job("fresh-approved", "fresh-approved", "pending", { jobType: "follow_profile" });
 assert.equal(claimPaceDecision({ ...pace, jobs: [reviewedFollow, freshApproved] }).prospectId, "fresh-approved");
+const unreadFollow = job("greg-follow", "greg.fabre", "failed", {
+  jobType: "follow_profile",
+  result: { followClickAttempted: true, confirmation: "uncertain", startupVerified: true, verificationAttempts: 3 },
+});
+const readyFollowJob = job("fresh-follow", "fresh.account", "pending", { jobType: "follow_profile", result: {} });
+assert.equal(claimPaceDecision({ ...pace, jobs: [unreadFollow, readyFollowJob] }).prospectId, "fresh.account");
+assert.notEqual(claimPaceDecision({ ...pace, jobs: [unreadFollow, readyFollowJob] }).kind, "follow_verification");
+assert.equal(claimPaceDecision({ ...pace, jobs: [unreadFollow] }).kind, "follow_verification");
+assert.equal(claimPaceDecision({ ...pace, jobs: [unreadFollow] }).prospectId, "greg.fabre");
+assert.equal(followAttemptPlan({ followClickAttempted: true, relationship: "not_following" }).click, false);
+const reconciled = job("greg-read", "greg.fabre", "failed", {
+  jobType: "follow_profile",
+  result: { followClickAttempted: true, startupVerified: true, reconciliationReadAt: now.toISOString() },
+});
+assert.notEqual(claimPaceDecision({ ...pace, jobs: [reconciled] }).kind, "follow_verification");
+assert.notEqual(claimPaceDecision({ ...pace, jobs: [unreadFollow], deferFollowVerification: true }).kind, "follow_verification");
 assert.notEqual(claimPaceDecision({ ...pace, jobs: [reviewedFollow, freshApproved] }).kind, "follow_verification");
 assert.notEqual(claimPaceDecision({ ...pace, jobs: [fresh, dueFollow], deferFollowVerification: true }).kind, "follow_verification");
 

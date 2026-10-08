@@ -68,6 +68,55 @@ export function followStartupVerified(result: unknown) {
   return (result as { startupVerified?: boolean }).startupVerified === true;
 }
 
+export function followReconciliationReadAt(result: unknown) {
+  if (!result || typeof result !== "object" || Array.isArray(result)) return null;
+  const value = (result as { reconciliationReadAt?: unknown }).reconciliationReadAt;
+  return typeof value === "string" ? value : null;
+}
+
+export function staleFollowReadReady(
+  job: { jobType: string; status: string; result?: unknown },
+  now: Date,
+) {
+  if (job.jobType !== "follow_profile" || job.status !== "failed" || !followStartupVerified(job.result)) return false;
+  return orphanedFollowAction({
+    status: job.status,
+    followClickAttempted: followClickWasAttempted(job.result),
+    claimExpiresAt: null,
+    reconciliationReadAt: followReconciliationReadAt(job.result),
+    localTaskAlive: false,
+    now: now.getTime(),
+  }) === "read";
+}
+
+export function orphanedFollowAction(input: {
+  status: string;
+  followClickAttempted: boolean;
+  claimExpiresAt: string | null;
+  reconciliationReadAt: string | null;
+  localTaskAlive: boolean;
+  now: number;
+}) {
+  const lease = input.claimExpiresAt ? new Date(input.claimExpiresAt).getTime() : 0;
+  if (input.localTaskAlive && lease > input.now) return "active" as const;
+  if (input.reconciliationReadAt) return "terminal" as const;
+  if (!input.followClickAttempted) return "ignore" as const;
+  const expired = lease <= input.now;
+  const stale = input.status === "failed" || ((input.status === "claimed" || input.status === "running") && expired);
+  return stale ? "read" as const : "ignore" as const;
+}
+
+export function staleFollowRecovery(input: { followClickAttempted: boolean; relationship: string; attempts: number }) {
+  if (!input.followClickAttempted) return { action: "ignore" as const, click: false as const };
+  if (input.relationship === "following" || input.relationship === "requested") {
+    return { action: "confirm" as const, click: false as const, advance: "direct" as const };
+  }
+  if (input.relationship === "not_following" || input.attempts >= 3) {
+    return { action: "needs_review" as const, click: false as const };
+  }
+  return { action: "retry" as const, click: false as const };
+}
+
 export function followAttemptPlan(input: { followClickAttempted: boolean; relationship: string }) {
   if (input.followClickAttempted && isConfirmedFollow(input.relationship)) {
     return { click: false as const, action: "complete" as const };
