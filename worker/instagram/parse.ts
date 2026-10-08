@@ -263,10 +263,8 @@ export function selectPrimaryRelationship(
       place = near ? "near the Options control" : "far from the Options control";
     }
     const ownText = `${hit.text || ""} ${hit.ariaLabel || ""}`;
-    const ancestorText = `${ancestor?.text || ""} ${ancestor?.ariaLabel || ""}`;
     const ownIsStats = /\d/.test(ownText) && /follower|following|posts/i.test(ownText);
-    const ancestorIsStats = ancestorText.length > 0 && ancestorText.length <= 40 && /\d/.test(ancestorText) && /follower|following|posts/i.test(ancestorText);
-    const statsAncestor = statsHref(ancestor?.href) || statsHref(hit.href) || ownIsStats || ancestorIsStats;
+    const statsAncestor = statsHref(hit.href) || statsHref(ancestor?.href) || ownIsStats;
     let reason = place;
     if (!hitLabel(hit)) reason = "not an exact relationship label";
     else if (hit.inDialog) reason = "inside a dialog";

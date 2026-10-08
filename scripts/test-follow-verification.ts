@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { chromium } from "playwright";
 import { currentDiscoveryDegraded, missedInspectionOpportunities, rollingMissedOpportunities } from "../lib/discovery/throughput";
 import {
   advanceAfterFollow,
@@ -9,6 +10,7 @@ import {
 } from "../lib/outreach/follow-confirm";
 import { claimPaceDecision, type PaceJob } from "../lib/outreach/pace";
 import { profileFromDom } from "../worker/instagram/interpret";
+import { READ_DOM_SOURCE } from "../worker/instagram/read-dom";
 import { evidenceIsNew, mergeCandidateEvidence, type DiscoveryCandidate } from "../worker/discovery/queue";
 import { seedEvidenceUsefulness, seedVisitAction } from "../worker/instagram/seed-page";
 import { controlRelationship, relationshipFromLabels, selectPrimaryRelationship } from "../worker/instagram/parse";
@@ -131,6 +133,22 @@ const headerCounts = selectPrimaryRelationship([
 ], nameBox);
 assert.equal(headerCounts.relationship, "following");
 
+const sharedAncestor = selectPrimaryRelationship([
+  placed("Following", 160, {
+    text: "Following",
+    ancestor: {
+      tag: "div",
+      role: "button",
+      text: "Following 398K followers",
+      ariaLabel: "",
+      href: "",
+      box: { x: 670, y: 148, width: 220, height: 36 },
+    },
+  }),
+], nameBox);
+assert.equal(sharedAncestor.relationship, "following");
+assert.equal(sharedAncestor.decisions[0]?.reason, "near profile header");
+
 const countControl = selectPrimaryRelationship([
   placed("Following", 160, { text: "3,200 following", ariaLabel: "" }),
 ], nameBox);
@@ -180,6 +198,12 @@ const dueFollow = job("due-follow", "due-follow", "retry_wait", {
 assert.equal(claimPaceDecision({ ...pace, jobs: [dueRetry, dueFollow] }).prospectId, "retry");
 assert.equal(claimPaceDecision({ ...pace, jobs: [dueFollow] }).kind, "follow_verification");
 assert.equal(claimPaceDecision({ ...pace, jobs: [dueFollow], deferFollowVerification: true }).action, "wait");
+const reviewedFollow = job("reviewed", "reviewed", "failed", {
+  result: { followClickAttempted: true, confirmation: "uncertain", startupVerified: true, verificationAttempts: 3 },
+});
+const freshApproved = job("fresh-approved", "fresh-approved", "pending", { jobType: "follow_profile" });
+assert.equal(claimPaceDecision({ ...pace, jobs: [reviewedFollow, freshApproved] }).prospectId, "fresh-approved");
+assert.notEqual(claimPaceDecision({ ...pace, jobs: [reviewedFollow, freshApproved] }).kind, "follow_verification");
 assert.notEqual(claimPaceDecision({ ...pace, jobs: [fresh, dueFollow], deferFollowVerification: true }).kind, "follow_verification");
 
 assert.equal(advanceAfterFollow({ followed: true, relationshipStatus: "following" }), "send");
@@ -258,7 +282,7 @@ const reloaded = await confirmFollowAfterClick({
 });
 assert.equal(reloaded.confirmed, true);
 assert.equal(reloaded.relationship, "following");
-assert.ok(reads > 1);
+assert.equal(reads, 5);
 
 const existing: DiscoveryCandidate = {
   username: "studio.north",
@@ -290,6 +314,47 @@ assert.equal(seedEvidenceUsefulness({
 }), true);
 assert.equal(seedVisitAction({ rankedAdded: 0, fallbackAdded: 0, usefulMerges: 1 }), "reset");
 assert.equal(seedVisitAction({ rankedAdded: 0, fallbackAdded: 0, usefulMerges: 0 }), "cooldown");
+
+const headerHtml = `<!doctype html><html><body>
+<header><button>Home</button><button>Search</button></header>
+<main style="position:relative;width:900px;height:900px">
+  <h2 style="position:absolute;left:40px;top:40px;width:180px;height:28px;margin:0">greg.fabre</h2>
+  <div role="button" style="position:absolute;left:40px;top:100px;width:420px;height:36px">398K followers <span style="display:inline-block;width:90px;height:28px">Following</span></div>
+  <span id="rel">Following</span>
+  <button aria-labelledby="rel" style="position:absolute;left:240px;top:100px;width:96px;height:32px"></button>
+  <div style="position:absolute;left:40px;top:460px"><span style="display:block;height:20px">Suggested for you</span><button style="width:80px;height:32px">Follow</button></div>
+</main>
+</body></html>`;
+const browser = await chromium.launch({ headless: true, channel: "chrome" });
+try {
+  const page = await browser.newPage();
+  await page.route("https://www.instagram.com/greg.fabre/", (route) => route.fulfill({
+    status: 200,
+    contentType: "text/html",
+    body: headerHtml,
+  }));
+  await page.goto("https://www.instagram.com/greg.fabre/", { waitUntil: "domcontentloaded" });
+  const read = new Function(`return (${READ_DOM_SOURCE})();`) as () => DomSnapshot;
+  const first = await page.evaluate(read);
+  await page.evaluate(() => {
+    document.querySelectorAll("span").forEach((node) => {
+      if ((node.textContent || "").trim() === "Following") node.textContent = "Requested";
+    });
+    const button = document.querySelector("button[aria-labelledby='rel']");
+    if (button) button.textContent = "Requested";
+  });
+  const second = await page.evaluate(read);
+  const profile = profileFromDom(first, "greg.fabre");
+  assert.equal(profile.relationship, "following");
+  assert.equal(profileFromDom(second, "greg.fabre").relationship, "requested");
+  assert.notEqual(first, second);
+  const suggested = (first.exactRelationshipHits ?? []).filter((hit) => hit.label === "Follow");
+  assert.ok(suggested.length > 0, JSON.stringify(first.exactRelationshipHits));
+  assert.ok(suggested.every((hit) => hit.inSuggestion), JSON.stringify(suggested));
+  assert.ok((first.exactRelationshipHits ?? []).some((hit) => hit.labelledBy === "Following" || hit.ariaLabel === "Following"));
+} finally {
+  await browser.close();
+}
 
 console.log("follow verification tests passed");
 }

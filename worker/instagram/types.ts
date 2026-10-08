@@ -21,6 +21,7 @@ export type ExactRelationshipHit = {
   role: string;
   text: string;
   ariaLabel: string;
+  labelledBy?: string;
   title: string;
   href: string;
   tabIndex: string;

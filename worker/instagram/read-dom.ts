@@ -6,23 +6,6 @@ const NAVIGATION_TIMEOUT_MS = 25_000;
 
 export const READ_DOM_SOURCE = `() => {
   const textOf = (node) => (node.textContent || "").trim().replace(/\\s+/g, " ").slice(0, 180);
-  const buttonOf = (button) => {
-    const text = (button.textContent || "").trim().replace(/\\s+/g, " ").slice(0, 80);
-    const label = (button.getAttribute("aria-label") || "").trim().slice(0, 80);
-    return { name: label || text, text, label };
-  };
-  const links = [...document.querySelectorAll("a")].slice(0, 250).map((anchor) => {
-    const titled = anchor.querySelector("[title]");
-    return {
-      href: anchor.getAttribute("href") || "",
-      text: textOf(anchor),
-      label: (anchor.getAttribute("aria-label") || "").trim(),
-      title: (anchor.getAttribute("title") || (titled && titled.getAttribute("title")) || "").trim(),
-    };
-  });
-  const buttons = [...document.querySelectorAll("button, [role='button']")].slice(0, 80).map(buttonOf).filter((button) => button.name);
-  const header = document.querySelector("header");
-  const headerButtons = header ? [...header.querySelectorAll("button, [role='button']")].slice(0, 20).map(buttonOf).filter((button) => button.name) : [];
   const norm = (value) => String(value || "").replace(/\\s+/g, " ").trim();
   const undouble = (value) => {
     const text = norm(value);
@@ -38,6 +21,24 @@ export const READ_DOM_SOURCE = `() => {
       return node ? node.textContent || "" : "";
     }).join(" "));
   };
+  const buttonOf = (button) => {
+    const text = (button.textContent || "").trim().replace(/\\s+/g, " ").slice(0, 80);
+    const linked = labelledBy(button).slice(0, 80);
+    const label = (button.getAttribute("aria-label") || linked || "").trim().slice(0, 80);
+    return { name: label || text, text, label, labelledBy: linked };
+  };
+  const links = [...document.querySelectorAll("a")].slice(0, 250).map((anchor) => {
+    const titled = anchor.querySelector("[title]");
+    return {
+      href: anchor.getAttribute("href") || "",
+      text: textOf(anchor),
+      label: (anchor.getAttribute("aria-label") || "").trim(),
+      title: (anchor.getAttribute("title") || (titled && titled.getAttribute("title")) || "").trim(),
+    };
+  });
+  const buttons = [...document.querySelectorAll("button, [role='button']")].slice(0, 80).map(buttonOf).filter((button) => button.name);
+  const header = document.querySelector("header");
+  const headerButtons = header ? [...header.querySelectorAll("button, [role='button']")].slice(0, 20).map(buttonOf).filter((button) => button.name) : [];
   const directText = (el) => {
     let text = "";
     for (const node of el.childNodes) {
@@ -54,7 +55,12 @@ export const READ_DOM_SOURCE = `() => {
     return /^(follow|follow back|following|unfollow|requested|message|messages|options|more)$/i.test(name);
   });
   const inDialog = (el) => Boolean(el.closest("[role='dialog'], [aria-modal='true']"));
+  let suggestionTop = null;
   const inSuggestion = (el) => {
+    if (suggestionTop !== null && el.getBoundingClientRect) {
+      const rect = el.getBoundingClientRect();
+      if (rect && rect.height >= 1 && rect.top >= suggestionTop - 4) return true;
+    }
     const box = el.closest("section, aside, [role='complementary']");
     if (!box) return false;
     const heading = box.querySelector("h1, h2, h3, h4, [role='heading']");
@@ -175,7 +181,7 @@ export const READ_DOM_SOURCE = `() => {
     return { x: Math.round(rect.x), y: Math.round(rect.y), width: Math.round(rect.width), height: Math.round(rect.height) };
   };
   const exactLabel = (value) => {
-    const text = undouble(value || "");
+    const text = undouble(value || "").replace(/[^\\p{L}\\s]+$/gu, "").trim();
     if (/^follow$/i.test(text)) return "Follow";
     if (/^follow back$/i.test(text)) return "Follow Back";
     if (/^following$/i.test(text)) return "Following";
@@ -208,6 +214,10 @@ export const READ_DOM_SOURCE = `() => {
     return null;
   };
   const inSuggested = (el) => {
+    if (suggestionTop !== null && el.getBoundingClientRect) {
+      const rect = el.getBoundingClientRect();
+      if (rect && rect.height >= 1 && rect.top >= suggestionTop - 4) return true;
+    }
     let node = el.parentElement;
     while (node) {
       if (/suggested/i.test(node.getAttribute("aria-label") || "")) return true;
@@ -229,10 +239,29 @@ export const READ_DOM_SOURCE = `() => {
     }
     return null;
   };
+  suggestionTop = (() => {
+    let top = null;
+    const anchor = usernameAnchor();
+    const anchorBottom = anchor && anchor.getBoundingClientRect ? anchor.getBoundingClientRect().bottom : 160;
+    for (const el of document.querySelectorAll("h1, h2, h3, h4, span, a, div")) {
+      if (el.closest && el.closest("nav, [role='navigation'], [role='dialog']")) continue;
+      const raw = el.textContent || "";
+      if (raw.length > 40) continue;
+      const text = norm(raw);
+      const label = norm(el.getAttribute("aria-label") || "");
+      const marker = text === "Suggested for you" || text === "Suggested accounts" || text === "Similar accounts" || label === "Suggested for you" || label === "Suggested accounts" || label === "Similar accounts";
+      if (!marker || !el.getBoundingClientRect) continue;
+      const rect = el.getBoundingClientRect();
+      if (!rect || rect.height < 1 || rect.top < anchorBottom - 8) continue;
+      if (top === null || rect.top < top) top = rect.top;
+    }
+    return top;
+  })();
   const exactRelationshipHits = [];
   for (const el of document.querySelectorAll("button, [role='button'], a, div, span")) {
     const text = directText(el);
     const aria = undouble(el.getAttribute("aria-label") || "");
+    const linked = labelledBy(el);
     const titleAttr = undouble(el.getAttribute("title") || "");
     const names = namesOf(el);
     let label = "";
@@ -253,7 +282,8 @@ export const READ_DOM_SOURCE = `() => {
       tag: el.tagName.toLowerCase(),
       role: (el.getAttribute("role") || "").toLowerCase(),
       text: text.slice(0, 80),
-      ariaLabel: aria.slice(0, 80),
+      ariaLabel: (aria || linked).slice(0, 80),
+      labelledBy: linked.slice(0, 80),
       title: titleAttr.slice(0, 80),
       href: el.getAttribute("href") || "",
       tabIndex: el.getAttribute("tabindex") || "",

@@ -213,7 +213,6 @@ export async function followProfile(
   };
   if (plan.action === "verify" || (plan.action === "complete" && context.followClickAttempted)) {
     const confirmation = await confirmRelationship(page, username, readAfterClick);
-    if (observation) console.log(observation);
     if (confirmation.confirmed) {
       logFollowConfirmed(username, confirmation.relationship, confirmation.source);
       return {
@@ -223,6 +222,7 @@ export async function followProfile(
         recoveredWithoutClick: true,
       };
     }
+    if (observation) console.log(observation);
     return {
       followed: false,
       followClickAttempted: true,
@@ -258,11 +258,11 @@ export async function followProfile(
   await page.mouse.click(target.x + target.width / 2, target.y + target.height / 2);
   console.log("Follow clicked.");
   const confirmation = await confirmRelationship(page, username, readAfterClick);
-  if (observation) console.log(observation);
   if (confirmation.confirmed) {
     logFollowConfirmed(username, confirmation.relationship, confirmation.source);
     return { followed: true, relationshipStatus: confirmation.relationship, profileExists: true };
   }
+  if (observation) console.log(observation);
   return {
     followed: false,
     followClickAttempted: true,
@@ -292,7 +292,16 @@ async function confirmRelationship(
       await page.waitForFunction(
         `name => {
           const main = document.querySelector("main");
-          return Boolean(main && (main.innerText || "").toLowerCase().includes(String(name || "").toLowerCase()));
+          if (!main) return false;
+          const body = (main.innerText || "").toLowerCase();
+          if (!body.includes(String(name || "").toLowerCase())) return false;
+          const exact = (value) => {
+            const text = String(value || "").replace(/\\s+/g, " ").trim().replace(/[^\\p{L}\\s]+$/gu, "").trim();
+            const half = Math.floor(text.length / 2);
+            const word = half > 2 && text.slice(0, half).toLowerCase() === text.slice(half).toLowerCase() ? text.slice(0, half).trim() : text;
+            return /^(follow|follow back|following|requested)$/i.test(word);
+          };
+          return [...main.querySelectorAll("button, [role='button']")].some((button) => exact(button.getAttribute("aria-label") || button.innerText || ""));
         }`,
         username,
         { timeout: ACTION_TIMEOUT_MS },
@@ -309,10 +318,9 @@ function acceptedRelationshipBox(dom: DomSnapshot | undefined, username: string,
   const choice = selectPrimaryRelationship(dom.exactRelationshipHits ?? [], dom.usernameBox, dom.optionsBox);
   const winner = choice.decisions.find((decision) => decision.accepted && controlRelationship(decision.label) === relationship);
   if (!winner) return null;
-  const ancestor = winner.ancestorBox;
   const own = winner.box;
-  if (ancestor && own && ancestor.width * ancestor.height > own.width * own.height * 4) return own;
-  return ancestor || own;
+  if (own && own.width >= 8 && own.height >= 8) return own;
+  return winner.ancestorBox || own;
 }
 
 function formatRelationshipRead(username: string, dom: DomSnapshot) {
@@ -327,8 +335,11 @@ function formatRelationshipRead(username: string, dom: DomSnapshot) {
   else unique.forEach((name) => lines.push(`- ${name}`));
   lines.push("Accepted relationship:");
   lines.push(profile.relationship);
+  if (profile.relationship === "not_following") {
+    lines.push("Current profile control is still Follow. No second click will be made.");
+  }
   if (profile.relationship === "unknown") {
-    lines.push("No accepted relationship control.");
+    lines.push("No valid current-profile relationship control found.");
     lines.push("Rejected candidates:");
     const rejected = choice.decisions.filter((decision) => !decision.accepted).slice(0, 8);
     if (rejected.length === 0) lines.push("- no exact relationship candidate");
@@ -339,9 +350,9 @@ function formatRelationshipRead(username: string, dom: DomSnapshot) {
 
 function logFollowConfirmed(username: string, relationship: string, source: string) {
   console.log("Follow verification:");
-  console.log(relationshipEvidenceLabel(relationship));
-  console.log(`Source: ${relationshipSourceLabel(source)}`);
-  console.log(`Follow confirmed for @${username}.`);
+  console.log(`Observed: ${relationshipEvidenceLabel(relationship)}`);
+  console.log(`Confirmed via: ${relationshipSourceLabel(source)}`);
+  console.log(`Sequence-owned follow confirmed for @${username}.`);
 }
 
 function recipientSourceLabel(strategy: string | null | undefined) {
@@ -380,7 +391,7 @@ export async function inspectFollow(page: Page, username: string) {
   if ((dom.exactRelationshipHits ?? []).length === 0) console.log("(none)");
   for (const hit of dom.exactRelationshipHits ?? []) {
     const box = hit.box ? `${hit.box.x}/${hit.box.y}/${hit.box.width}/${hit.box.height}` : "none";
-    console.log(`- ${hit.tag} role=${hit.role || "none"} label="${hit.label}" text="${hit.text}" aria-label="${hit.ariaLabel}" href="${hit.href}" box=${box} ancestor="${hit.ancestor?.text || ""}"`);
+    console.log(`- ${hit.tag} role=${hit.role || "none"} label="${hit.label}" text="${hit.text}" aria-label="${hit.ariaLabel}" aria-labelledby="${hit.labelledBy || ""}" title="${hit.title}" href="${hit.href}" box=${box} ancestor="${hit.ancestor?.text || ""}"`);
   }
   console.log("Detector decision:");
   console.log(profile.relationship);
@@ -405,6 +416,8 @@ export async function inspectFollow(page: Page, username: string) {
       role: hit.role,
       text: hit.text,
       ariaLabel: hit.ariaLabel,
+      labelledBy: hit.labelledBy ?? "",
+      title: hit.title,
       href: hit.href,
       box: hit.box,
       ancestorText: hit.ancestor?.text ?? "",
