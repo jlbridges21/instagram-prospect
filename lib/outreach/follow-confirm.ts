@@ -1,5 +1,41 @@
 export const FOLLOW_CONFIRM_WINDOW_MS = 12_000;
+export const FOLLOW_VERIFY_WINDOW_MS = 20_000;
 export const FOLLOW_CONFIRM_POLL_MS = 1_000;
+export const FOLLOW_VERIFY_BACKOFF_MINUTES = [8, 25] as const;
+
+const latchedFollowClicks = new Set<string>();
+const announcedUncertainFollows = new Set<string>();
+
+export function latchFollowClick(jobId: string) {
+  latchedFollowClicks.add(jobId);
+}
+
+export function followClickLatched(jobId: string) {
+  return latchedFollowClicks.has(jobId);
+}
+
+export function clearFollowLatch(jobId: string) {
+  latchedFollowClicks.delete(jobId);
+}
+
+export function shouldAnnounceUncertainFollow(jobId: string) {
+  if (announcedUncertainFollows.has(jobId)) return false;
+  announcedUncertainFollows.add(jobId);
+  return true;
+}
+
+export function clearUncertainFollowAnnouncement(jobId: string) {
+  announcedUncertainFollows.delete(jobId);
+}
+
+const verificationStarts = new Map<string, number>();
+
+export function shouldAnnounceVerificationStart(jobId: string, now = Date.now()) {
+  const previous = verificationStarts.get(jobId);
+  if (previous != null && now - previous < 60_000) return false;
+  verificationStarts.set(jobId, now);
+  return true;
+}
 
 export type FollowRelationship = "following" | "not_following" | "requested" | "unknown";
 
@@ -18,6 +54,66 @@ export function uncertainFollowResult() {
 export function followClickWasAttempted(result: unknown) {
   if (!result || typeof result !== "object" || Array.isArray(result)) return false;
   return (result as { followClickAttempted?: boolean }).followClickAttempted === true;
+}
+
+export function followVerificationAttempts(result: unknown) {
+  if (!result || typeof result !== "object" || Array.isArray(result)) return 0;
+  const value = (result as { verificationAttempts?: unknown }).verificationAttempts;
+  return typeof value === "number" && Number.isFinite(value) ? Math.max(0, Math.round(value)) : 0;
+}
+
+export function followStartupVerified(result: unknown) {
+  if (!result || typeof result !== "object" || Array.isArray(result)) return false;
+  return (result as { startupVerified?: boolean }).startupVerified === true;
+}
+
+export function followAttemptPlan(input: { followClickAttempted: boolean; relationship: string }) {
+  if (input.followClickAttempted && isConfirmedFollow(input.relationship)) {
+    return { click: false as const, action: "complete" as const };
+  }
+  if (input.followClickAttempted) return { click: false as const, action: "verify" as const };
+  if (input.relationship === "not_following") return { click: true as const, action: "click" as const };
+  return { click: false as const, action: "stop" as const };
+}
+
+export function nextFollowVerification(input: {
+  attemptsSoFar: number;
+  now: number;
+  manual?: boolean;
+}) {
+  const verificationAttempts = input.manual ? input.attemptsSoFar : input.attemptsSoFar + 1;
+  if (input.manual || verificationAttempts >= 3) {
+    return {
+      action: "needs_review" as const,
+      state: "follow_verification_uncertain" as const,
+      status: "failed" as const,
+      verificationAttempts: Math.max(verificationAttempts, 3),
+      availableAt: new Date(input.now).toISOString(),
+      minutes: null as number | null,
+      startupVerified: true,
+    };
+  }
+  const minutes = FOLLOW_VERIFY_BACKOFF_MINUTES[verificationAttempts - 1] ?? 25;
+  return {
+    action: "retry_later" as const,
+    state: "follow_verification_uncertain" as const,
+    status: "retry_wait" as const,
+    verificationAttempts,
+    availableAt: new Date(input.now + minutes * 60_000).toISOString(),
+    minutes,
+    startupVerified: false,
+  };
+}
+
+export function isFollowVerificationJob(job: { jobType: string; status: string; result?: unknown }) {
+  if (job.jobType !== "follow_profile") return false;
+  if (job.status === "completed" || job.status === "cancelled") return false;
+  return followClickWasAttempted(job.result);
+}
+
+export function followNeedsManualReview(job: { job_type: string; status: string; result?: unknown }) {
+  if (job.job_type !== "follow_profile" || !followClickWasAttempted(job.result)) return false;
+  return job.status === "failed" || followVerificationAttempts(job.result) >= 3 || followStartupVerified(job.result);
 }
 
 export function shouldCompleteFollowWithoutClick(input: {
@@ -79,7 +175,8 @@ export function queueFollowStatusLabel(job: {
   result?: unknown;
 }) {
   if (job.job_type !== "follow_profile") return null;
-  if ((job.status === "running" || job.status === "claimed") && job.started_at) return "Confirming";
+  if (followNeedsManualReview(job)) return "Needs Review";
+  if ((job.status === "running" || job.status === "claimed") && job.started_at && !followClickWasAttempted(job.result)) return "Confirming";
   if (followClickWasAttempted(job.result)) return "Needs verification";
   return null;
 }

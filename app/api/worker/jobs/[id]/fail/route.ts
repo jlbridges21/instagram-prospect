@@ -30,10 +30,17 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     errorCode: parsed.data.error_code,
     errorMessage: parsed.data.error_message,
     retryable: parsed.data.retryable,
+    relationship: parsed.data.relationship,
   });
   if (!result.ok) {
     const status = "status" in result && typeof result.status === "number" ? result.status : 500;
     return workerError(status, result.error);
   }
-  return Response.json({ ok: true, status: result.status, attemptCount: result.attemptCount });
+  return Response.json({
+    ok: true,
+    status: result.status,
+    attemptCount: result.attemptCount,
+    nextAt: "nextAt" in result ? result.nextAt ?? null : null,
+    followState: "followState" in result ? result.followState ?? null : null,
+  });
 }

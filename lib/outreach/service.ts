@@ -11,6 +11,8 @@ import { sendWasAttempted, sequenceOwnsFollow } from "@/lib/outreach/dm";
 import {
   expiredFollowNeedsStamp,
   followClickWasAttempted,
+  followVerificationAttempts,
+  nextFollowVerification,
   staleReclaimDecision,
   uncertainFollowResult,
 } from "@/lib/outreach/follow-confirm";
@@ -312,6 +314,11 @@ export async function claimNextJob(input: {
   if (paced.action === "wait") {
     return { ok: true as const, job: null, reason: paced.reason, message: paced.message, nextAt: paced.nextAt };
   }
+  if (paced.action === "follow_verification" && paced.jobId) {
+    const reopened = await reopenFollowVerification(input.admin, paced.jobId, input.workerId, now, input.settings.outreach.claimLeaseSeconds);
+    if (reopened) return { ok: true as const, reason: null, message: null, nextAt: null, job: reopened };
+    return { ok: true as const, job: null, reason: "scheduled_retry", message: "Follow verification is not due.", nextAt: null };
+  }
 
   const claimed = await input.admin.rpc("claim_next_outreach_job", {
     p_worker_id: input.workerId,
@@ -384,6 +391,9 @@ async function paceBeforeClaim(
     completedSendTimes: loaded.completedSendTimes,
     jobs: loaded.jobs,
   });
+  if (decision.kind === "follow_verification" && decision.jobIds[0]) {
+    return { action: "follow_verification" as const, jobId: decision.jobIds[0], prospectId: decision.prospectId };
+  }
   if (decision.action === "idle") return { action: "claim" as const, prospectId: prospectId ?? null };
   if (decision.action === "wait" && decision.at) {
     if (decision.reason !== "scheduled_retry" && decision.prospectId) {
@@ -667,6 +677,65 @@ async function stampExpiredFollowAttempts(admin: Client, now: Date) {
     const prior = job.result && typeof job.result === "object" && !Array.isArray(job.result) ? job.result : {};
     await admin.from("outreach_jobs").update({ result: { ...prior, ...uncertainFollowResult() } }).eq("id", job.id);
   }
+}
+
+async function reopenFollowVerification(
+  admin: Client,
+  jobId: string,
+  workerId: string,
+  now: Date,
+  leaseSeconds: number,
+) {
+  const current = await admin.from("outreach_jobs").select("*").eq("id", jobId).maybeSingle();
+  if (current.error || !current.data) return null;
+  const job = current.data;
+  if (job.job_type !== "follow_profile" || !followClickWasAttempted(job.result)) return null;
+  if (job.status !== "failed" && job.status !== "retry_wait" && job.status !== "pending") return null;
+  if (job.status !== "failed" && new Date(job.available_at).getTime() > now.getTime()) return null;
+  const prospect = await admin
+    .from("prospects")
+    .select("id, instagram_username, profile_url, queued_message_text")
+    .eq("id", job.prospect_id)
+    .maybeSingle();
+  if (prospect.error || !prospect.data) return null;
+  const claimed = await admin
+    .from("outreach_jobs")
+    .update({
+      status: "claimed",
+      claimed_by_worker_id: workerId,
+      claimed_at: now.toISOString(),
+      claim_expires_at: new Date(now.getTime() + leaseSeconds * 1000).toISOString(),
+      started_at: job.started_at ?? now.toISOString(),
+    })
+    .eq("id", job.id)
+    .in("status", ["failed", "retry_wait", "pending"])
+    .select("*")
+    .maybeSingle();
+  if (!claimed.data) return null;
+  return publicJob(
+    claimed.data.id,
+    "follow_profile",
+    prospect.data,
+    await followContext(admin, prospect.data.id, claimed.data.result, claimed.data.started_at),
+  );
+}
+
+async function restoreBlockedSend(admin: Client, prospectId: string, now: Date) {
+  const prospect = await admin.from("prospects").select("outreach_cancelled_at").eq("id", prospectId).maybeSingle();
+  if (prospect.data?.outreach_cancelled_at) return;
+  await admin
+    .from("outreach_jobs")
+    .update({
+      status: "pending",
+      cancelled_at: null,
+      last_error: null,
+      available_at: now.toISOString(),
+      scheduled_for: now.toISOString(),
+    })
+    .eq("prospect_id", prospectId)
+    .eq("job_type", "send_message")
+    .eq("status", "cancelled")
+    .eq("last_error", "Blocked by an earlier failed step.");
 }
 
 async function resumeOwnedFollow(
@@ -1020,6 +1089,7 @@ async function completeFollow(admin: Client, job: OutreachJobRow, result: unknow
   }
   const saved = await markCompleted(admin, job, parsed.data as Json, now);
   if (!saved.ok) return saved;
+  if (followClickWasAttempted(job.result)) await restoreBlockedSend(admin, job.prospect_id, now);
   await logActivity(admin, {
     prospectId: job.prospect_id,
     eventType: "prospect_followed",
@@ -1183,6 +1253,7 @@ export async function failJob(input: {
   errorCode: string;
   errorMessage: string;
   retryable: boolean;
+  relationship?: string;
   now?: Date;
 }) {
   const now = input.now ?? new Date();
@@ -1204,6 +1275,7 @@ async function failOwnedJob(
     errorCode: string;
     errorMessage: string;
     retryable: boolean;
+    relationship?: string;
     now: Date;
   },
 ) {
@@ -1234,27 +1306,54 @@ async function failOwnedJob(
 
   if (input.errorCode === "follow_confirmation_uncertain") {
     const prior = job.result && typeof job.result === "object" && !Array.isArray(job.result) ? job.result : {};
+    const priorRecord = prior as { clickedAt?: string; manualVerification?: boolean; evidence?: unknown };
+    const plan = nextFollowVerification({
+      attemptsSoFar: followVerificationAttempts(prior),
+      now: input.now.getTime(),
+      manual: priorRecord.manualVerification === true,
+    });
+    const evidence = { relationship: input.relationship ?? "unknown" };
     const { error } = await admin
       .from("outreach_jobs")
       .update({
-        status: "retry_wait",
-        last_error: clipError(input.errorMessage),
-        result: { ...prior, ...uncertainFollowResult() },
-        available_at: input.now.toISOString(),
+        status: plan.status,
+        last_error: clipError(plan.action === "needs_review"
+          ? "Follow state could not be verified after click."
+          : input.errorMessage),
+        result: {
+          ...prior,
+          ...uncertainFollowResult(),
+          state: plan.state,
+          clickedAt: priorRecord.clickedAt ?? input.now.toISOString(),
+          evidence,
+          verificationAttempts: plan.verificationAttempts,
+          nextVerificationAt: plan.availableAt,
+          startupVerified: plan.startupVerified,
+          manualVerification: false,
+        },
+        available_at: plan.availableAt,
+        failed_at: plan.status === "failed" ? input.now.toISOString() : null,
         claimed_by_worker_id: null,
         claimed_at: null,
         claim_expires_at: null,
-        failed_at: null,
       })
       .eq("id", job.id);
     if (error) return { ok: false as const, error: "Could not record the job failure." };
     await logActivity(admin, {
       prospectId: job.prospect_id,
       eventType: "worker_job_failed",
-      description: "Follow was clicked, but it still needs verification.",
-      metadata: { jobId: job.id, errorCode: input.errorCode },
+      description: plan.action === "needs_review"
+        ? "Follow state could not be verified after click."
+        : "Follow was clicked, but it still needs verification.",
+      metadata: { jobId: job.id, errorCode: input.errorCode, nextVerificationAt: plan.availableAt },
     });
-    return { ok: true as const, status: "retry_wait" as const, attemptCount: job.attempt_count };
+    return {
+      ok: true as const,
+      status: plan.status,
+      attemptCount: plan.verificationAttempts,
+      nextAt: plan.availableAt,
+      followState: plan.action,
+    };
   }
 
   const plan = cappedFailurePlan({
@@ -1399,6 +1498,34 @@ export async function retryFailedJob(supabase: Client, jobId: string, actor: str
   if (!current.data) return { ok: false as const, error: "That job could not be found." };
   if (current.data.status !== "failed") {
     return { ok: false as const, error: "Only a failed job can be retried." };
+  }
+  if (current.data.job_type === "follow_profile" && followClickWasAttempted(current.data.result)) {
+    const prior = current.data.result && typeof current.data.result === "object" && !Array.isArray(current.data.result)
+      ? current.data.result
+      : {};
+    const { error } = await supabase
+      .from("outreach_jobs")
+      .update({
+        status: "retry_wait",
+        failed_at: null,
+        claimed_by_worker_id: null,
+        claimed_at: null,
+        claim_expires_at: null,
+        started_at: null,
+        available_at: now,
+        scheduled_for: now,
+        last_error: "Follow verification was requested. No second follow click will be made.",
+        result: { ...prior, followClickAttempted: true, confirmation: "uncertain", manualVerification: true, startupVerified: false },
+      })
+      .eq("id", jobId);
+    if (error) return { ok: false as const, error: dbFailure(error) };
+    await logActivity(supabase, {
+      prospectId: current.data.prospect_id,
+      eventType: "outreach_queued",
+      description: "Follow verification was queued again. Follow will not be clicked again.",
+      metadata: { actor, jobId },
+    });
+    return { ok: true as const };
   }
 
   const { error } = await supabase

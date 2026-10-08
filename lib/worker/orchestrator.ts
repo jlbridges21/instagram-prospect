@@ -62,9 +62,31 @@ export function discoveryShouldYield(input: {
   return { yield: false, finishCurrentInspection: false };
 }
 
+export function browserLeaseAllowsForceRelease(input: {
+  phase: "click" | "verify" | "idle";
+  heldMs: number;
+  maxVerifyMs: number;
+}) {
+  if (input.phase === "click") return false;
+  return input.phase === "verify" && input.heldMs >= input.maxVerifyMs;
+}
+
+export function releaseAfterUncertainFollow(input: {
+  persisted: boolean;
+  releaseLock: () => void;
+  clearSideEffect: () => void;
+}) {
+  if (!input.persisted) return { released: false as const };
+  input.clearSideEffect();
+  input.releaseLock();
+  return { released: true as const };
+}
+
 export class BrowserActionLock {
   private owner: "outreach" | "discovery" | null = null;
   private critical = false;
+  private acquiredAt: number | null = null;
+  private phase: "click" | "verify" | "idle" = "idle";
 
   heldBy() {
     return this.owner;
@@ -74,11 +96,22 @@ export class BrowserActionLock {
     return this.critical;
   }
 
+  setPhase(phase: "click" | "verify" | "idle") {
+    this.phase = phase;
+  }
+
+  holdMs(now = Date.now()) {
+    if (this.acquiredAt == null) return 0;
+    return Math.max(0, now - this.acquiredAt);
+  }
+
   tryAcquire(owner: "outreach" | "discovery", critical = false) {
     if (this.owner && this.owner !== owner) return false;
     if (this.critical && owner !== "outreach") return false;
+    if (this.owner !== owner || this.acquiredAt == null) this.acquiredAt = Date.now();
     this.owner = owner;
     this.critical = critical || this.critical;
+    if (critical) this.phase = "click";
     return true;
   }
 
@@ -86,6 +119,8 @@ export class BrowserActionLock {
     if (this.owner !== owner) return;
     this.owner = null;
     this.critical = false;
+    this.acquiredAt = null;
+    this.phase = "idle";
   }
 }
 

@@ -6,11 +6,12 @@ import { discoveryDue, discoveryStallDecision, guardDiagnostic, inspectionInterv
 import { outreachStallDecision } from "../lib/outreach/pace";
 import { formatCountdown } from "../lib/ui/countdown";
 import { censusFromScores, checkpointHoldDecision, discoveryConfigUpdates, formatDiscoveryConfig, formatHourlyWaitEvent, formatWorkerModes, rollingHourInspectionCount, type DiscoveryRuntimeConfig } from "../lib/discovery/pacing";
-import { createThroughputClock, formatThroughputReport, missedInspectionOpportunities, throughputDegraded } from "../lib/discovery/throughput";
+import { createThroughputClock, discoveryMissReason, formatThroughputReport, missedInspectionOpportunities, throughputDegraded } from "../lib/discovery/throughput";
 import { readHourlyStamps } from "./discovery/hourly-history";
 import { readDiscoveryCadence, writeDiscoveryCadence } from "./discovery/cadence-file";
 import { startOfNextLocalDay } from "../lib/outreach/time";
-import { BrowserActionLock, nextOrchestratorStep } from "../lib/worker/orchestrator";
+import { BrowserActionLock, nextOrchestratorStep, releaseAfterUncertainFollow } from "../lib/worker/orchestrator";
+import { clearFollowLatch, clearUncertainFollowAnnouncement, followClickLatched, latchFollowClick, shouldAnnounceUncertainFollow, shouldAnnounceVerificationStart } from "../lib/outreach/follow-confirm";
 import { discoveryRunShouldStop } from "../lib/worker/commands";
 import {
   browserStateFromSignals,
@@ -309,6 +310,15 @@ export async function runWorker(mode: RunMode) {
     const spent = throughput.spent(now);
     const missed = missedInspectionOpportunities(now, discoveryNextAt, interval);
     const overdueMs = Math.max(0, now - discoveryNextAt);
+    const outreachOwnsBrowser = activeSideEffect != null || browserLock.heldBy() === "outreach" || browserLock.isCritical();
+    const browserRecovering = currentState() === "restarting" || currentState() === "closed";
+    const reason = discoveryMissReason({
+      outreachOwnsBrowser,
+      browserRecovering,
+      candidateStarved: !outreachOwnsBrowser && !browserRecovering,
+      waitingForSlot: false,
+    });
+    throughput.noteMissed(missed, reason);
     const degraded = throughputDegraded({
       running: true,
       inspectionsSinceProgress: lastDiscoveryProgressAt >= discoveryNextAt ? 1 : 0,
@@ -323,6 +333,9 @@ export async function runWorker(mode: RunMode) {
         missed,
         ...spent,
         degraded,
+        degradedReason: reason,
+        discoveryMisses: throughput.misses(),
+        outreachBlocked: throughput.blocks(),
       }));
     });
   }
@@ -744,10 +757,18 @@ export async function runWorker(mode: RunMode) {
         discoveryOverdueSince = stall.overdueSince;
         if (stall.stalled && !discoveryStallLogged) {
           discoveryStallLogged = true;
-          const recovery = stallRecoveryAction();
+          const outreachOwnsBrowser = activeSideEffect != null || browserLock.heldBy() === "outreach" || browserLock.isCritical();
+          const browserRecovering = currentState() === "restarting";
+          const recovery = stallRecoveryAction(discoveryMissReason({
+            outreachOwnsBrowser,
+            browserRecovering,
+            candidateStarved: !outreachOwnsBrowser && !browserRecovering,
+            waitingForSlot: false,
+          }));
           console.log(recovery.message);
           live.lastEvent = recovery.message;
         }
+        if (config.automationEnabled && currentState() !== "connected") throughput.noteOutreachBlock("browserUnavailable");
         if (config.discoveryEnabled) reportThroughput(config.maxProfilesPerHour, intervalMs);
         const discoveryIsDue = config.discoveryEnabled && !control.pauseDiscovery && dailyBlockedUntil === 0 && discoveryDue(Date.now(), discoveryNextAt) && Date.now() >= discoveryRetryAt;
         const outreachStall = outreachStallDecision({
@@ -786,7 +807,14 @@ export async function runWorker(mode: RunMode) {
             live.task = "outreach_state_sync";
             live.username = outcome.username;
             outreachDueAt = Date.now() + 60_000;
+          } else if (outcome.reason === "uncertain_side_effect") {
+            throughput.noteOutreachBlock("followVerificationUncertain");
+            activeSideEffect = null;
+            browserLock.release("outreach");
+            outreachDueAt = Date.now();
+            continue;
           } else if (outcome.worked) {
+            throughput.clearOutreachBlock();
             lastOutreachProgressAt = Date.now();
             outreachDueAt = 0;
             const line = prospectCompletionLine({
@@ -807,6 +835,9 @@ export async function runWorker(mode: RunMode) {
               nextAt: outcome.nextAt ?? null,
               now: new Date(),
             });
+            if (outcome.reason === "minimum_spacing") throughput.noteOutreachBlock("minimumSpacing");
+            else if (outcome.reason === "scheduled_retry") throughput.noteOutreachBlock("retryBackoff");
+            else if (/recipient/i.test(outcome.reason)) throughput.noteOutreachBlock("recipientVerification");
             if (outcome.reason === "no_queued_jobs") console.log("Outreach queue is empty.");
             else if (outcome.message && outcome.reason !== "state_sync_failed") console.log(outcome.message);
             if (!config.discoveryEnabled || !discoveryIsDue) {
@@ -1092,6 +1123,17 @@ async function runOneJob(
   try {
     const result = await executeJob(page, job);
     const settlement = await settleExecution(cloud, identity.worker_id, job, result);
+    if (settlement.action === "uncertain_side_effect") {
+      return {
+        worked: false,
+        reason: "uncertain_side_effect" as const,
+        nextAt: settlement.nextAt,
+        message: settlement.message,
+        username: job.instagramUsername,
+        jobType: job.type,
+        sequenceComplete: false,
+      };
+    }
     if (outreachSyncBlocked) {
       return {
         worked: false,
@@ -1110,7 +1152,7 @@ async function runOneJob(
       message: null,
       username: job.instagramUsername,
       jobType: job.type,
-      sequenceComplete: settlement === "done" && job.type === "send_message" && "sent" in result && result.sent === true,
+      sequenceComplete: settlement.action === "done" && job.type === "send_message" && "sent" in result && result.sent === true,
     };
   } catch (error) {
     if (error instanceof AttentionError) {
@@ -1140,11 +1182,14 @@ async function executeJob(page: import("playwright").Page, job: JobPayload) {
   const effect: SideEffect = job.type === "follow_profile" ? "follow" : job.type === "send_message" ? "send" : null;
   const critical = effect != null;
   browserLock.tryAcquire("outreach", critical);
-  if (effect) activeSideEffect = effect;
+  if (effect) {
+    activeSideEffect = effect;
+    browserLock.setPhase("click");
+  }
   try {
     const result = await executeJobBody(page, job);
     if (effect && result && typeof result === "object" && "confirmation" in result && result.confirmation === "uncertain") {
-      activeSideEffect = effect;
+      browserLock.setPhase("verify");
     } else if (effect) {
       activeSideEffect = null;
     }
@@ -1169,10 +1214,15 @@ async function executeJobBody(page: import("playwright").Page, job: JobPayload) 
     };
   }
   if (job.type === "follow_profile") {
+    const followClickAttempted = job.followClickAttempted === true || followClickLatched(job.id);
+    if (followClickAttempted && shouldAnnounceVerificationStart(job.id)) {
+      console.log(`Follow verification for @${job.instagramUsername} is starting. No second click will be made.`);
+    }
     return followProfile(page, job.instagramUsername, {
-      followClickAttempted: job.followClickAttempted,
+      followClickAttempted,
       executionStarted: job.executionStarted,
       verifyNotFollowing: job.verifyNotFollowing,
+      onBeforeClick: () => latchFollowClick(job.id),
     });
   }
   if (!job.message) throw new SelectorError("The send job did not include the locked message.");
@@ -1228,7 +1278,7 @@ async function settleExecution(
       true,
     );
     console.log("The composer text did not match the queued message, so it was not sent.");
-    return "stop" as const;
+    return { action: "stop" as const };
   }
   if (outcome.existingDraftMismatch) {
     await reportFailure(
@@ -1240,12 +1290,12 @@ async function settleExecution(
       false,
     );
     console.log("Existing composer draft does not match the queued message. Manual review required.");
-    return "stop" as const;
+    return { action: "stop" as const };
   }
   if (outcome.composerTextMismatch) {
     await reportFailure(cloud, workerId, job.id, "composer_text_mismatch", "composer_text_mismatch", true);
     console.log("The composer text did not match the queued message, so it was not sent.");
-    return "stop" as const;
+    return { action: "stop" as const };
   }
   if (outcome.messageUnavailable || outcome.dmUnavailable) {
     await reportFailure(
@@ -1259,7 +1309,7 @@ async function settleExecution(
     );
     console.log(`Messaging unavailable for @${job.instagramUsername}.`);
     console.log("No DM sent.");
-    return "stop" as const;
+    return { action: "stop" as const };
   }
   if (outcome.composerUnavailable || outcome.composerNotFound) {
     await reportFailure(
@@ -1273,7 +1323,7 @@ async function settleExecution(
     );
     console.log(`Composer unavailable for @${job.instagramUsername}.`);
     console.log("No DM sent.");
-    return "stop" as const;
+    return { action: "stop" as const };
   }
   if (outcome.recipientUnconfirmed) {
     const reason = outcome.ambiguousReason || "Conversation recipient could not be confirmed.";
@@ -1283,13 +1333,13 @@ async function settleExecution(
     console.log("No DM sent.");
     if (retryable) console.log("Scheduling retry. This prospect will not be opened again until that retry is saved.");
     await reportFailure(cloud, workerId, job.id, code, reason, retryable, job.instagramUsername);
-    return "stop" as const;
+    return { action: "stop" as const };
   }
   if (outcome.manualReview) {
     const reason = outcome.ambiguousReason || "Send state from a previous attempt is uncertain.";
     await reportFailure(cloud, workerId, job.id, "send_confirmation_uncertain", reason, true);
     console.log(reason);
-    return "stop" as const;
+    return { action: "stop" as const };
   }
   if (outcome.confirmation === "uncertain" && job.type === "send_message") {
     await reportFailure(
@@ -1301,25 +1351,49 @@ async function settleExecution(
       true,
     );
     console.log("Send confirmation is uncertain. No second send was made.");
-    return "stop" as const;
+    return { action: "stop" as const };
   }
   if (outcome.confirmation === "uncertain") {
-    await reportFailure(
+    const saved = await reportFailure(
       cloud,
       workerId,
       job.id,
       "follow_confirmation_uncertain",
       "Follow was clicked, but the result could not be confirmed.",
       true,
+      job.instagramUsername,
+      typeof result.relationshipStatus === "string" ? result.relationshipStatus : undefined,
     );
-    console.log(`Follow was clicked for @${job.instagramUsername}, but it still needs verification. No second click was made.`);
-    return "stop" as const;
+    const released = releaseAfterUncertainFollow({
+      persisted: saved.ok,
+      clearSideEffect: () => {
+        activeSideEffect = null;
+      },
+      releaseLock: () => browserLock.release("outreach"),
+    });
+    if (released.released) clearFollowLatch(job.id);
+    if (saved.followState === "needs_review") {
+      clearUncertainFollowAnnouncement(job.id);
+      console.log(`Follow for @${job.instagramUsername} needs review. The follow state could not be verified after the click.`);
+    } else if (shouldAnnounceUncertainFollow(job.id)) {
+      console.log(`Follow was clicked for @${job.instagramUsername}, but it still needs verification. No second click was made.`);
+      if (saved.nextAt) console.log(`Follow verification for @${job.instagramUsername} is scheduled for ${saved.nextAt}.`);
+    } else if (saved.nextAt) {
+      console.log(`Follow verification for @${job.instagramUsername} is scheduled for ${saved.nextAt}.`);
+    }
+    return {
+      action: "uncertain_side_effect" as const,
+      nextAt: saved.nextAt,
+      message: saved.followState === "needs_review" ? "Follow state could not be verified after click." : null,
+    };
   }
   if (outcome.recoveredWithoutClick) {
+    clearUncertainFollowAnnouncement(job.id);
+    clearFollowLatch(job.id);
     console.log(`Follow for @${job.instagramUsername} is already confirmed. No second click was made.`);
   }
   await reportComplete(cloud, workerId, job.id, result);
-  return "done" as const;
+  return { action: "done" as const };
 }
 
 async function reportComplete(cloud: CloudClient, workerId: string, jobId: string, result: Record<string, unknown>) {
@@ -1340,12 +1414,24 @@ async function reportFailure(
   errorMessage: string,
   retryable: boolean,
   username?: string,
+  relationship?: string,
 ) {
-  const body = { error_code: errorCode, error_message: errorMessage.slice(0, 500), retryable };
+  const body = {
+    error_code: errorCode,
+    error_message: errorMessage.slice(0, 500),
+    retryable,
+    ...(relationship ? { relationship } : {}),
+  };
   quarantine.noteBrowserRun(jobId, username ?? jobId);
+  let nextAt: string | null = null;
+  let followState: string | null = null;
   const saved = await persistFailure({
     write: async () => {
-      await cloud.failJob(jobId, workerId, body);
+      const response = await cloud.failJob(jobId, workerId, body);
+      if (response && typeof response === "object") {
+        if ("nextAt" in response && typeof response.nextAt === "string") nextAt = response.nextAt;
+        if ("followState" in response && typeof response.followState === "string") followState = response.followState;
+      }
     },
     sleep,
     log: (message) => console.log(message),
@@ -1354,7 +1440,7 @@ async function reportFailure(
     forgetPending(jobId);
     quarantine.clear(jobId);
     if (outreachSyncBlocked?.jobId === jobId) outreachSyncBlocked = null;
-    return;
+    return { ok: true as const, nextAt, followState };
   }
   rememberPending({ jobId, workerId, kind: "fail", body, createdAt: new Date().toISOString() });
   quarantine.markBlocked(jobId);
@@ -1362,6 +1448,7 @@ async function reportFailure(
   console.log("State sync failed.");
   console.log(`@${outreachSyncBlocked.username} quarantined.`);
   console.log("Outreach blocked pending reconciliation.");
+  return { ok: false as const, nextAt: null, followState: null };
 }
 
 async function flushPending(cloud: CloudClient, workerId: string) {
@@ -1703,7 +1790,7 @@ async function runSingleOutreach(
       await cloud.startJob(current.id, identity.worker_id);
       const result = await executeJob(page, current);
       const settled = await settleExecution(cloud, identity.worker_id, current, result);
-      if (settled === "stop") return;
+      if (settled.action !== "done") return;
       console.log(`Completed ${current.type} for @${current.instagramUsername}.`);
       if (process.argv.includes("--recover-outreach") && current.type === "follow_profile") {
         console.log("Follow recovery finished. The message step was not started.");

@@ -9,7 +9,7 @@ import type { Json, OutreachJobRow } from "@/lib/db/types";
 import { livePollDelay } from "@/lib/discovery/policy";
 import { compareQueueJobs, mergeTabJobs, statusesForTab } from "@/lib/outreach/queue-sort";
 import { queueSendStatusLabel } from "@/lib/outreach/dm";
-import { queueFollowStatusLabel } from "@/lib/outreach/follow-confirm";
+import { followNeedsManualReview, queueFollowStatusLabel } from "@/lib/outreach/follow-confirm";
 import {
   JOB_STATUS_LABELS,
   JOB_TYPE_LABELS,
@@ -441,7 +441,7 @@ function RowActions({
       </Button>
       {row.job.status === "failed" ? (
         <Button size="sm" disabled={pending} onClick={onRetry}>
-          Retry
+          {followNeedsManualReview(row.job) ? "Retry verification" : "Retry"}
         </Button>
       ) : null}
       {row.job.status === "pending" || row.job.status === "retry_wait" || row.job.status === "claimed" || row.job.status === "failed" ? (
@@ -503,6 +503,7 @@ function jobErrorText(job: OutreachJobRow) {
   if (/layout did not change|recipient detection is unresolved/i.test(error)) {
     return "Recipient not verified. The composer was found, but no exact username signal was available in the current Direct layout.";
   }
+  if (followNeedsManualReview(job)) return "Follow state could not be verified after click.";
   if (stepStatus(job) === "Needs Review") return "Recipient could not be verified. The Direct thread did not expose an exact username.";
   return error || "—";
 }

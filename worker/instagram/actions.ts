@@ -42,6 +42,8 @@ import {
 } from "../../lib/outreach/dm";
 import {
   confirmFollowAfterClick,
+  FOLLOW_VERIFY_WINDOW_MS,
+  followAttemptPlan,
   isPreexistingFollow,
   shouldCompleteFollowWithoutClick,
 } from "../../lib/outreach/follow-confirm";
@@ -181,7 +183,12 @@ function saveDebugSnapshot(username: string, dom: DomSnapshot) {
 export async function followProfile(
   page: Page,
   username: string,
-  prior?: { followClickAttempted?: boolean; executionStarted?: boolean; verifyNotFollowing?: boolean },
+  prior?: {
+    followClickAttempted?: boolean;
+    executionStarted?: boolean;
+    verifyNotFollowing?: boolean;
+    onBeforeClick?: () => void;
+  },
 ) {
   const current = await readProfile(page, username);
   const context = {
@@ -191,6 +198,33 @@ export async function followProfile(
     executionStarted: prior?.executionStarted === true,
   };
   if (!current.profileExists) return { followed: false, relationshipStatus: "unknown" as const, profileExists: false };
+  const plan = followAttemptPlan(context);
+  if (plan.action === "verify" || (plan.action === "complete" && context.followClickAttempted)) {
+    const confirmation = await confirmFollowAfterClick({
+      now: () => Date.now(),
+      sleep: (ms) => page.waitForTimeout(ms),
+      readRelationship: async () => (await inspectCurrent(page, username)).relationship,
+      refresh: async () => {
+        await page.reload({ waitUntil: "domcontentloaded" });
+      },
+      windowMs: FOLLOW_VERIFY_WINDOW_MS,
+    });
+    if (confirmation.confirmed) {
+      return {
+        followed: true,
+        relationshipStatus: confirmation.relationship,
+        profileExists: true,
+        recoveredWithoutClick: true,
+      };
+    }
+    return {
+      followed: false,
+      followClickAttempted: true,
+      confirmation: "uncertain" as const,
+      relationshipStatus: confirmation.relationship,
+      profileExists: true,
+    };
+  }
   if (shouldCompleteFollowWithoutClick(context)) {
     return {
       followed: true,
@@ -211,6 +245,7 @@ export async function followProfile(
     throw new SelectorError(`Could not determine follow relationship for @${username}.`);
   }
   const button = page.getByRole("button", { name: /^Follow$/ });
+  prior?.onBeforeClick?.();
   await button.click({ timeout: ACTION_TIMEOUT_MS });
   const confirmation = await confirmFollowAfterClick({
     now: () => Date.now(),
@@ -219,6 +254,7 @@ export async function followProfile(
     refresh: async () => {
       await page.reload({ waitUntil: "domcontentloaded" });
     },
+    windowMs: FOLLOW_VERIFY_WINDOW_MS,
   });
   if (confirmation.confirmed) {
     return { followed: true, relationshipStatus: confirmation.relationship, profileExists: true };

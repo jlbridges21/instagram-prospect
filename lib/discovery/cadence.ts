@@ -100,11 +100,19 @@ export function guardDiagnostic(write: () => void) {
   }
 }
 
-export function stallRecoveryAction() {
+export function stallRecoveryAction(reason: "candidate_starvation" | "outreach_browser" | "browser_recovery" | "waiting_for_slot" | "other" = "candidate_starvation") {
+  const message = {
+    candidate_starvation: "Discovery degraded — candidate starvation",
+    outreach_browser: "Discovery waiting — Outreach owns the browser",
+    browser_recovery: "Discovery waiting — browser recovery",
+    waiting_for_slot: "Discovery waiting for inspection slot",
+    other: "Discovery waiting",
+  }[reason];
   return {
     moveInspectionClock: false as const,
-    state: "degraded" as const,
-    message: "Discovery degraded — candidate starvation",
+    state: reason === "candidate_starvation" ? "degraded" as const : "waiting" as const,
+    reason,
+    message,
   };
 }
 

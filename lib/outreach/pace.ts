@@ -1,3 +1,4 @@
+import { followStartupVerified, isFollowVerificationJob } from "@/lib/outreach/follow-confirm";
 import { localDateKey, startOfNextLocalDay } from "@/lib/outreach/time";
 
 export const OUTREACH_HOUR_MS = 60 * 60 * 1000;
@@ -182,6 +183,7 @@ export type ClaimPaceDecision = {
   at: Date | null;
   reason: PaceReason;
   jobIds: string[];
+  kind?: "follow_verification";
 };
 
 export function queueHealth(jobs: PaceJob[]) {
@@ -269,6 +271,26 @@ export function claimPaceDecision(input: {
   if (futureRetry && futureRetry.getTime() > input.now.getTime()) {
     return { action: "wait", prospectId: null, username: null, at: futureRetry, reason: "scheduled_retry", jobIds: [] };
   }
+  const dueFollow = input.jobs
+    .filter((job) => isFollowVerificationJob(job) && (job.status === "pending" || job.status === "retry_wait"))
+    .filter((job) => availableAt(job, input.now).getTime() <= input.now.getTime())
+    .sort((left, right) => availableAt(left, input.now).getTime() - availableAt(right, input.now).getTime());
+  const readyFollow = dueFollow[0];
+  if (readyFollow) return claim(readyFollow.prospectId, readyFollow, input.now, "follow_verification");
+
+  const failedFollow = input.jobs.find((job) =>
+    isFollowVerificationJob(job) && job.status === "failed" && !followStartupVerified(job.result),
+  );
+  if (failedFollow) return claim(failedFollow.prospectId, failedFollow, input.now, "follow_verification");
+
+  const laterFollow = input.jobs
+    .filter((job) => isFollowVerificationJob(job) && (job.status === "pending" || job.status === "retry_wait"))
+    .map((job) => availableAt(job, input.now))
+    .filter((at) => at.getTime() > input.now.getTime())
+    .sort((left, right) => left.getTime() - right.getTime())[0];
+  if (laterFollow && fresh.length === 0 && dueRetries.length === 0) {
+    return { action: "wait", prospectId: null, username: null, at: laterFollow, reason: "scheduled_retry", jobIds: [] };
+  }
   if (fresh.length === 0 && dueRetries.length === 0) {
     return { action: "idle", prospectId: null, username: null, at: null, reason: "ready", jobIds: [] };
   }
@@ -286,7 +308,12 @@ function availableAt(job: PaceJob | null, now: Date) {
   return new Date(job.availableAt ?? job.scheduledFor);
 }
 
-function claim(prospectId: string, job: PaceJob | null, now: Date): ClaimPaceDecision {
+function claim(
+  prospectId: string,
+  job: PaceJob | null,
+  now: Date,
+  kind?: "follow_verification",
+): ClaimPaceDecision {
   return {
     action: "claim",
     prospectId,
@@ -294,6 +321,7 @@ function claim(prospectId: string, job: PaceJob | null, now: Date): ClaimPaceDec
     at: now,
     reason: "ready",
     jobIds: job ? [job.id] : [],
+    kind,
   };
 }
 

@@ -33,6 +33,7 @@ export const failJobSchema = z.object({
   error_code: z.enum(WORKER_ERROR_CODES),
   error_message: z.string().trim().min(1).max(500),
   retryable: z.boolean(),
+  relationship: z.enum(["following", "not_following", "requested", "unknown"]).optional(),
 });
 
 export const claimJobSchema = z.object({
